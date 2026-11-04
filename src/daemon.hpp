@@ -2,15 +2,24 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "core/fd.hpp"
 #include "core/loop.hpp"
+#include "core/worker.hpp"
 #include "gpu/context.hpp"
+#include "gpu/pictures.hpp"
+#include "gpu/staging.hpp"
 #include "gpu/surface.hpp"
+#include "wallpaper/image/textures.hpp"
+#include "wallpaper/wallpaper.hpp"
 #include "wayland/display.hpp"
 
 namespace glint {
@@ -32,7 +41,21 @@ public:
     Daemon();
     ~Daemon() override;
 
+    // Picture shown on every output at start, until the state file exists (M1 development).
+    void show_at_start(std::filesystem::path path) { show_at_start_ = std::move(path); }
+
     int run();
+
+    struct SetResult {
+        std::string error;  // empty on success
+        std::string kind;
+        double load_ms = 0;  // request to first frame with the new wallpaper on screen
+    };
+    using SetDone = std::function<void(const SetResult&)>;
+    // output is a connector name or "*". done runs when every affected output shows the new
+    // wallpaper (or is paused and has it ready), or with an error.
+    void set(std::string_view output, const std::filesystem::path& path, const Options& options,
+             SetDone done);
 
     // wl::Display::Listener
     void output_added(wl::Output& output) override;
@@ -43,11 +66,32 @@ public:
     void pointer(wl::Output& output, double x, double y, std::uint32_t buttons) override;
 
 private:
+    struct Assignment {
+        std::filesystem::path path;
+        Options options;
+    };
+
+    // A set request that spans one or more outputs.
+    struct Request {
+        SetDone done;
+        std::int64_t start_ns = 0;
+        int remaining = 0;
+        std::string kind;
+        std::string error;
+        bool finished = false;
+    };
+
     // One per output with a configured layer surface.
     struct Screen {
         wl::Output* output = nullptr;
         std::unique_ptr<gpu::Surface> surface;
-        float background[4] = {0, 0, 0, 1};
+
+        std::unique_ptr<Wallpaper> current;   // on screen
+        std::unique_ptr<Wallpaper> incoming;  // loading, or ready and fading in
+        std::shared_ptr<Request> request;     // the set that brought incoming
+        std::int64_t fade_start_ns = 0;       // 0: incoming not ready yet
+        int fade_ms = 0;                      // crossfade length, 0 for a straight swap
+        std::string error;                    // last load error, for status
 
         bool dirty = true;         // something changed that is not on screen yet
         bool resized = true;       // the swapchain needs the new size
@@ -56,12 +100,15 @@ private:
         // Statistics for status.
         std::uint64_t frames = 0;
         std::array<std::int64_t, 64> present_ns{};  // ring of recent present times
+        std::int64_t last_present_ns = 0;
         double cpu_ms = 0;
+        double load_ms = 0;
         double pointer[2] = {0, 0};
     };
 
     bool setup_signals();
     Screen* screen(wl::Output& output);
+    Screen* screen(std::string_view name);
     std::uint32_t reasons(const Screen& screen) const;
     bool drawable(const Screen& screen) const;
     void render(Screen& screen);
@@ -69,11 +116,26 @@ private:
     void after_poll();
     void pause_changed(Screen& screen, std::uint32_t before);
 
+    const Assignment* assignment(std::string_view name) const;
+    void apply(Screen& screen, const Assignment& assignment, std::shared_ptr<Request> request);
+    void loaded(Screen& screen, Wallpaper* wallpaper, const std::string& error);
+    void finish(const std::shared_ptr<Request>& request, const std::string& error);
+
     Loop loop_;
     wl::Display display_;
     std::unique_ptr<gpu::Context> gpu_;
+    std::unique_ptr<gpu::StagingRing> staging_;
+    std::unique_ptr<gpu::Pictures> pictures_;
+    std::unique_ptr<Workers> workers_;
+    std::unique_ptr<image::Textures> textures_;
+    std::unique_ptr<Services> services_;
     std::vector<std::unique_ptr<Screen>> screens_;
+
+    std::optional<Assignment> all_;              // "*"
+    std::map<std::string, Assignment> outputs_;  // by connector name; wins over "*"
     std::uint32_t paused_all_ = 0;  // reasons set for "*", on every output including new ones
+    std::filesystem::path show_at_start_;
+
     UniqueFd signal_fd_;
     int wayland_id_ = 0;
 };

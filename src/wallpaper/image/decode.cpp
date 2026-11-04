@@ -1,0 +1,137 @@
+#include "wallpaper/image/decode.hpp"
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
+}
+
+#include <algorithm>
+#include <memory>
+
+#include "core/clock.hpp"
+
+namespace glint::image {
+
+namespace {
+
+std::string av_error(int code) {
+    char text[AV_ERROR_MAX_STRING_SIZE] = {};
+    av_strerror(code, text, sizeof(text));
+    return text;
+}
+
+struct FormatCloser {
+    void operator()(AVFormatContext* f) const { avformat_close_input(&f); }
+};
+struct CodecFreer {
+    void operator()(AVCodecContext* c) const { avcodec_free_context(&c); }
+};
+struct FrameFreer {
+    void operator()(AVFrame* f) const { av_frame_free(&f); }
+};
+struct PacketFreer {
+    void operator()(AVPacket* p) const { av_packet_free(&p); }
+};
+struct ScaleFreer {
+    void operator()(SwsContext* s) const { sws_free_context(&s); }
+};
+
+}  // namespace
+
+std::string decode(const std::filesystem::path& path, std::uint32_t max_dimension,
+                   gpu::StagingRing& staging, Decoded& out) {
+    std::int64_t start = clock::now_ns();
+    av_log_set_level(AV_LOG_ERROR);
+
+    AVFormatContext* raw_format = nullptr;
+    if (int r = avformat_open_input(&raw_format, path.c_str(), nullptr, nullptr); r < 0) {
+        return "cannot open: " + av_error(r);
+    }
+    std::unique_ptr<AVFormatContext, FormatCloser> format(raw_format);
+    if (int r = avformat_find_stream_info(format.get(), nullptr); r < 0) {
+        return "cannot read: " + av_error(r);
+    }
+    const AVCodec* codec = nullptr;
+    int stream = av_find_best_stream(format.get(), AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
+    if (stream < 0 || codec == nullptr) return "not a picture";
+
+    std::unique_ptr<AVCodecContext, CodecFreer> decoder(avcodec_alloc_context3(codec));
+    avcodec_parameters_to_context(decoder.get(), format->streams[stream]->codecpar);
+    decoder->thread_count = 0;  // as many as useful
+    if (int r = avcodec_open2(decoder.get(), codec, nullptr); r < 0) {
+        return "cannot decode: " + av_error(r);
+    }
+
+    std::unique_ptr<AVFrame, FrameFreer> frame(av_frame_alloc());
+    std::unique_ptr<AVPacket, PacketFreer> packet(av_packet_alloc());
+    bool got = false;
+    bool flushing = false;
+    while (!got) {
+        if (!flushing) {
+            int r = av_read_frame(format.get(), packet.get());
+            if (r < 0) {
+                flushing = true;
+                avcodec_send_packet(decoder.get(), nullptr);
+            } else if (packet->stream_index == stream) {
+                avcodec_send_packet(decoder.get(), packet.get());
+                av_packet_unref(packet.get());
+            } else {
+                av_packet_unref(packet.get());
+                continue;
+            }
+        }
+        int r = avcodec_receive_frame(decoder.get(), frame.get());
+        if (r == 0) {
+            got = true;
+        } else if (r == AVERROR(EAGAIN) && !flushing) {
+            continue;
+        } else {
+            return r == AVERROR_EOF ? "no picture in the file" : "cannot decode: " + av_error(r);
+        }
+    }
+
+    auto src_w = static_cast<std::uint32_t>(frame->width);
+    auto src_h = static_cast<std::uint32_t>(frame->height);
+    if (src_w == 0 || src_h == 0) return "empty picture";
+    std::uint32_t w = src_w, h = src_h;
+    if (std::max(w, h) > max_dimension) {
+        double k = static_cast<double>(max_dimension) / std::max(w, h);
+        w = std::max<std::uint32_t>(1, static_cast<std::uint32_t>(w * k));
+        h = std::max<std::uint32_t>(1, static_cast<std::uint32_t>(h * k));
+    }
+
+    VkDeviceSize bytes = static_cast<VkDeviceSize>(w) * h * 4;
+    out.pixels = staging.allocate(bytes);
+    if (out.pixels.data == nullptr) return "out of staging memory";
+
+    // Dynamic mode: range, colour space and chroma siting come from the frames themselves.
+    std::unique_ptr<SwsContext, ScaleFreer> scaler(sws_alloc_context());
+    scaler->flags = SWS_BICUBIC | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT;
+    scaler->threads = 0;
+    std::unique_ptr<AVFrame, FrameFreer> rgba(av_frame_alloc());
+    rgba->format = AV_PIX_FMT_RGBA;
+    rgba->width = static_cast<int>(w);
+    rgba->height = static_cast<int>(h);
+    rgba->color_range = AVCOL_RANGE_JPEG;
+    rgba->colorspace = AVCOL_SPC_RGB;
+    rgba->color_primaries = frame->color_primaries;
+    rgba->color_trc = frame->color_trc;
+    rgba->data[0] = reinterpret_cast<std::uint8_t*>(out.pixels.data);
+    rgba->linesize[0] = static_cast<int>(w * 4);
+    if (int r = sws_scale_frame(scaler.get(), rgba.get(), frame.get()); r < 0) {
+        staging.abandon(out.pixels);
+        out.pixels = {};
+        return "cannot convert: " + av_error(r);
+    }
+    // The frame does not own the staging memory.
+    rgba->data[0] = nullptr;
+
+    out.width = w;
+    out.height = h;
+    out.decode_ms = clock::ms_since(start);
+    return {};
+}
+
+}  // namespace glint::image

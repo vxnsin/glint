@@ -540,7 +540,11 @@ Display::~Display() {
     if (seat_ != nullptr) wl_seat_release(seat_);
     if (feedback_ != nullptr) zwp_linux_dmabuf_feedback_v1_destroy(feedback_);
     if (dmabuf_ != nullptr) zwp_linux_dmabuf_v1_destroy(dmabuf_);
-    if (toplevel_manager_ != nullptr) zwlr_foreign_toplevel_manager_v1_stop(toplevel_manager_);
+    if (toplevel_manager_ != nullptr) {
+        // No dispatch follows, so "finished" never arrives to destroy it.
+        zwlr_foreign_toplevel_manager_v1_stop(toplevel_manager_);
+        wl_proxy_destroy(reinterpret_cast<wl_proxy*>(toplevel_manager_));
+    }
     if (fractional_manager_ != nullptr) wp_fractional_scale_manager_v1_destroy(fractional_manager_);
     if (viewporter_ != nullptr) wp_viewporter_destroy(viewporter_);
     if (layer_shell_ != nullptr) zwlr_layer_shell_v1_destroy(layer_shell_);

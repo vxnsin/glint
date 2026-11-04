@@ -47,13 +47,22 @@ if(GLINT_PLATFORM)
         src/daemon.cpp
         src/core/loop.cpp
         src/core/paths.cpp
+        src/core/worker.cpp
         src/gpu/buffer.cpp
         src/gpu/context.cpp
+        src/gpu/pictures.cpp
+        src/gpu/staging.cpp
         src/gpu/surface.cpp
+        src/gpu/texture.cpp
         src/gpu/volk.cpp
+        src/wallpaper/wallpaper.cpp
+        src/wallpaper/image/decode.cpp
+        src/wallpaper/image/image.cpp
+        src/wallpaper/image/textures.cpp
         src/wayland/display.cpp
     )
     target_link_libraries(glint PRIVATE glint::platform)
+    add_dependencies(glint glint_shaders)
 endif()
 
 install(TARGETS glint RUNTIME DESTINATION bin)

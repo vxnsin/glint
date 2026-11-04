@@ -33,7 +33,7 @@ void usage() {
         glint::version);
 }
 
-int run_daemon() {
+int run_daemon(const char* show) {
     const char* level = std::getenv("GLINT_LOG");
     if (level != nullptr && std::strcmp(level, "debug") == 0) {
         glint::log::set_level(glint::log::Level::debug);
@@ -41,8 +41,10 @@ int run_daemon() {
 #ifdef GLINT_PLATFORM
     glint::log::info("glint {} starting", glint::version);
     glint::Daemon daemon;
+    if (show != nullptr) daemon.show_at_start(show);
     return daemon.run();
 #else
+    (void)show;
     glint::log::error("built without GLINT_PLATFORM, there is no daemon in this binary");
     return 1;
 #endif
@@ -76,7 +78,8 @@ int main(int argc, char** argv) {
             usage();
             return 0;
         }
+        if (std::strcmp(argv[1], "--show") == 0 && argc == 3) return run_daemon(argv[2]);
         return run_client(argv[1]);
     }
-    return run_daemon();
+    return run_daemon(nullptr);
 }

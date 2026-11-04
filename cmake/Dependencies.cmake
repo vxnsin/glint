@@ -70,3 +70,24 @@ target_compile_definitions(glint::platform INTERFACE GLINT_PLATFORM=1 VK_NO_PROT
     VK_USE_PLATFORM_WAYLAND_KHR)
 # Libraries a milestone does not call yet (PipeWire and lz4 in M1) are not loaded.
 target_link_options(glint::platform INTERFACE -Wl,--as-needed)
+
+# Built-in shaders (the picture pass; later the composition passes) are compiled at build time
+# to SPIR-V and embedded as arrays. Wallpaper Engine shaders are compiled at runtime instead.
+if(NOT Vulkan_GLSLANG_VALIDATOR_EXECUTABLE)
+    message(FATAL_ERROR "glslangValidator not found (glslang package)")
+endif()
+set(GLINT_SHADER_DIR ${CMAKE_BINARY_DIR}/generated/shaders)
+file(MAKE_DIRECTORY ${GLINT_SHADER_DIR})
+set(GLINT_SHADER_HEADERS)
+foreach(shader fullscreen.vert picture.frag)
+    string(REPLACE "." "_" symbol ${shader})
+    set(header ${GLINT_SHADER_DIR}/${shader}.h)
+    add_custom_command(
+        OUTPUT ${header}
+        COMMAND ${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE} -V --target-env vulkan1.3 --quiet
+                --vn ${symbol} -o ${header} ${PROJECT_SOURCE_DIR}/src/shaders/${shader}
+        DEPENDS ${PROJECT_SOURCE_DIR}/src/shaders/${shader}
+        COMMENT "glslang ${shader}")
+    list(APPEND GLINT_SHADER_HEADERS ${header})
+endforeach()
+add_custom_target(glint_shaders DEPENDS ${GLINT_SHADER_HEADERS})

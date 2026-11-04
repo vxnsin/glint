@@ -20,6 +20,10 @@ constexpr std::array<std::pair<std::uint32_t, std::string_view>, 4> reason_names
     {pause_idle, "idle"},
 }};
 
+// The staging ring holds one 2560x1440 RGBA picture; larger ones get a buffer of their own
+// for the duration of the upload.
+constexpr VkDeviceSize staging_size = 16u << 20;
+
 }  // namespace
 
 std::string_view pause_reason_name(std::uint32_t bit) {
@@ -47,7 +51,14 @@ std::vector<std::string> pause_reason_names(std::uint32_t reasons) {
 Daemon::Daemon() : display_(*this) {}
 
 Daemon::~Daemon() {
+    // Wallpapers first (they hold textures), then the loaders, then the GPU.
     screens_.clear();
+    workers_.reset();
+    textures_.reset();
+    services_.reset();
+    pictures_.reset();
+    if (gpu_) gpu_->drain();
+    staging_.reset();
     gpu_.reset();
 }
 
@@ -90,6 +101,15 @@ int Daemon::run() {
         log::error("{}", error);
         return 1;
     }
+    staging_ = std::make_unique<gpu::StagingRing>(*gpu_, staging_size);
+    pictures_ = std::make_unique<gpu::Pictures>(*gpu_);
+    workers_ = std::make_unique<Workers>(loop_, 2);
+    textures_ = std::make_unique<image::Textures>(*gpu_, *staging_, *workers_);
+    services_ =
+        std::make_unique<Services>(Services{*gpu_, *pictures_, *staging_, *workers_, *textures_});
+
+    if (!show_at_start_.empty()) all_ = Assignment{show_at_start_, Options{}};
+
     // Outputs configured during connect() arrived before the GPU existed.
     for (const auto& output : display_.outputs()) {
         if (output->configured()) output_added(*output);
@@ -142,6 +162,13 @@ Daemon::Screen* Daemon::screen(wl::Output& output) {
     return nullptr;
 }
 
+Daemon::Screen* Daemon::screen(std::string_view name) {
+    for (auto& entry : screens_) {
+        if (entry->output->name() == name) return entry.get();
+    }
+    return nullptr;
+}
+
 std::uint32_t Daemon::reasons(const Screen& entry) const {
     return entry.paused | paused_all_ | (entry.output->covered() ? pause_covered : 0u);
 }
@@ -162,19 +189,43 @@ void Daemon::render(Screen& entry) {
         entry.resized = false;
     }
 
+    // Crossfade progress; the incoming wallpaper is only drawn once it is ready.
+    bool fading = entry.incoming && entry.incoming->ready() && entry.fade_start_ns != 0;
+    float t = 1.0f;
+    if (fading) {
+        int duration = entry.fade_ms;
+        t = duration <= 0 ? 1.0f
+                          : std::clamp(static_cast<float>(clock::ms_since(entry.fade_start_ns)) /
+                                           static_cast<float>(duration),
+                                       0.0f, 1.0f);
+    }
+
     gpu::FrameUniforms uniforms{};
     uniforms.resolution[0] = static_cast<float>(entry.surface->extent().width);
     uniforms.resolution[1] = static_cast<float>(entry.surface->extent().height);
     uniforms.pointer[0] = static_cast<float>(entry.pointer[0]);
     uniforms.pointer[1] = static_cast<float>(entry.pointer[1]);
 
+    // Cleared to the background of what is on screen, so a fit picture fading in over
+    // nothing fades in from that colour.
+    float clear[4] = {0, 0, 0, 1};
+    const Wallpaper* base =
+        entry.current ? entry.current.get() : (fading ? entry.incoming.get() : nullptr);
+    if (base != nullptr) std::copy_n(base->options().linear, 3, clear);
+
     gpu::Target target{};
-    if (!entry.surface->begin(entry.background, uniforms, target)) {
+    if (!entry.surface->begin(clear, uniforms, target)) {
         // Out of date: recreate with the next draw.
         entry.resized = true;
         return;
     }
-    bool more = false;  // whether another frame is wanted after this one
+    Frame frame{.time = 0, .delta = 0, .index = entry.frames};
+    if (entry.current) entry.current->render(frame, target, 1.0f);
+    if (fading) entry.incoming->render(frame, target, t);
+
+    bool fade_done = fading && t >= 1.0f;
+    bool more = (fading && !fade_done) || (entry.current && entry.current->wants_frames()) ||
+                (fade_done && entry.incoming->wants_frames());
 
     // Only ask for a frame callback when another frame will be wanted; a still picture
     // presents once and then gets no more callbacks, so no more wakeups.
@@ -183,10 +234,131 @@ void Daemon::render(Screen& entry) {
     entry.dirty = more;
 
     entry.present_ns[entry.frames % entry.present_ns.size()] = start;
+    entry.last_present_ns = start;
     ++entry.frames;
     entry.cpu_ms = clock::ms_since(start);
-    log::debug("{}: frame {} in {:.2f} ms CPU", output.name(), entry.frames, entry.cpu_ms);
+
+    // The first frame that shows the new wallpaper completes its set request.
+    if (fading && entry.request) {
+        finish(entry.request, {});
+        entry.request.reset();
+    }
+    if (fade_done) {
+        entry.current = std::move(entry.incoming);
+        entry.fade_start_ns = 0;
+    }
+    log::debug("{}: frame {} in {:.2f} ms CPU{}", output.name(), entry.frames, entry.cpu_ms,
+               fading ? std::format(", fade {:.2f}", t) : "");
 }
+
+// ---- Wallpapers -------------------------------------------------------------------------
+
+const Daemon::Assignment* Daemon::assignment(std::string_view name) const {
+    if (auto it = outputs_.find(std::string(name)); it != outputs_.end()) return &it->second;
+    return all_ ? &*all_ : nullptr;
+}
+
+void Daemon::set(std::string_view output, const std::filesystem::path& path, const Options& options,
+                 SetDone done) {
+    auto request = std::make_shared<Request>();
+    request->done = std::move(done);
+    request->start_ns = clock::now_ns();
+
+    std::vector<Screen*> targets;
+    if (output == "*") {
+        // "*" is every output now and later; it replaces the per-output entries.
+        all_ = Assignment{path, options};
+        outputs_.clear();
+        for (auto& entry : screens_) targets.push_back(entry.get());
+    } else {
+        Screen* entry = screen(output);
+        if (entry == nullptr) {
+            request->done({.error = "no such output"});
+            return;
+        }
+        outputs_[std::string(output)] = Assignment{path, options};
+        targets.push_back(entry);
+    }
+    request->remaining = static_cast<int>(targets.size());
+    if (targets.empty()) {
+        finish(request, {});
+        return;
+    }
+    for (Screen* entry : targets) apply(*entry, *assignment(entry->output->name()), request);
+}
+
+void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<Request> request) {
+    // A load still running for this output gives way.
+    if (entry.request) {
+        finish(entry.request, "superseded");
+        entry.request.reset();
+    }
+    std::string error;
+    auto wallpaper = make_wallpaper(assignment.path, assignment.options, *services_, error);
+    if (!wallpaper) {
+        entry.error = error;
+        if (request) finish(request, error);
+        log::warn("{}: {}: {}", entry.output->name(), assignment.path.string(), error);
+        return;
+    }
+    if (request) request->kind = std::string(kind_name(wallpaper->kind()));
+    // If a crossfade is running, the incoming one is far enough: it becomes the current one.
+    if (entry.incoming && entry.incoming->ready() && entry.fade_start_ns != 0) {
+        entry.current = std::move(entry.incoming);
+        entry.fade_start_ns = 0;
+    }
+    entry.incoming = std::move(wallpaper);
+    entry.request = std::move(request);
+    entry.error.clear();
+    Wallpaper* incoming = entry.incoming.get();
+    wl::Output* output = entry.output;
+    incoming->load([this, output, incoming](std::string load_error) {
+        Screen* target = screen(*output);
+        if (target != nullptr && target->incoming.get() == incoming) {
+            loaded(*target, incoming, load_error);
+        }
+    });
+}
+
+void Daemon::loaded(Screen& entry, Wallpaper* wallpaper, const std::string& error) {
+    if (!error.empty()) {
+        log::warn("{}: {}: {}", entry.output->name(), wallpaper->path().string(), error);
+        entry.error = error;
+        entry.incoming.reset();
+        if (entry.request) finish(entry.request, error);
+        entry.request.reset();
+        return;
+    }
+    // The first wallpaper on an output appears at once; later ones fade if asked to.
+    bool fade = entry.current && wallpaper->options().transition == "fade";
+    entry.fade_ms = fade ? std::max(wallpaper->options().duration_ms, 0) : 0;
+    entry.fade_start_ns = clock::now_ns();
+    entry.dirty = true;
+    // A paused output takes the new wallpaper without drawing; the request is done now.
+    if (reasons(entry) != 0 && entry.request) {
+        finish(entry.request, {});
+        entry.request.reset();
+    }
+}
+
+void Daemon::finish(const std::shared_ptr<Request>& request, const std::string& error) {
+    if (request->finished) return;
+    if (!error.empty()) {
+        request->finished = true;
+        request->error = error;
+        if (request->done) request->done({.error = error, .kind = request->kind});
+        return;
+    }
+    if (--request->remaining > 0) return;
+    request->finished = true;
+    double ms = clock::ms_since(request->start_ns);
+    for (auto& entry : screens_) {
+        if (entry->request == request) entry->load_ms = ms;
+    }
+    if (request->done) request->done({.kind = request->kind, .load_ms = ms});
+}
+
+// ---- Outputs ----------------------------------------------------------------------------
 
 void Daemon::output_added(wl::Output& output) {
     if (!gpu_ || screen(output) != nullptr) return;
@@ -198,11 +370,21 @@ void Daemon::output_added(wl::Output& output) {
     entry->output = &output;
     entry->surface = std::make_unique<gpu::Surface>(*gpu_, display_.handle(), output.surface());
     if (!entry->surface->valid()) return;
+    Screen& added = *entry;
     screens_.push_back(std::move(entry));
+    if (const Assignment* a = assignment(output.name())) {
+        // Nothing is drawn until the picture is ready, so the output does not flash the
+        // background colour first.
+        added.dirty = false;
+        apply(added, *a, nullptr);
+    }
 }
 
 void Daemon::output_removed(wl::Output& output) {
     log::info("{}: surface gone", output.name());
+    if (Screen* entry = screen(output); entry != nullptr && entry->request) {
+        finish(entry->request, "output removed");
+    }
     std::erase_if(screens_, [&](const auto& entry) { return entry->output == &output; });
 }
 
@@ -230,14 +412,26 @@ void Daemon::pause_changed(Screen& entry, std::uint32_t before) {
     std::uint32_t now = reasons(entry);
     if ((before == 0) == (now == 0)) return;
     log::info("{}: {}", entry.output->name(), now != 0 ? "paused" : "running");
+    if (now != 0) {
+        if (entry.current) entry.current->pause();
+        // A set waiting for its first frame will not get one while paused.
+        if (entry.request && entry.incoming && entry.incoming->ready()) {
+            finish(entry.request, {});
+            entry.request.reset();
+        }
+    } else if (entry.current) {
+        entry.current->resume();
+    }
 }
 
 void Daemon::pointer(wl::Output& output, double x, double y, std::uint32_t buttons) {
     if (Screen* entry = screen(output)) {
         entry->pointer[0] = x;
         entry->pointer[1] = y;
+        if (entry->current && entry->current->wants_cursor()) {
+            entry->current->cursor({x, y, buttons});
+        }
     }
-    (void)buttons;
 }
 
 }  // namespace glint
