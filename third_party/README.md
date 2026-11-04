@@ -1,5 +1,11 @@
 # third_party
 
-Nothing yet. Everything glint links comes from distro packages (docs/PLAN.md, Dependencies).
-Only tiny single-file pieces with no package of their own go here, each in its own folder
-with its licence file and the upstream commit noted. Candidate for M4: a small FFT.
+Everything glint links comes from distro packages (docs/PLAN.md, Dependencies), except the
+pieces here: single files with no Arch package, each in its own folder with its licence.
+
+- `vma/vk_mem_alloc.h`: Vulkan Memory Allocator 3.5.0, MIT, from
+  GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator at commit
+  0f1a757da579831283413295cc7f3b47eb521c77. Not in the Arch repositories, only in the AUR.
+  The implementation is compiled once in `src/gpu/vma.cpp`.
+
+Candidate for M4: a small FFT.
