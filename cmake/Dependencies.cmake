@@ -34,6 +34,7 @@ set(GLINT_PROTOCOLS
     ${WAYLAND_PROTOCOLS_DIR}/stable/xdg-shell/xdg-shell.xml
     ${WAYLAND_PROTOCOLS_DIR}/stable/viewporter/viewporter.xml
     ${WAYLAND_PROTOCOLS_DIR}/staging/fractional-scale/fractional-scale-v1.xml
+    ${WAYLAND_PROTOCOLS_DIR}/stable/linux-dmabuf/linux-dmabuf-v1.xml
 )
 
 set(GLINT_PROTOCOL_DIR ${CMAKE_BINARY_DIR}/generated/protocols)

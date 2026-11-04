@@ -42,6 +42,12 @@ endif()
 
 if(GLINT_PLATFORM)
     include(cmake/Dependencies.cmake)
+    target_sources(glint PRIVATE
+        src/daemon.cpp
+        src/core/loop.cpp
+        src/core/paths.cpp
+        src/wayland/display.cpp
+    )
     target_link_libraries(glint PRIVATE glint::platform)
 endif()
 

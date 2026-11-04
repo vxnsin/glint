@@ -1,14 +1,18 @@
 // glint: one binary, two roles. Without a command it is the daemon; with one it is a client
-// that talks to the daemon over the socket (docs/IPC.md). M0 only knows --version and
-// --help; the daemon loop arrives with M1.
+// that talks to the daemon over the socket (docs/IPC.md).
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string_view>
 
 #include "core/log.hpp"
 #include "core/version.hpp"
 #include "ipc/protocol.hpp"
+
+#ifdef GLINT_PLATFORM
+#include "daemon.hpp"
+#endif
 
 namespace {
 
@@ -30,9 +34,18 @@ void usage() {
 }
 
 int run_daemon() {
-    glint::log::info("glint {} starting (M0 scaffold: no Wayland, no Vulkan yet)", glint::version);
-    glint::log::info("nothing to do; the daemon loop comes with M1");
-    return 0;
+    const char* level = std::getenv("GLINT_LOG");
+    if (level != nullptr && std::strcmp(level, "debug") == 0) {
+        glint::log::set_level(glint::log::Level::debug);
+    }
+#ifdef GLINT_PLATFORM
+    glint::log::info("glint {} starting", glint::version);
+    glint::Daemon daemon;
+    return daemon.run();
+#else
+    glint::log::error("built without GLINT_PLATFORM, there is no daemon in this binary");
+    return 1;
+#endif
 }
 
 int run_client(std::string_view op) {
