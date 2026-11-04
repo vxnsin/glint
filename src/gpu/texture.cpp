@@ -60,7 +60,10 @@ std::shared_ptr<Texture> Texture::upload_rgba(Context& context, StagingRing& sta
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
-    VmaAllocationCreateInfo alloc{.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    // Pictures are few and large: each gets its own memory, which goes back to the driver
+    // when the picture is dropped instead of staying in a VMA block.
+    VmaAllocationCreateInfo alloc{.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                  .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
     VmaAllocationInfo result{};
     if (VkResult r = vmaCreateImage(context.allocator(), &image_info, &alloc, &texture->image_,
                                     &texture->allocation_, &result);

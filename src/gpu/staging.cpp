@@ -71,6 +71,13 @@ StagingRing::Span StagingRing::allocate(VkDeviceSize size) {
     return span;
 }
 
+void StagingRing::trim() {
+    std::lock_guard lock(mutex_);
+    if (!ring_) return;
+    reclaim();
+    if (entries_.empty()) ring_.reset();
+}
+
 void StagingRing::flush(const Span& span) {
     if (span.dedicated) {
         span.dedicated->flush(0, VK_WHOLE_SIZE);

@@ -167,9 +167,14 @@ void Daemon::before_poll() {
         }
     }
     display_.track_toplevels(animating);
+
     // Free what the GPU is done with. Whatever is still in flight is waited for now, while
     // the GPU is busy for a millisecond at most, rather than needing a wakeup later.
     if (gpu_->collect()) gpu_->drain();
+    // Staging memory is only needed while pictures load.
+    bool loading = std::ranges::any_of(
+        screens_, [](const auto& e) { return e->incoming && !e->incoming->ready(); });
+    if (!loading) staging_->trim();
 
     if (!display_.prepare()) {
         log::error("Wayland connection lost");

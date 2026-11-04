@@ -220,6 +220,8 @@ std::string Context::init(wl_display* display, std::optional<dev_t> main_device)
     VmaAllocatorCreateInfo allocator_info{
         .physicalDevice = physical_,
         .device = device_,
+        // Small blocks: everything but the pictures (uniforms, the staging ring) is small.
+        .preferredLargeHeapBlockSize = 4u << 20,
         .instance = instance_,
         .vulkanApiVersion = api_version,
     };

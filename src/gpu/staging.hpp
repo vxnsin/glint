@@ -14,7 +14,8 @@ namespace glint::gpu {
 class Context;
 
 // Host-visible memory that decoders write into and uploads copy from. One persistently mapped
-// ring buffer, allocated on first use; a request that does not fit gets a buffer of its own.
+// ring buffer, allocated on first use and freed again when the daemon goes idle; a request
+// that does not fit gets a buffer of its own.
 // allocate() may run on any thread, retire() and the copies on the main thread.
 class StagingRing {
 public:
@@ -36,6 +37,9 @@ public:
     void flush(const Span& span);
     // The span was never copied from (the decode failed); any thread.
     void abandon(Span& span);
+
+    // Frees the ring when nothing in it is in flight; the next allocate() makes it again.
+    void trim();
 
     VkDeviceSize capacity() const { return capacity_; }
 
