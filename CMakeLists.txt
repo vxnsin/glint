@@ -21,6 +21,11 @@ option(GLINT_PLATFORM "Build the daemon with Wayland and Vulkan (Linux only)" OF
 option(GLINT_SANITIZE "Address and undefined behaviour sanitizers" OFF)
 option(GLINT_WERROR "Treat warnings as errors" ON)
 
+if(GLINT_SANITIZE)
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address,undefined)
+endif()
+
 configure_file(src/core/version.hpp.in ${CMAKE_BINARY_DIR}/generated/core/version.hpp @ONLY)
 
 add_executable(glint
@@ -30,16 +35,13 @@ add_executable(glint
 
 target_include_directories(glint PRIVATE src ${CMAKE_BINARY_DIR}/generated)
 
-target_compile_options(glint PRIVATE
+set(GLINT_WARNINGS
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wshadow -Wconversion
         -Wno-missing-field-initializers>
     $<$<AND:$<BOOL:${GLINT_WERROR}>,$<CXX_COMPILER_ID:GNU,Clang>>:-Werror>
 )
+target_compile_options(glint PRIVATE ${GLINT_WARNINGS})
 
-if(GLINT_SANITIZE)
-    target_compile_options(glint PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-    target_link_options(glint PRIVATE -fsanitize=address,undefined)
-endif()
 
 if(GLINT_PLATFORM)
     include(cmake/Dependencies.cmake)
@@ -64,8 +66,28 @@ if(GLINT_PLATFORM)
         src/wallpaper/image/textures.cpp
         src/wayland/display.cpp
     )
-    target_link_libraries(glint PRIVATE glint::platform)
+    target_link_libraries(glint PRIVATE glint::platform glint_scene)
     add_dependencies(glint glint_shaders)
+
+    # The Wallpaper Engine readers, shared by the daemon, we-inspect and the tests.
+    add_library(glint_scene STATIC
+        src/wallpaper/scene/project.cpp
+        src/wallpaper/scene/tex.cpp
+        src/wallpaper/scene/vfs.cpp
+    )
+    target_include_directories(glint_scene PUBLIC src)
+    target_link_libraries(glint_scene PUBLIC nlohmann_json::nlohmann_json PkgConfig::LZ4)
+    target_compile_options(glint_scene PRIVATE ${GLINT_WARNINGS})
+
+    add_executable(we-inspect tools/we-inspect.cpp)
+    target_link_libraries(we-inspect PRIVATE glint_scene)
+    target_compile_options(we-inspect PRIVATE ${GLINT_WARNINGS})
+
+    enable_testing()
+    add_executable(glint-tests tests/readers.cpp)
+    target_link_libraries(glint-tests PRIVATE glint_scene)
+    target_compile_options(glint-tests PRIVATE ${GLINT_WARNINGS})
+    add_test(NAME readers COMMAND glint-tests)
 endif()
 
 install(TARGETS glint RUNTIME DESTINATION bin)

@@ -22,7 +22,8 @@ One per item, at the root. Keys glint uses:
   mp4/webm. Web: the html.
 - `general.properties`: object keyed by property name. Each:
   - `type`: `bool`, `slider`, `combo`, `color`, `text` (a label only), `textinput`, `file`,
-    `directory`, `scenetexture`
+    `directory`, `scenetexture`, `group` (a heading); entries without `type` are labels too,
+    often HTML. The value of `type` is not always lower case (`"Scene"`).
   - `text`: label, often a localisation key `ui_browse_properties_...`; the `localization`
     block maps it per language
   - `value`: default. `color` is `"r g b"` floats 0 to 1. `combo` is one of `options[].value`.
@@ -30,7 +31,9 @@ One per item, at the root. Keys glint uses:
   - `order`: sort key
   - `condition`: a JavaScript-like expression over other properties, e.g.
     `"season.value == 'winter' && snow.value"`. glint evaluates a small subset (comparisons,
-    `&&`, `||`, `!`, parentheses) and reports `visible`.
+    `&&`, `||`, `!`, parentheses) and reports `visible`. Comparisons are loose like
+    JavaScript's `==`: combo values are strings and are compared with numbers
+    (`newproperty6.value == 1` against `"1"`).
 - `general.supportsaudioprocessing`: the scene wants the spectrum.
 - Built-in properties every scene project has: `schemecolor` (the user's accent colour).
 
@@ -39,7 +42,7 @@ Property values feed the scene as `{"user": "name"}` bindings (see scene.json).
 ## 2. scene.pkg (M2)
 
 ```
-u32 len, char[len] magic      "PKGV0001" .. "PKGV0023" seen; version matters little
+u32 len, char[len] magic      "PKGV0001" .. "PKGV0024" seen; version matters little
 u32 count
 count times:
   u32 len, char[len] path     e.g. "scene.json", "materials/x.json", "x.tex"
@@ -65,9 +68,8 @@ i32 imgWidth, imgHeight     real size, crop to this
 u32 unknown/hash
 char[9]  "TEXB0001\0" .. "TEXB0004\0"
 i32 imageCount      usually 1 (more for sprite sheets)
-TEXB0003+: i32 freeImageFormat   (payload type for format 0: PNG, JPEG, ...)
-TEXB0004: more header fields for 2.6 texture variants (per-variant conditions); layout to
-          be confirmed on real files, treat as the first variant for now
+TEXB0003+: i32 freeImageFormat   (payload type for format 0: 13 PNG, 2 JPEG, -1 raw)
+TEXB0004: i32 isVideo     (0 in every file seen; 1 means the payload is an mp4)
 imageCount times:
   i32 mipmapCount
   mipmapCount times:
@@ -82,6 +84,11 @@ if sprite sheet:
   frameCount times: i32 imageId, f32 frametime, f32 x, y, width, unused, unused, height
 ```
 
+- Verified on the 25 textures of the two installed corpus items, all TEXB0004: walking the
+  layout above ends exactly at the end of every file. With an embedded format every mip is
+  a whole PNG of its own (`rawSize` 0). Masks are R8 with LZ4, the 4K background of
+  3426865175 is DXT5 with LZ4 and a stored height padded from 2160 to 2176. `flags` was 2 in
+  every file.
 - LZ4 is a raw block, not a frame; decompress to `rawSize`.
 - DXT1/3/5 upload directly as `VK_FORMAT_BC1_RGBA_UNORM_BLOCK`, `BC2`, `BC3`; mip chain as
   stored. RGBA8 as `R8G8B8A8_UNORM`, RG88 as `R8G8_UNORM`, R8 as `R8_UNORM`. sRGB handling
