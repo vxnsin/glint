@@ -20,12 +20,14 @@ const char* prefix(Level level) {
 
 }  // namespace
 
-void set_level(Level level) { current = level; }
+void set_level(Level level) {
+    current = level;
+}
 
 void write(Level level, std::string_view message) {
     if (level < current) return;
-    std::fprintf(stderr, "glint: %s: %.*s\n", prefix(level),
-                 static_cast<int>(message.size()), message.data());
+    std::fprintf(stderr, "glint: %s: %.*s\n", prefix(level), static_cast<int>(message.size()),
+                 message.data());
 }
 
 }  // namespace glint::log

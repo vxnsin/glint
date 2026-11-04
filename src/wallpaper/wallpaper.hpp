@@ -15,15 +15,15 @@ namespace glint {
 enum class Kind { image, video, scene, web };
 
 struct OutputInfo {
-    std::string name;       // connector name, e.g. "DP-1"
-    std::uint32_t width;    // in pixels, after fractional scale
+    std::string name;     // connector name, e.g. "DP-1"
+    std::uint32_t width;  // in pixels, after fractional scale
     std::uint32_t height;
     double scale;
     double refresh_hz;
 };
 
 struct Cursor {
-    double x;               // in output pixels
+    double x;  // in output pixels
     double y;
     std::uint32_t buttons;  // bit 0 left, bit 1 right, bit 2 middle
 };
@@ -32,8 +32,8 @@ struct Cursor {
 // header stays free of a JSON library; the daemon parses them where it needs to.
 struct Property {
     std::string name;
-    std::string type;   // bool, slider, combo, color, text, textinput, file, directory, scenetexture
-    std::string text;   // label
+    std::string type;  // bool, slider, combo, color, text, textinput, file, directory, scenetexture
+    std::string text;  // label
     std::string value;  // JSON
     std::string def;    // JSON, the project's default
     std::string extra;  // JSON: min/max/step, options[], condition

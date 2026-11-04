@@ -13,7 +13,7 @@ inline constexpr std::string_view socket_env = "GLINT_SOCKET";
 
 // Operations a client may send ("op").
 inline constexpr std::array<std::string_view, 13> ops = {
-    "outputs", "set",    "unset",  "status",   "props",   "pause",     "resume",
+    "outputs", "set",    "unset",    "status",  "props",     "pause",   "resume",
     "audio",   "cursor", "settings", "inspect", "subscribe", "version",
 };
 
