@@ -1,0 +1,208 @@
+# glint IPC
+
+Draft, 2026-11-04. Nothing implements this yet.
+
+## Transport
+
+- Unix stream socket at `$XDG_RUNTIME_DIR/glint/$WAYLAND_DISPLAY.sock` (one daemon per
+  Wayland session). `GLINT_SOCKET` overrides the path.
+- Newline-delimited JSON, UTF-8. One object per line in both directions.
+- Request: `{"id": 7, "op": "set", ...}`. Reply: `{"id": 7, "ok": true, "result": ...}` or
+  `{"id": 7, "ok": false, "error": "no such output"}`. `id` is anything the client picks; it is
+  echoed. Requests without `id` get no reply.
+- Events: `{"event": "state", ...}` to every client that sent `subscribe`. Events carry no
+  `id`.
+- A client may keep the connection open and interleave requests and events; replies may
+  arrive in any order (a `set` of a big scene answers when the scene is ready, a `status` in
+  between answers at once).
+
+The CLI is the same thing in argv form: `glint set DP-1 lake.jpg` sends
+`{"op":"set","output":"DP-1","path":"lake.jpg"}` and prints the result as JSON (`--json`)
+or as text.
+
+## Common fields
+
+- `output`: a connector name as the compositor reports it (`DP-1`, `HDMI-A-1`), or `"*"` for
+  all current and future outputs. Per-output entries win over `*`.
+- `path`: absolute path. A file is a picture or video by content; a directory is a Wallpaper
+  Engine project (contains `project.json`); a Workshop id is accepted when the Workshop
+  folder is known (`workshop` setting or Steam's default path).
+
+## Operations
+
+### outputs
+
+```
+-> {"op": "outputs"}
+<- {"ok": true, "result": [
+     {"name": "DP-1", "make": "...", "model": "...", "width": 3440, "height": 1440,
+      "scale": 1.0, "refresh": 144.0, "x": 0, "y": 0,
+      "wallpaper": {"path": "...", "kind": "scene", "state": "running"}}]}
+```
+
+`state` is `running`, `paused` (with `reason`: `covered`, `locked`, `request`, `idle`),
+`loading`, `error` (with `message`), `none`.
+
+### set / unset
+
+```
+-> {"op": "set", "output": "DP-1", "path": "/.../431960/123456",
+    "options": {"scaling": "fill", "fps": 60, "transition": "fade", "duration": 300}}
+<- {"ok": true, "result": {"kind": "scene", "title": "...", "load_ms": 840}}
+
+-> {"op": "unset", "output": "DP-1"}        // back to the background colour
+```
+
+`options` per kind:
+
+- all: `scaling` (`fill`, `fit`, `center`, `tile`, `stretch`), `color` (`"#rrggbb"`,
+  behind `fit`), `fps` (cap), `transition`, `duration`
+- video: `volume` (0 to 1), `mute`, `loop`, `speed`, `hwdec` (`auto`, `vaapi`, `no`)
+- scene: `volume`, `mute`, `cursor` (`on`, `off`), `parallax` (`on`, `off`), `audio`
+  (`on`, `off`; the capture for reactive scenes), `properties` (initial values, same as
+  `props set`)
+
+The reply comes when the new wallpaper is ready and the old one has been dropped. A second
+`set` for the same output while one is loading cancels the first (the reply of the cancelled
+one is `{"ok": false, "error": "superseded"}`).
+
+### status
+
+```
+-> {"op": "status", "output": "DP-1"}
+<- {"ok": true, "result": {"path": "...", "kind": "scene", "state": "running",
+     "fps": 59.8, "frame_ms": 1.9, "gpu_ms": 1.2, "memory_mb": 210, "paused_reason": null}}
+```
+
+Without `output`: an object keyed by output.
+
+### props list / get / set / reset
+
+The background's own settings. For a scene these are `project.json` `general.properties`
+(types `bool`, `slider`, `combo`, `color`, `text`, `file`, `directory`, `textinput`, `scenetexture`),
+plus the ones every scene has (`volume`, `fps`, `cursor`, `parallax`, `audio`). For a
+video: `volume`, `mute`, `loop`, `speed`. For a picture: `scaling`, `color`.
+
+```
+-> {"op": "props", "output": "DP-1"}
+<- {"ok": true, "result": [
+     {"name": "bloom", "type": "bool", "text": "Bloom", "value": true, "order": 100},
+     {"name": "speed", "type": "slider", "text": "Speed", "value": 1.0,
+      "min": 0, "max": 3, "step": 0.1, "order": 101},
+     {"name": "scheme", "type": "combo", "text": "Color scheme", "value": "warm",
+      "options": [{"label": "Warm", "value": "warm"}, {"label": "Cold", "value": "cold"}]},
+     {"name": "tint", "type": "color", "text": "Tint", "value": "#ff8800"},
+     {"name": "snow", "type": "bool", "text": "Snow", "value": false,
+      "condition": "season.value == 'winter'", "visible": false}]}
+
+-> {"op": "props", "output": "DP-1", "set": {"bloom": false, "speed": 1.5}}
+<- {"ok": true, "result": {"changed": ["bloom", "speed"], "recompiled": ["bloom"]}}
+
+-> {"op": "props", "output": "DP-1", "reset": true}      // back to the project's defaults
+```
+
+Rules:
+
+- Values are typed as in the listing. `color` is `#rrggbb` in both directions (Wallpaper
+  Engine stores `"r g b"` floats; glint converts).
+- `condition` is the project's expression; `visible` is glint's evaluation of it, so a shell
+  can hide the entry without parsing the expression.
+- Set values are persisted per project path and restored on every later `set` of that path,
+  on any output, until `reset`.
+- A change that flips a shader combo recompiles from the cache; the old pipeline draws until
+  the new one is ready.
+- The `props` event (below) fires for every change, including the ones a script makes.
+
+### pause / resume
+
+```
+-> {"op": "pause", "output": "*", "reason": "locked"}
+-> {"op": "resume", "output": "*", "reason": "locked"}
+```
+
+Reasons stack: an output paused for `locked` and `covered` resumes only when both are
+lifted. glint sets `covered` and `idle` itself; shells use `locked` and `request`.
+
+### audio
+
+```
+-> {"op": "audio", "output": "DP-1", "volume": 0.3, "mute": false}
+-> {"op": "audio", "capture": false}        // global: never open a capture stream
+```
+
+### cursor
+
+```
+-> {"op": "cursor", "output": "DP-1", "x": 1200.5, "y": 300.0, "buttons": 1}
+```
+
+Only needed on compositors where glint cannot see the pointer itself (it reads Hyprland's
+socket and `wl_pointer` on its own). The shell can also send `{"op": "cursor", "source":
+"client"}` to take over.
+
+### settings
+
+Daemon-wide values, persisted:
+
+```
+-> {"op": "settings", "set": {"workshop": "/path/to/431960", "assets": "/path/to/assets",
+    "fps": 60, "idle_after": 300, "battery_fps": 30}}
+-> {"op": "settings"}                        // read them all
+```
+
+### inspect
+
+Reads a project without loading it, for library UIs:
+
+```
+-> {"op": "inspect", "path": "/.../431960/123456"}
+<- {"ok": true, "result": {"kind": "scene", "title": "...", "preview": "/.../preview.gif",
+     "tags": ["Landscape"], "rating": "everyone", "properties": [...], "supported": true,
+     "needs": ["audio", "cursor"], "unsupported": ["models"]}}
+```
+
+`supported` and `unsupported` let a shell grey out what glint cannot show yet.
+
+### subscribe
+
+```
+-> {"op": "subscribe", "events": ["state", "props", "outputs"]}
+```
+
+Events:
+
+- `{"event": "state", "output": "DP-1", "state": "paused", "reason": "covered"}`
+- `{"event": "props", "output": "DP-1", "changed": {"bloom": false}}`
+- `{"event": "outputs", "added": ["DP-2"], "removed": []}`
+- `{"event": "error", "output": "DP-1", "message": "..."}`
+
+### version
+
+`{"op": "version"}` -> `{"version": "0.1.0", "protocol": 1, "vulkan": "1.3", "device": "..."}`
+
+## How facet moves onto it
+
+Today: `Wallpapers.qml` runs `frame-wallpaper` (bash) as a process per command, parses its
+JSON output, and `frame-wallpaper` starts linux-wallpaperengine or mpvpaper per screen and
+polls `hyprctl layers` to know when a new one has drawn.
+
+With glint:
+
+- `Wallpapers.qml` opens the socket with Quickshell's `Socket` (`Quickshell.Io`), sends
+  `subscribe`, and keeps `outputs`, `status` and `props` as properties bound from events.
+  No process spawning, no queue, no polling. `apply(path, screen)` becomes one `set`.
+- The wallpaper app's settings panel lists `props` for the screen's wallpaper and sends
+  `props set` on every change; sliders feel live because a uniform update is a frame away.
+- Lockscreen: `pause` with `locked` on lock, `resume` on unlock. Game mode: nothing,
+  glint sees the fullscreen toplevel itself.
+- `frame-wallpaper` shrinks to the library: scanning the folders and the Workshop,
+  previews with ffmpeg, the `list` command. Its `set`, `apply`, `pause`, `resume`, `stop`
+  become `glint` calls, and `apply` at login is `exec-once = glint` (glint restores its own
+  state). The `backend` setting goes away; `image`-only users get the same daemon with
+  nothing but pictures loaded.
+- The launcher's `wall` mode and the `facet wallpaper` CLI call `glint` directly.
+- `Backdrop.qml` (the shell drawing pictures itself) is no longer needed, but can stay as the
+  fallback when glint is not installed.
+
+Other shells (Quickshell-, AGS-, Eww-based, plain scripts) use the same socket; nothing in
+the protocol knows about facet.

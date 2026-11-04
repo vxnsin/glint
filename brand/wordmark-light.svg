@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 320" width="490" height="160">
+<title>glint</title>
+<!-- Same as wordmark-dark.svg, for light backgrounds. -->
+<defs>
+<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+<stop offset="0" stop-color="#93a4f7" stop-opacity="0.5"/>
+<stop offset="1" stop-color="#93a4f7" stop-opacity="0"/>
+</radialGradient>
+</defs>
+<g transform="translate(20 20) scale(0.55)">
+<path d="M256 70L420 256L256 256Z" fill="#93a4f7"/>
+<path d="M420 256L256 442L256 256Z" fill="#3f4bb8"/>
+<path d="M256 442L92 256L256 256Z" fill="#5d6fe8"/>
+<path d="M92 256L256 70L256 256Z" fill="#e1e4ff"/>
+<path d="M256 70L420 256L256 442L92 256Z" fill="none" stroke="#0b0c1f" stroke-opacity="0.18" stroke-width="10" stroke-linejoin="round"/>
+<circle cx="338" cy="163" r="92" fill="url(#glow)"/>
+<path d="M338 85Q338 163 416 163Q338 163 338 241Q338 163 260 163Q338 163 338 85Z" fill="#fff"/>
+</g>
+<g fill="none" stroke="#0b0c1f" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="395" cy="170" r="55"/>
+<path d="M450 115V245Q450 300 395 300Q360 300 345 280"/>
+<path d="M530 60V225"/>
+<path d="M600 115V225"/>
+<path d="M670 115V225M670 170Q670 115 725 115Q780 115 780 170V225"/>
+<path d="M850 70V195Q850 225 880 225H900M820 115H890"/>
+</g>
+<path d="M600 22Q600 60 638 60Q600 60 600 98Q600 60 562 60Q600 60 600 22Z" fill="#5d6fe8"/>
+</svg>
