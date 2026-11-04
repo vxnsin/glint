@@ -372,9 +372,15 @@ per-image buffer uploads and one full-resolution ping-pong pass per effect pass;
 not, so this should hold by a wide margin. GPU time comes from Vulkan timestamp queries,
 CPU time from the frame loop, both shown in `glint status`.
 
-## Still open
+## Decided
 
-Whether MIT holds or GPL-3 would be worth it for borrowing from linux-wallpaperengine.
-WPE or CEF for web, or no web at all for now. Whether SceneScript has to be in the first
-release. Which Workshop items make up the test corpus. When an NVIDIA machine is around.
-Whether the daemon or the shell owns the library. Each of these is an issue on GitHub.
+MIT, nothing borrowed from the GPL engines. WPE WebKit before CEF, in M6. SceneScript in
+M5, not earlier. The shell and glint-app own the library, the daemon only renders and
+inspects. Only AMD hardware for now, so M6 stays last.
+
+The test corpus for M2, all rated Everyone: Roxy on a sunset street (3780525249, anime,
+layers and effects, properties), Frieren - Pagoda of flowers (3426865175, 4K, audio
+responsive, mouse parallax, puppet warp, the heavy one), Astronaut (1705122927, the
+classic audio-reactive scene), Forest River (1139304621, sound objects and particles),
+Aurora Lake (1275921440, landscape effects). Three-Body problem (3509243656, 3D, scripts,
+HDR) is the stretch goal for M5.
