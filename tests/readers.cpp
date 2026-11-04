@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "wallpaper/scene/project.hpp"
+#include "wallpaper/scene/scene.hpp"
 #include "wallpaper/scene/tex.hpp"
 #include "wallpaper/scene/vfs.hpp"
 
@@ -196,6 +197,27 @@ void test_tex() {
     CHECK(!parse_tex(tex, truncated).empty());
 }
 
+void test_bound() {
+    Values values = {{"bloom", false}, {"clock", "2"}, {"speed", 1.5}};
+    Bound plain = parse_bound(nlohmann::json(true));
+    CHECK(plain.resolve_bool(values, false));
+    Bound user = parse_bound(nlohmann::json::parse(R"({"user": "bloom", "value": true})"));
+    CHECK(!user.resolve_bool(values, true));
+    Bound combo = parse_bound(
+        nlohmann::json::parse(R"({"user": {"name": "clock", "condition": "2"}, "value": false})"));
+    CHECK(combo.resolve_bool(values, false));
+    Bound other = parse_bound(
+        nlohmann::json::parse(R"({"user": {"name": "clock", "condition": "1"}, "value": true})"));
+    CHECK(!other.resolve_bool(values, true));
+    Bound slider = parse_bound(nlohmann::json::parse(R"({"user": "speed", "value": 1})"));
+    CHECK(slider.resolve_float(values, 0) == 1.5f);
+    Bound missing = parse_bound(nlohmann::json::parse(R"({"user": "nope", "value": 0.25})"));
+    CHECK(missing.resolve_float(values, 0) == 0.25f);
+    CHECK((parse_vec3(nlohmann::json("1 2 3"), {0, 0, 0}) == Vec3{1, 2, 3}));
+    CHECK((parse_vec3(nlohmann::json(2.0), {0, 0, 0}) == Vec3{2, 2, 2}));
+    CHECK((parse_vec2(nlohmann::json("4"), {0, 0}) == Vec2{4, 4}));
+}
+
 void test_corpus() {
     std::filesystem::path workshop;
     if (const char* env = std::getenv("GLINT_WORKSHOP")) {
@@ -224,6 +246,15 @@ void test_corpus() {
             std::string error;
             evaluate_condition(p.condition, values, &error);
             CHECK(error.empty());
+        }
+        SceneDesc scene;
+        CHECK(load_scene(vfs, project.file, scene).empty());
+        CHECK(!scene.images.empty());
+        for (const auto& w : scene.warnings) std::fprintf(stderr, "%s: %s\n", id, w.c_str());
+        CHECK(scene.warnings.empty());
+        for (const auto& image : scene.images) {
+            CHECK(!image.material.passes.empty());
+            for (const auto& effect : image.effects) CHECK(!effect.passes.empty());
         }
         if (vfs.package() == nullptr) continue;
         int textures = 0;
@@ -256,6 +287,7 @@ int main() {
     test_project();
     test_package();
     test_tex();
+    test_bound();
     test_corpus();
     std::printf("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

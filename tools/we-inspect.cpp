@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "wallpaper/scene/project.hpp"
+#include "wallpaper/scene/scene.hpp"
 #include "wallpaper/scene/tex.hpp"
 #include "wallpaper/scene/vfs.hpp"
 
@@ -90,9 +91,47 @@ int dump_item(const std::filesystem::path& folder) {
                     error.empty() ? "" : "  (unreadable)");
     }
     if (vfs.package() != nullptr) dump_package(*vfs.package());
-    if (vfs.exists(project.file)) {
-        std::printf("%s from %s\n", project.file.c_str(), source_name(vfs.locate(project.file)));
+    if (project.type != "scene") return 0;
+
+    SceneDesc scene;
+    if (std::string error = load_scene(vfs, project.file, scene); !error.empty()) {
+        std::fprintf(stderr, "%s: %s\n", project.file.c_str(), error.c_str());
+        return 1;
     }
+    std::printf("scene: canvas %.0fx%.0f, clear %s, parallax %s\n", scene.general.ortho[0],
+                scene.general.ortho[1], scene.general.clear_color.resolve(values).dump().c_str(),
+                scene.general.camera_parallax ? "on" : "off");
+    for (const auto& image : scene.images) {
+        Vec3 origin = parse_vec3(image.origin.resolve(values), {0, 0, 0});
+        Vec2 size = parse_vec2(image.size.resolve(values), image.model_size);
+        std::printf("  image %d %s: at %.0f,%.0f size %.0fx%.0f%s%s%s%s\n", image.id,
+                    image.name.c_str(), origin[0], origin[1], size[0], size[1],
+                    image.visible.resolve_bool(values, true) ? "" : " hidden",
+                    image.parent >= 0 ? (" parent " + std::to_string(image.parent)).c_str() : "",
+                    image.puppet ? " puppet" : "", image.fullscreen ? " fullscreen" : "");
+        for (const auto& pass : image.material.passes) {
+            std::string textures;
+            for (const auto& t : pass.textures) textures += (t ? *t : "(input)") + " ";
+            std::printf("      material %s, %s, textures %s\n", pass.shader.c_str(),
+                        pass.blending.c_str(), textures.c_str());
+        }
+        for (const auto& effect : image.effects) {
+            std::printf("      effect %s%s: %zu passes, %zu fbos\n", effect.file.c_str(),
+                        effect.visible.resolve_bool(values, true) ? "" : " (hidden)",
+                        effect.passes.size(), effect.fbos.size());
+            for (const auto& pass : effect.passes) {
+                for (const auto& mp : pass.material.passes) {
+                    std::printf("        %s%s%s\n", mp.shader.c_str(),
+                                pass.target.empty() ? "" : (" -> " + pass.target).c_str(),
+                                pass.command.empty() ? "" : (" " + pass.command).c_str());
+                }
+            }
+        }
+    }
+    for (const auto& [kind, count] : scene.skipped) {
+        std::printf("  not drawn yet: %d %s\n", count, kind.c_str());
+    }
+    for (const auto& warning : scene.warnings) std::printf("  warning: %s\n", warning.c_str());
     return 0;
 }
 

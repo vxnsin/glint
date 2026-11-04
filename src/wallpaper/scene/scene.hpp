@@ -1,0 +1,148 @@
+#pragma once
+
+#include <array>
+#include <map>
+#include <nlohmann/json.hpp>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "wallpaper/scene/project.hpp"
+
+// The parsed description of a scene: scene.json with its image objects, and for each the
+// model, material and effect files it points to (docs/FORMATS.md, 4 to 7). Nothing here
+// touches the GPU. Parsing is lenient: a field that does not read degrades to its default
+// and lands in warnings, it does not fail the scene (#20).
+namespace glint::scene {
+
+class Vfs;
+
+using Vec2 = std::array<float, 2>;
+using Vec3 = std::array<float, 3>;
+using Vec4 = std::array<float, 4>;
+
+// "1 2 3" or a number; missing components stay as in fallback.
+Vec3 parse_vec3(const nlohmann::json& json, Vec3 fallback);
+Vec2 parse_vec2(const nlohmann::json& json, Vec2 fallback);
+
+// A field that may be bound to a project property:
+// plain value, {"value": v, "user": "name"} or {"value": v, "user": {"name", "condition"}}.
+struct Bound {
+    nlohmann::json value;
+    std::string user;       // property name, empty if not bound
+    std::string condition;  // with a condition: true when the property equals it
+    bool script = false;    // a SceneScript value (M5); the static value is used
+
+    // The value with the current property values applied.
+    nlohmann::json resolve(const Values& values) const;
+    bool resolve_bool(const Values& values, bool fallback) const;
+    float resolve_float(const Values& values, float fallback) const;
+};
+Bound parse_bound(const nlohmann::json& json);
+
+struct MaterialPass {
+    std::string shader;    // "genericimage2", "effects/iris"
+    std::string blending;  // "translucent", "normal", "additive", ...
+    std::string cullmode;
+    bool depth_test = false;
+    bool depth_write = false;
+    std::vector<std::optional<std::string>> textures;  // g_TextureN; null = the input
+    std::map<std::string, int> combos;
+    std::map<std::string, nlohmann::json> constants;    // constantshadervalues
+    std::map<std::string, std::string> user_constants;  // usershadervalues: uniform -> prop
+};
+
+struct Material {
+    std::string path;
+    std::vector<MaterialPass> passes;
+};
+
+struct EffectBind {
+    std::string name;  // "previous" or an fbo name
+    int index = 0;     // g_TextureN slot
+};
+
+struct EffectPass {
+    std::string material_path;
+    Material material;
+    std::string target;  // fbo name, empty = the next ping-pong target
+    std::vector<EffectBind> binds;
+    std::string command;  // "", "copy" or "swap"
+    std::string source;   // for commands
+};
+
+struct EffectFbo {
+    std::string name;
+    float scale = 1;  // the fbo is the layer size divided by this
+    std::string format;
+};
+
+// One effect on one image object: the effect file plus the object's overrides per pass.
+struct Effect {
+    std::string file;
+    int id = 0;
+    std::string name;
+    Bound visible;
+    std::vector<EffectPass> passes;
+    std::vector<EffectFbo> fbos;
+    struct Override {
+        std::map<std::string, int> combos;
+        std::map<std::string, Bound> constants;
+        std::vector<std::optional<std::string>> textures;
+    };
+    std::vector<Override> overrides;  // by pass index
+};
+
+struct ImageObject {
+    int id = 0;
+    std::string name;
+    int parent = -1;
+    Bound origin, scale, angles, size;
+    Bound visible, alpha, color, brightness;
+    int color_blend_mode = 0;
+    Vec2 parallax_depth{1, 1};
+    bool copy_background = false;
+    bool perspective = false;
+
+    // From the model json.
+    std::string model_path;
+    bool autosize = false;
+    bool fullscreen = false;
+    bool passthrough = false;
+    bool puppet = false;  // M5: drawn as a flat quad until then
+    Vec2 model_size{0, 0};
+
+    Material material;
+    std::vector<Effect> effects;
+};
+
+struct SceneGeneral {
+    Vec2 ortho{1920, 1080};  // orthogonalprojection, the canvas
+    Bound clear_color;
+    bool clear_enabled = true;
+    bool camera_parallax = false;
+    float parallax_amount = 0.5f;
+    float parallax_delay = 0.1f;
+    float parallax_mouse_influence = 0.5f;
+    Bound bloom;               // the scene-wide bloom pass, M5
+    bool perspective = false;  // no orthogonalprojection: a 3D scene
+};
+
+struct SceneDesc {
+    SceneGeneral general;
+    std::vector<ImageObject> images;  // in drawing order
+    // Objects of kinds a later milestone draws: particle, text, sound, light, model.
+    std::map<std::string, int> skipped;
+    std::vector<std::string> warnings;
+};
+
+// Reads scene.json and everything its image objects reference.
+// Returns an error message only when there is no usable scene at all.
+std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out);
+
+// Material and effect JSON on their own, for tests and we-inspect.
+bool parse_material(const Vfs& vfs, std::string_view path, Material& out,
+                    std::vector<std::string>& warnings);
+
+}  // namespace glint::scene
