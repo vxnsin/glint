@@ -154,6 +154,12 @@ public:
     const std::vector<std::unique_ptr<Output>>& outputs() const { return outputs_; }
     Output* find(std::string_view name) const;
 
+    // Follow toplevels to see fullscreen windows per output. Off by default: the compositor
+    // sends an event for every title change of every window, which would wake glint for
+    // nothing while it shows still pictures (covered stills get no frame callbacks anyway).
+    void track_toplevels(bool on);
+    bool tracking_toplevels() const { return toplevel_manager_ != nullptr; }
+
     // The DRM device the compositor renders with, from linux-dmabuf feedback.
     std::optional<dev_t> main_device() const { return main_device_; }
 
@@ -187,6 +193,8 @@ private:
     wp_viewporter* viewporter_ = nullptr;
     wp_fractional_scale_manager_v1* fractional_manager_ = nullptr;
     zwlr_foreign_toplevel_manager_v1* toplevel_manager_ = nullptr;
+    std::uint32_t toplevel_global_ = 0;
+    std::uint32_t toplevel_offered_ = 0;
     zwp_linux_dmabuf_v1* dmabuf_ = nullptr;
     zwp_linux_dmabuf_feedback_v1* feedback_ = nullptr;
     wl_seat* seat_ = nullptr;

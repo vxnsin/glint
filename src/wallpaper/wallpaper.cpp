@@ -1,5 +1,7 @@
 #include "wallpaper/wallpaper.hpp"
 
+#include <unistd.h>
+
 #include <cmath>
 #include <system_error>
 
@@ -66,20 +68,23 @@ bool parse_color(std::string_view text, float linear[3]) {
     return true;
 }
 
-std::unique_ptr<Wallpaper> make_wallpaper(const std::filesystem::path& path, const Options& options,
-                                          Services& services, std::string& error) {
+std::string check_path(const std::filesystem::path& path) {
     std::error_code ec;
     auto status = std::filesystem::status(path, ec);
-    if (ec || !std::filesystem::exists(status)) {
-        error = "no such file";
-        return nullptr;
-    }
+    if (ec || !std::filesystem::exists(status)) return "no such file";
     if (std::filesystem::is_directory(status)) {
-        error = std::filesystem::exists(path / "project.json", ec)
-                    ? "Wallpaper Engine projects come with milestone M2"
-                    : "not a picture or a Wallpaper Engine project";
-        return nullptr;
+        return std::filesystem::exists(path / "project.json", ec)
+                   ? "Wallpaper Engine projects come with milestone M2"
+                   : "not a picture or a Wallpaper Engine project";
     }
+    if (::access(path.c_str(), R_OK) != 0) return "not readable";
+    return {};
+}
+
+std::unique_ptr<Wallpaper> make_wallpaper(const std::filesystem::path& path, const Options& options,
+                                          Services& services, std::string& error) {
+    error = check_path(path);
+    if (!error.empty()) return nullptr;
     // Videos (M4) are recognised by the decoder later; for now every file is a picture.
     return std::make_unique<image::Image>(path, options, services);
 }

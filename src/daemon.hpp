@@ -13,11 +13,13 @@
 
 #include "core/fd.hpp"
 #include "core/loop.hpp"
+#include "core/state.hpp"
 #include "core/worker.hpp"
 #include "gpu/context.hpp"
 #include "gpu/pictures.hpp"
 #include "gpu/staging.hpp"
 #include "gpu/surface.hpp"
+#include "ipc/server.hpp"
 #include "wallpaper/image/textures.hpp"
 #include "wallpaper/wallpaper.hpp"
 #include "wayland/display.hpp"
@@ -41,9 +43,6 @@ public:
     Daemon();
     ~Daemon() override;
 
-    // Picture shown on every output at start, until the state file exists (M1 development).
-    void show_at_start(std::filesystem::path path) { show_at_start_ = std::move(path); }
-
     int run();
 
     struct SetResult {
@@ -66,10 +65,7 @@ public:
     void pointer(wl::Output& output, double x, double y, std::uint32_t buttons) override;
 
 private:
-    struct Assignment {
-        std::filesystem::path path;
-        Options options;
-    };
+    using Assignment = state::Entry;
 
     // A set request that spans one or more outputs.
     struct Request {
@@ -79,6 +75,10 @@ private:
         std::string kind;
         std::string error;
         bool finished = false;
+        // The assignments before this set, put back if it fails and nothing changed since.
+        std::optional<Assignment> previous_all;
+        std::map<std::string, Assignment> previous_outputs;
+        std::uint64_t generation = 0;
     };
 
     // One per output with a configured layer surface.
@@ -104,6 +104,7 @@ private:
         double cpu_ms = 0;
         double load_ms = 0;
         double pointer[2] = {0, 0};
+        std::string last_state;  // what the last "state" event said
     };
 
     bool setup_signals();
@@ -121,6 +122,16 @@ private:
     void loaded(Screen& screen, Wallpaper* wallpaper, const std::string& error);
     void finish(const std::shared_ptr<Request>& request, const std::string& error);
 
+    // IPC (docs/IPC.md), the M1 subset.
+    void handle(const nlohmann::json& request, ipc::Server::Reply reply);
+    std::string unset(std::string_view output);
+    std::string pause(std::string_view output, std::uint32_t reason, bool on);
+    std::string state_of(const Screen& screen) const;
+    void emit_states();
+    nlohmann::json output_json(const Screen& screen) const;
+    nlohmann::json status_json(Screen& screen);
+    void save_state() const;
+
     Loop loop_;
     wl::Display display_;
     std::unique_ptr<gpu::Context> gpu_;
@@ -133,8 +144,10 @@ private:
 
     std::optional<Assignment> all_;              // "*"
     std::map<std::string, Assignment> outputs_;  // by connector name; wins over "*"
+    std::uint64_t generation_ = 0;               // bumped on every change of the assignments
     std::uint32_t paused_all_ = 0;  // reasons set for "*", on every output including new ones
-    std::filesystem::path show_at_start_;
+    std::unique_ptr<ipc::Server> server_;
+    bool force_toplevels_ = false;  // GLINT_TRACK_TOPLEVELS=1
 
     UniqueFd signal_fd_;
     int wayland_id_ = 0;

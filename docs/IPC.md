@@ -1,6 +1,8 @@
 # glint IPC
 
-Draft, 2026-11-04. Nothing implements this yet.
+Version 1. Milestone M1 implements `outputs`, `set`, `unset`, `status`, `pause`, `resume`,
+`subscribe` and `version` for still pictures. The other operations answer with an error that
+names the milestone that brings them; their description below is the plan.
 
 ## Transport
 
@@ -23,7 +25,8 @@ or as text.
 ## Common fields
 
 - `output`: a connector name as the compositor reports it (`DP-1`, `HDMI-A-1`), or `"*"` for
-  all current and future outputs. Per-output entries win over `*`.
+  all current and future outputs. Per-output entries win over `*`. Setting `*` replaces the
+  per-output entries, so every output shows it; a later per-output `set` wins again.
 - `path`: absolute path. A file is a picture or video by content; a directory is a Wallpaper
   Engine project (contains `project.json`); a Workshop id is accepted when the Workshop
   folder is known (`workshop` setting or Steam's default path).
@@ -40,8 +43,9 @@ or as text.
       "wallpaper": {"path": "...", "kind": "scene", "state": "running"}}]}
 ```
 
-`state` is `running`, `paused` (with `reason`: `covered`, `locked`, `request`, `idle`),
-`loading`, `error` (with `message`), `none`.
+`width` and `height` are buffer pixels after fractional scale; `description` is the
+compositor's text for the output. `state` is `running`, `paused` (with `reason`: `covered`,
+`locked`, `request`, `idle`), `loading`, `error` (with `message`), `none`.
 
 ### set / unset
 
@@ -62,19 +66,41 @@ or as text.
   (`on`, `off`; the capture for reactive scenes), `properties` (initial values, same as
   `props set`)
 
-The reply comes when the new wallpaper is ready and the old one has been dropped. A second
-`set` for the same output while one is loading cancels the first (the reply of the cancelled
-one is `{"ok": false, "error": "superseded"}`).
+The reply comes when every addressed output has presented its first frame with the new
+wallpaper (an output that is paused counts once the new wallpaper is loaded); `load_ms` is
+the time from the request to that point. The crossfade, if any, runs on after the reply. The
+old wallpaper keeps drawing until the new one is ready, and the first wallpaper on an output
+appears without a fade. A second `set` for the same output while one is loading cancels the
+first (the reply of the cancelled one is `{"ok": false, "error": "superseded"}`).
+
+A path that does not exist or cannot be read is refused before anything changes. A picture
+that fails to decode answers with the decoder's error, the output keeps what it showed, and
+the assignment goes back to what it was. Successful `set` and `unset` are written to
+`$XDG_STATE_HOME/glint/state.json` and restored when the daemon starts.
+
+In M1 every file is decoded as a still picture with FFmpeg (JPEG, PNG, WebP, and the first
+frame of anything else FFmpeg reads). Options in M1: `scaling`, `color`, `transition` (`fade`
+or `none`), `duration` (milliseconds, default 300); `fps` is accepted and ignored.
+
+`unset` on an output with its own entry falls back to `*` if there is one, else to the
+background colour (black).
 
 ### status
 
 ```
 -> {"op": "status", "output": "DP-1"}
-<- {"ok": true, "result": {"path": "...", "kind": "scene", "state": "running",
-     "fps": 59.8, "frame_ms": 1.9, "gpu_ms": 1.2, "memory_mb": 210, "paused_reason": null}}
+<- {"ok": true, "result": {"path": "...", "kind": "image", "state": "running",
+     "fps": 0, "frames": 3, "frame_ms": 0.4, "gpu_ms": 0.1, "load_ms": 18.5,
+     "memory_mb": 20.3, "paused_reason": null, "paused_reasons": [],
+     "width": 2560, "height": 1440, "swapchain_images": 3,
+     "options": {"scaling": "fill", "color": "#000000", "transition": "fade", "duration": 300},
+     "picture": {"width": 2560, "height": 1440}, "wakeups": 82}}
 ```
 
-Without `output`: an object keyed by output.
+`fps` counts the frames presented in the last second, so a still picture reads 0. `frame_ms`
+is the CPU time of the last frame, `gpu_ms` its GPU time from timestamp queries, `load_ms`
+the time of the last `set` on this output. `wakeups` counts the daemon's returns from
+`poll` since it started. Without `output` (or with `*`): an object keyed by output.
 
 ### props list / get / set / reset
 
@@ -120,8 +146,16 @@ Rules:
 -> {"op": "resume", "output": "*", "reason": "locked"}
 ```
 
-Reasons stack: an output paused for `locked` and `covered` resumes only when both are
-lifted. glint sets `covered` and `idle` itself; shells use `locked` and `request`.
+`output` defaults to `*`, `reason` to `request`. Reasons stack: an output paused for
+`locked` and `covered` resumes only when both are lifted. Reasons given for `*` also apply to
+outputs that appear later; `resume` for `*` lifts the reason on every output. glint sets
+`covered` and `idle` itself and refuses them from clients; shells use `locked` and `request`.
+
+`covered` comes from foreign-toplevel: a fullscreen window on the output. glint follows
+toplevels only while an output shows something that wants frames (videos and scenes, from
+M2 on), because the protocol reports every title change of every window and would wake the
+daemon for nothing while it shows still pictures. A covered still picture costs nothing
+anyway: it presents no frames. `GLINT_TRACK_TOPLEVELS=1` turns the tracking on always.
 
 ### audio
 
@@ -169,9 +203,12 @@ Reads a project without loading it, for library UIs:
 -> {"op": "subscribe", "events": ["state", "props", "outputs"]}
 ```
 
+Without `events`: all of them. The reply lists what the client is subscribed to.
+
 Events:
 
-- `{"event": "state", "output": "DP-1", "state": "paused", "reason": "covered"}`
+- `{"event": "state", "output": "DP-1", "state": "paused", "reason": "covered"}`, sent when
+  the state of an output changes; `reasons` lists all of them when there is more than one
 - `{"event": "props", "output": "DP-1", "changed": {"bloom": false}}`
 - `{"event": "outputs", "added": ["DP-2"], "removed": []}`
 - `{"event": "error", "output": "DP-1", "message": "..."}`
@@ -179,6 +216,12 @@ Events:
 ### version
 
 `{"op": "version"}` -> `{"version": "0.1.0", "protocol": 1, "vulkan": "1.3", "device": "..."}`
+
+## Running the daemon
+
+`glint` without a command is the daemon. A second one on the same Wayland display refuses to
+start. `GLINT_LOG=debug` logs every frame; `GLINT_VALIDATION=1` loads the Vulkan validation
+layer if it is installed.
 
 ## How facet moves onto it
 

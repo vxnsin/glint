@@ -10,8 +10,9 @@
   Built for <a href="https://github.com/facet-shell">facet</a>, usable from any shell.
 </p>
 
-**Status: planning.** The plan is written, the scaffold compiles a hello world, nothing
-draws yet. Open work is tracked in the [issues](https://github.com/vxnsin/glint/issues).
+**Status: milestone M1.** The daemon puts still pictures on every output with Vulkan and
+is driven over the socket; Wallpaper Engine scenes (M2) and videos (M4) are next. Open work
+is tracked in the [issues](https://github.com/vxnsin/glint/issues).
 
 ## What it does
 
@@ -60,11 +61,22 @@ cmake --build --preset release
 ```
 glint                                   # the daemon; Hyprland: exec-once = glint
 glint set DP-1 ~/Pictures/lake.jpg
+glint set '*' ~/Pictures/lake.jpg scaling=fit color=#203040
+glint status                            # per output: state, frames, CPU and GPU time
+glint pause '*' locked                  # from a lockscreen; resume with the same reason
+glint subscribe                         # events as JSON lines
+```
+
+From M2 on, Workshop items and their settings:
+
+```
 glint set '*' ~/.local/share/Steam/steamapps/workshop/content/431960/123456
 glint props DP-1                        # the scene's own settings
 glint props DP-1 bloom off
-glint pause '*' locked                  # from a lockscreen; resume with the same reason
 ```
+
+The daemon remembers what was on which output in `$XDG_STATE_HOME/glint/state.json` and puts
+it back on the next start.
 
 The socket protocol is in [docs/IPC.md](docs/IPC.md). It is plain JSON lines, so a shell
 can use it directly; Quickshell's `Socket` type does, and `socat` works for scripts.

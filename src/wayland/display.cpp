@@ -301,10 +301,9 @@ struct DisplayListeners {
             self->fractional_manager_ = bind<wp_fractional_scale_manager_v1>(
                 registry, name, &wp_fractional_scale_manager_v1_interface, version, 1);
         } else if (iface == zwlr_foreign_toplevel_manager_v1_interface.name) {
-            self->toplevel_manager_ = bind<zwlr_foreign_toplevel_manager_v1>(
-                registry, name, &zwlr_foreign_toplevel_manager_v1_interface, version,
-                toplevel_version);
-            zwlr_foreign_toplevel_manager_v1_add_listener(self->toplevel_manager_, &manager, self);
+            // Bound only while something on screen animates, see track_toplevels().
+            self->toplevel_global_ = name;
+            self->toplevel_offered_ = version;
         } else if (iface == zwp_linux_dmabuf_v1_interface.name && version >= dmabuf_version) {
             self->dmabuf_ = bind<zwp_linux_dmabuf_v1>(
                 registry, name, &zwp_linux_dmabuf_v1_interface, version, dmabuf_version);
@@ -533,18 +532,13 @@ void DisplayListeners::closed(void* data, zwlr_foreign_toplevel_handle_v1* handl
 Display::Display(Listener& listener) : listener_(listener) {}
 
 Display::~Display() {
+    track_toplevels(false);
     outputs_.clear();
-    for (auto& toplevel : toplevels_) zwlr_foreign_toplevel_handle_v1_destroy(toplevel->handle);
-    toplevels_.clear();
     if (pointer_ != nullptr) wl_pointer_release(pointer_);
     if (seat_ != nullptr) wl_seat_release(seat_);
     if (feedback_ != nullptr) zwp_linux_dmabuf_feedback_v1_destroy(feedback_);
     if (dmabuf_ != nullptr) zwp_linux_dmabuf_v1_destroy(dmabuf_);
-    if (toplevel_manager_ != nullptr) {
-        // No dispatch follows, so "finished" never arrives to destroy it.
-        zwlr_foreign_toplevel_manager_v1_stop(toplevel_manager_);
-        wl_proxy_destroy(reinterpret_cast<wl_proxy*>(toplevel_manager_));
-    }
+    track_toplevels(false);
     if (fractional_manager_ != nullptr) wp_fractional_scale_manager_v1_destroy(fractional_manager_);
     if (viewporter_ != nullptr) wp_viewporter_destroy(viewporter_);
     if (layer_shell_ != nullptr) zwlr_layer_shell_v1_destroy(layer_shell_);
@@ -568,7 +562,7 @@ std::string Display::connect() {
     if (wl_display_roundtrip(display_) < 0) return "Wayland roundtrip failed";
     log::info("wayland: viewporter {}, fractional-scale {}, foreign-toplevel {}, seat {}",
               viewporter_ != nullptr ? "yes" : "no", fractional_manager_ != nullptr ? "yes" : "no",
-              toplevel_manager_ != nullptr ? "yes" : "no", seat_ != nullptr ? "yes" : "no");
+              toplevel_global_ != 0 ? "yes" : "no", seat_ != nullptr ? "yes" : "no");
     return {};
 }
 
@@ -625,6 +619,28 @@ void Display::remove_output(std::uint32_t global) {
     for (auto& toplevel : toplevels_) std::erase(toplevel->outputs, handle);
     log::info("{}: output removed", (*it)->name());
     outputs_.erase(it);  // the destructor tells the listener
+}
+
+void Display::track_toplevels(bool on) {
+    if (on == (toplevel_manager_ != nullptr)) return;
+    if (on) {
+        if (toplevel_global_ == 0) return;
+        toplevel_manager_ = bind<zwlr_foreign_toplevel_manager_v1>(
+            registry_, toplevel_global_, &zwlr_foreign_toplevel_manager_v1_interface,
+            toplevel_offered_, toplevel_version);
+        zwlr_foreign_toplevel_manager_v1_add_listener(toplevel_manager_, &DisplayListeners::manager,
+                                                      this);
+        log::debug("foreign-toplevel: tracking fullscreen windows");
+        return;
+    }
+    for (auto& toplevel : toplevels_) zwlr_foreign_toplevel_handle_v1_destroy(toplevel->handle);
+    toplevels_.clear();
+    // No "finished" is waited for; events to the destroyed proxy are dropped by libwayland.
+    zwlr_foreign_toplevel_manager_v1_stop(toplevel_manager_);
+    wl_proxy_destroy(reinterpret_cast<wl_proxy*>(toplevel_manager_));
+    toplevel_manager_ = nullptr;
+    recompute_covered();
+    log::debug("foreign-toplevel: stopped");
 }
 
 void Display::recompute_covered() {

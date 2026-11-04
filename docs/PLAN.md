@@ -199,8 +199,14 @@ and memory import behaves differently.
 
 `wlr-layer-shell-unstable-v1` on the background layer, anchored to all edges, exclusive
 zone -1, no keyboard. One surface per output. `wp-fractional-scale-v1` and `wp-viewporter`
-so a 1.5x screen renders at its real pixel size. `wlr-foreign-toplevel-management` to see
-fullscreen windows per output (Hyprland, sway, river, niri all have it). On Hyprland the
+so a 1.5x screen renders at its real pixel size. Hyprland sends the preferred scale only for
+a mapped surface, so until it arrives the scale is the output's mode size over the logical
+size of the surface (which covers the whole output). `wlr-foreign-toplevel-management` to see
+fullscreen windows per output (Hyprland, sway, river, niri all have it), bound only while
+something on screen animates: the protocol reports every title change of every window, and
+that alone woke an idle M1 daemon about once a second. The surface has an empty input region
+until a wallpaper wants the cursor, for the same reason. The GPU is the one the compositor
+renders with, from `linux-dmabuf` feedback matched against `VK_EXT_physical_device_drm`. On Hyprland the
 cursor position comes from its socket even when a window is under the pointer; elsewhere
 from `wl_pointer` on the layer surface. The lock screen is not ours: the shell sends
 `pause` with reason `locked`.

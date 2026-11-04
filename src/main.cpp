@@ -11,6 +11,7 @@
 #include "ipc/protocol.hpp"
 
 #ifdef GLINT_PLATFORM
+#include "cli/cli.hpp"
 #include "daemon.hpp"
 #endif
 
@@ -25,15 +26,19 @@ void usage() {
         "  glint set <output|*> <path> [key=value ...]\n"
         "  glint unset <output|*>\n"
         "  glint status [output]\n"
-        "  glint props <output> [name value ...]\n"
-        "  glint pause|resume [output] [reason]\n"
-        "  glint audio <output> volume=<0-1> [mute=on|off]\n"
-        "  glint inspect <path>\n"
-        "  glint --version | --help\n",
+        "  glint pause|resume [output|*] [locked|request]\n"
+        "  glint subscribe [state|outputs|error ...]\n"
+        "  glint version\n"
+        "  glint --version | --help\n"
+        "\n"
+        "  set options: scaling=fill|fit|center|tile|stretch color=#rrggbb\n"
+        "               transition=fade|none duration=<ms>\n"
+        "  add --json to any command for the raw reply.\n"
+        "  later milestones: props, inspect, settings (M2), audio, cursor (M3)\n",
         glint::version);
 }
 
-int run_daemon(const char* show) {
+int run_daemon() {
     const char* level = std::getenv("GLINT_LOG");
     if (level != nullptr && std::strcmp(level, "debug") == 0) {
         glint::log::set_level(glint::log::Level::debug);
@@ -41,29 +46,28 @@ int run_daemon(const char* show) {
 #ifdef GLINT_PLATFORM
     glint::log::info("glint {} starting", glint::version);
     glint::Daemon daemon;
-    if (show != nullptr) daemon.show_at_start(show);
     return daemon.run();
 #else
-    (void)show;
     glint::log::error("built without GLINT_PLATFORM, there is no daemon in this binary");
     return 1;
 #endif
 }
 
-int run_client(std::string_view op) {
+int run_client(int argc, char** argv) {
+#ifdef GLINT_PLATFORM
+    return glint::cli::run(argc, argv);
+#else
+    (void)argc;
+    std::string_view op = argv[1];
     bool known = false;
     for (auto candidate : glint::ipc::ops) {
         if (candidate == op) known = true;
     }
-    if (!known) {
-        std::fprintf(stderr, "glint: unknown command '%.*s'\n", static_cast<int>(op.size()),
-                     op.data());
-        usage();
-        return 2;
-    }
-    std::fprintf(stderr, "glint: '%.*s' is not implemented yet, see docs/IPC.md\n",
-                 static_cast<int>(op.size()), op.data());
-    return 1;
+    std::fprintf(stderr, "glint: %s '%.*s' in a build without GLINT_PLATFORM\n",
+                 known ? "no client for" : "unknown command", static_cast<int>(op.size()),
+                 op.data());
+    return known ? 1 : 2;
+#endif
 }
 
 }  // namespace
@@ -78,8 +82,7 @@ int main(int argc, char** argv) {
             usage();
             return 0;
         }
-        if (std::strcmp(argv[1], "--show") == 0 && argc == 3) return run_daemon(argv[2]);
-        return run_client(argv[1]);
+        return run_client(argc, argv);
     }
-    return run_daemon(nullptr);
+    return run_daemon();
 }

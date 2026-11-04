@@ -5,9 +5,15 @@
 #include <sys/sysmacros.h>
 
 #include <algorithm>
+#include <cstdlib>
 
 #include "core/clock.hpp"
 #include "core/log.hpp"
+#include "core/paths.hpp"
+#include "core/version.hpp"
+#include "gpu/texture.hpp"
+#include "ipc/protocol.hpp"
+#include "wallpaper/image/image.hpp"
 
 namespace glint {
 
@@ -48,10 +54,14 @@ std::vector<std::string> pause_reason_names(std::uint32_t reasons) {
     return names;
 }
 
-Daemon::Daemon() : display_(*this) {}
+Daemon::Daemon() : display_(*this) {
+    const char* force = std::getenv("GLINT_TRACK_TOPLEVELS");
+    force_toplevels_ = force != nullptr && force[0] == '1';
+}
 
 Daemon::~Daemon() {
-    // Wallpapers first (they hold textures), then the loaders, then the GPU.
+    // Clients first, wallpapers (they hold textures), then the loaders, then the GPU.
+    server_.reset();
     screens_.clear();
     workers_.reset();
     textures_.reset();
@@ -108,7 +118,24 @@ int Daemon::run() {
     services_ =
         std::make_unique<Services>(Services{*gpu_, *pictures_, *staging_, *workers_, *textures_});
 
-    if (!show_at_start_.empty()) all_ = Assignment{show_at_start_, Options{}};
+    server_ = std::make_unique<ipc::Server>(
+        loop_, [this](const nlohmann::json& request, ipc::Server::Reply reply) {
+            handle(request, std::move(reply));
+        });
+    if (std::string listen_error = server_->listen(paths::socket_path().string());
+        !listen_error.empty()) {
+        log::error("{}", listen_error);
+        return 1;
+    }
+
+    // What was on screen last time.
+    state::State restored = state::load();
+    all_ = restored.all;
+    outputs_ = std::move(restored.outputs);
+    if (all_ || !outputs_.empty()) {
+        log::info("restoring {} from {}", all_ ? all_->path.string() : "per-output wallpapers",
+                  state::file().string());
+    }
 
     // Outputs configured during connect() arrived before the GPU existed.
     for (const auto& output : display_.outputs()) {
@@ -130,6 +157,16 @@ void Daemon::before_poll() {
     for (auto& entry : screens_) {
         if (drawable(*entry)) render(*entry);
     }
+    emit_states();
+    // Fullscreen windows matter only while something animates (or when asked to for tests).
+    bool animating = force_toplevels_;
+    for (const auto& entry : screens_) {
+        if ((entry->current && entry->current->wants_frames()) ||
+            (entry->incoming && entry->incoming->wants_frames())) {
+            animating = true;
+        }
+    }
+    display_.track_toplevels(animating);
     // Free what the GPU is done with. Whatever is still in flight is waited for now, while
     // the GPU is busy for a millisecond at most, rather than needing a wakeup later.
     if (gpu_->collect()) gpu_->drain();
@@ -240,6 +277,7 @@ void Daemon::render(Screen& entry) {
 
     // The first frame that shows the new wallpaper completes its set request.
     if (fading && entry.request) {
+        entry.load_ms = clock::ms_since(entry.request->start_ns);
         finish(entry.request, {});
         entry.request.reset();
     }
@@ -264,6 +302,20 @@ void Daemon::set(std::string_view output, const std::filesystem::path& path, con
     request->done = std::move(done);
     request->start_ns = clock::now_ns();
 
+    // What can be checked now is checked before anything changes; only a picture that
+    // fails to decode is found out later, and then the old assignment comes back.
+    if (std::string error = check_path(path); !error.empty()) {
+        request->done({.error = error});
+        return;
+    }
+    if (output != "*" && screen(output) == nullptr) {
+        request->done({.error = "no such output"});
+        return;
+    }
+    request->previous_all = all_;
+    request->previous_outputs = outputs_;
+    request->generation = ++generation_;
+
     std::vector<Screen*> targets;
     if (output == "*") {
         // "*" is every output now and later; it replaces the per-output entries.
@@ -272,13 +324,10 @@ void Daemon::set(std::string_view output, const std::filesystem::path& path, con
         for (auto& entry : screens_) targets.push_back(entry.get());
     } else {
         Screen* entry = screen(output);
-        if (entry == nullptr) {
-            request->done({.error = "no such output"});
-            return;
-        }
         outputs_[std::string(output)] = Assignment{path, options};
         targets.push_back(entry);
     }
+    save_state();
     request->remaining = static_cast<int>(targets.size());
     if (targets.empty()) {
         finish(request, {});
@@ -323,6 +372,10 @@ void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<
 void Daemon::loaded(Screen& entry, Wallpaper* wallpaper, const std::string& error) {
     if (!error.empty()) {
         log::warn("{}: {}: {}", entry.output->name(), wallpaper->path().string(), error);
+        if (server_) {
+            server_->broadcast("error", {{"output", entry.output->name()},
+                                         {"message", wallpaper->path().string() + ": " + error}});
+        }
         entry.error = error;
         entry.incoming.reset();
         if (entry.request) finish(entry.request, error);
@@ -346,15 +399,19 @@ void Daemon::finish(const std::shared_ptr<Request>& request, const std::string& 
     if (!error.empty()) {
         request->finished = true;
         request->error = error;
+        if (error != "superseded" && request->generation == generation_ &&
+            request->generation != 0) {
+            all_ = request->previous_all;
+            outputs_ = request->previous_outputs;
+            ++generation_;
+            save_state();
+        }
         if (request->done) request->done({.error = error, .kind = request->kind});
         return;
     }
     if (--request->remaining > 0) return;
     request->finished = true;
     double ms = clock::ms_since(request->start_ns);
-    for (auto& entry : screens_) {
-        if (entry->request == request) entry->load_ms = ms;
-    }
     if (request->done) request->done({.kind = request->kind, .load_ms = ms});
 }
 
@@ -372,6 +429,9 @@ void Daemon::output_added(wl::Output& output) {
     if (!entry->surface->valid()) return;
     Screen& added = *entry;
     screens_.push_back(std::move(entry));
+    if (server_)
+        server_->broadcast("outputs",
+                           {{"added", {output.name()}}, {"removed", nlohmann::json::array()}});
     if (const Assignment* a = assignment(output.name())) {
         // Nothing is drawn until the picture is ready, so the output does not flash the
         // background colour first.
@@ -385,7 +445,12 @@ void Daemon::output_removed(wl::Output& output) {
     if (Screen* entry = screen(output); entry != nullptr && entry->request) {
         finish(entry->request, "output removed");
     }
+    bool had = screen(output) != nullptr;
     std::erase_if(screens_, [&](const auto& entry) { return entry->output == &output; });
+    if (had && server_) {
+        server_->broadcast("outputs",
+                           {{"added", nlohmann::json::array()}, {"removed", {output.name()}}});
+    }
 }
 
 void Daemon::output_resized(wl::Output& output) {
@@ -431,6 +496,234 @@ void Daemon::pointer(wl::Output& output, double x, double y, std::uint32_t butto
         if (entry->current && entry->current->wants_cursor()) {
             entry->current->cursor({x, y, buttons});
         }
+    }
+}
+
+// ---- IPC --------------------------------------------------------------------------------
+
+void Daemon::save_state() const {
+    state::State current;
+    current.all = all_;
+    current.outputs = outputs_;
+    if (!state::save(current)) log::warn("cannot write {}", state::file().string());
+}
+
+std::string Daemon::state_of(const Screen& entry) const {
+    if (reasons(entry) != 0) return "paused";
+    if (entry.incoming && !entry.incoming->ready()) return "loading";
+    if (entry.current || entry.incoming) return "running";
+    if (!entry.error.empty()) return "error";
+    return "none";
+}
+
+void Daemon::emit_states() {
+    for (auto& entry : screens_) {
+        std::string now = state_of(*entry);
+        if (now == entry->last_state) continue;
+        entry->last_state = now;
+        if (!server_) continue;
+        nlohmann::json event = {{"output", entry->output->name()}, {"state", now}};
+        auto names = pause_reason_names(reasons(*entry));
+        if (!names.empty()) event["reason"] = names.front();
+        if (names.size() > 1) event["reasons"] = names;
+        if (now == "error") event["message"] = entry->error;
+        server_->broadcast("state", event);
+    }
+}
+
+nlohmann::json Daemon::output_json(const Screen& entry) const {
+    const wl::Output& output = *entry.output;
+    nlohmann::json json = {
+        {"name", output.name()},
+        {"make", output.make()},
+        {"model", output.model()},
+        {"description", output.description()},
+        {"width", output.pixel_width()},
+        {"height", output.pixel_height()},
+        {"scale", output.scale()},
+        {"refresh", output.refresh_hz()},
+        {"x", output.x()},
+        {"y", output.y()},
+    };
+    const Wallpaper* shown = entry.incoming ? entry.incoming.get() : entry.current.get();
+    nlohmann::json wallpaper = {{"state", state_of(entry)}};
+    if (shown != nullptr) {
+        wallpaper["path"] = shown->path().string();
+        wallpaper["kind"] = kind_name(shown->kind());
+    }
+    auto names = pause_reason_names(reasons(entry));
+    if (!names.empty()) wallpaper["reason"] = names.front();
+    if (!entry.error.empty()) wallpaper["message"] = entry.error;
+    json["wallpaper"] = wallpaper;
+    return json;
+}
+
+nlohmann::json Daemon::status_json(Screen& entry) {
+    const Wallpaper* shown = entry.incoming ? entry.incoming.get() : entry.current.get();
+    // Frames presented in the last second.
+    std::int64_t now = clock::now_ns();
+    int recent = 0;
+    for (std::int64_t t : entry.present_ns) {
+        if (t != 0 && now - t < 1'000'000'000) ++recent;
+    }
+    auto names = pause_reason_names(reasons(entry));
+    nlohmann::json json = {
+        {"state", state_of(entry)},
+        {"fps", recent},
+        {"frames", entry.frames},
+        {"frame_ms", entry.cpu_ms},
+        {"gpu_ms", entry.surface->gpu_ms()},
+        {"load_ms", entry.load_ms},
+        {"paused_reason", names.empty() ? nlohmann::json(nullptr) : nlohmann::json(names.front())},
+        {"paused_reasons", names},
+        {"width", entry.surface->extent().width},
+        {"height", entry.surface->extent().height},
+        {"swapchain_images", entry.surface->image_count()},
+    };
+    std::uint64_t memory = 0;
+    if (entry.current) memory += entry.current->memory();
+    if (entry.incoming && entry.incoming.get() != entry.current.get()) {
+        memory += entry.incoming->memory();
+    }
+    json["memory_mb"] = static_cast<double>(memory) / (1024.0 * 1024.0);
+    if (shown != nullptr) {
+        json["path"] = shown->path().string();
+        json["kind"] = kind_name(shown->kind());
+        json["options"] = state::options_json(shown->options());
+        if (auto* picture = dynamic_cast<const image::Image*>(shown)) {
+            json["picture"] = {{"width", picture->width()}, {"height", picture->height()}};
+        }
+    } else {
+        json["path"] = nullptr;
+        json["kind"] = nullptr;
+    }
+    if (!entry.error.empty()) json["message"] = entry.error;
+    json["wakeups"] = loop_.wakeups();
+    return json;
+}
+
+std::string Daemon::unset(std::string_view output) {
+    ++generation_;
+    std::vector<Screen*> targets;
+    if (output == "*") {
+        all_.reset();
+        outputs_.clear();
+        for (auto& entry : screens_) targets.push_back(entry.get());
+    } else {
+        Screen* entry = screen(output);
+        if (entry == nullptr) return "no such output";
+        outputs_.erase(std::string(output));
+        // Without its own entry the output falls back to "*", if there is one.
+        if (all_) {
+            apply(*entry, *all_, nullptr);
+            save_state();
+            return {};
+        }
+        targets.push_back(entry);
+    }
+    for (Screen* entry : targets) {
+        if (entry->request) finish(entry->request, "superseded");
+        entry->request.reset();
+        entry->current.reset();
+        entry->incoming.reset();
+        entry->fade_start_ns = 0;
+        entry->error.clear();
+        entry->dirty = true;
+    }
+    save_state();
+    return {};
+}
+
+std::string Daemon::pause(std::string_view output, std::uint32_t reason, bool on) {
+    std::vector<std::pair<Screen*, std::uint32_t>> before;
+    for (auto& entry : screens_) before.emplace_back(entry.get(), reasons(*entry));
+    if (output == "*") {
+        if (on) {
+            paused_all_ |= reason;
+        } else {
+            // Lifting a reason for "*" lifts it everywhere.
+            paused_all_ &= ~reason;
+            for (auto& entry : screens_) entry->paused &= ~reason;
+        }
+    } else {
+        Screen* entry = screen(output);
+        if (entry == nullptr) return "no such output";
+        if (on) {
+            entry->paused |= reason;
+        } else {
+            entry->paused &= ~reason;
+        }
+    }
+    for (auto [entry, was] : before) pause_changed(*entry, was);
+    return {};
+}
+
+void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
+    std::string op = request.value("op", "");
+    std::string output = request.contains("output") && request["output"].is_string()
+                             ? request["output"].get<std::string>()
+                             : "";
+
+    if (op == "version") {
+        reply.ok({{"version", version},
+                  {"protocol", protocol_version},
+                  {"vulkan", "1.3"},
+                  {"device", gpu_->device_name()}});
+    } else if (op == "outputs") {
+        nlohmann::json list = nlohmann::json::array();
+        for (const auto& entry : screens_) list.push_back(output_json(*entry));
+        reply.ok(list);
+    } else if (op == "status") {
+        if (!output.empty() && output != "*") {
+            Screen* entry = screen(output);
+            if (entry == nullptr) return reply.error("no such output");
+            return reply.ok(status_json(*entry));
+        }
+        nlohmann::json all = nlohmann::json::object();
+        for (auto& entry : screens_) all[entry->output->name()] = status_json(*entry);
+        reply.ok(all);
+    } else if (op == "set") {
+        if (output.empty()) return reply.error("set needs an output");
+        if (!request.contains("path") || !request["path"].is_string()) {
+            return reply.error("set needs a path");
+        }
+        std::filesystem::path path = request["path"].get<std::string>();
+        if (!path.is_absolute()) return reply.error("path must be absolute");
+        Options options;
+        if (request.contains("options")) {
+            if (std::string error = state::parse_options(request["options"], options);
+                !error.empty()) {
+                return reply.error(error);
+            }
+        }
+        std::string title = path.stem().string();
+        set(output, path, options, [reply, title](const SetResult& result) mutable {
+            if (!result.error.empty()) return reply.error(result.error);
+            reply.ok({{"kind", result.kind}, {"title", title}, {"load_ms", result.load_ms}});
+        });
+    } else if (op == "unset") {
+        if (output.empty()) return reply.error("unset needs an output");
+        if (std::string error = unset(output); !error.empty()) return reply.error(error);
+        reply.ok();
+    } else if (op == "pause" || op == "resume") {
+        std::string reason_name = request.value("reason", "request");
+        std::uint32_t reason = pause_reason_from(reason_name);
+        if (reason != pause_locked && reason != pause_request) {
+            return reply.error("reason is locked or request (glint sets covered and idle itself)");
+        }
+        if (std::string error = pause(output.empty() ? "*" : output, reason, op == "pause");
+            !error.empty()) {
+            return reply.error(error);
+        }
+        reply.ok();
+    } else if (op == "props" || op == "inspect") {
+        reply.error(op + " comes with milestone M2 (scenes)");
+    } else if (op == "audio" || op == "cursor") {
+        reply.error(op + " comes with milestone M3");
+    } else if (op == "settings") {
+        reply.error("settings come with milestone M2");
+    } else {
+        reply.error("unknown op '" + op + "'");
     }
 }
 

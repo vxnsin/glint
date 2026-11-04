@@ -127,6 +127,9 @@ public:
     virtual bool wants_audio() const { return false; }
 };
 
+// The checks make_wallpaper does, without making one: error message or empty.
+std::string check_path(const std::filesystem::path& path);
+
 // Picks the kind from the path: a file is decoded as a picture (video comes in M4), a
 // directory with project.json is a scene (M2). Returns null with an error otherwise.
 std::unique_ptr<Wallpaper> make_wallpaper(const std::filesystem::path& path, const Options& options,

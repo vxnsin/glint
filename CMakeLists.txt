@@ -45,8 +45,10 @@ if(GLINT_PLATFORM)
     include(cmake/Dependencies.cmake)
     target_sources(glint PRIVATE
         src/daemon.cpp
+        src/cli/cli.cpp
         src/core/loop.cpp
         src/core/paths.cpp
+        src/core/state.cpp
         src/core/worker.cpp
         src/gpu/buffer.cpp
         src/gpu/context.cpp
@@ -55,6 +57,7 @@ if(GLINT_PLATFORM)
         src/gpu/surface.cpp
         src/gpu/texture.cpp
         src/gpu/volk.cpp
+        src/ipc/server.cpp
         src/wallpaper/wallpaper.cpp
         src/wallpaper/image/decode.cpp
         src/wallpaper/image/image.cpp
