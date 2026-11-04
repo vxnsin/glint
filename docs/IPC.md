@@ -151,7 +151,11 @@ Rules:
 outputs that appear later; `resume` for `*` lifts the reason on every output. glint sets
 `covered` and `idle` itself and refuses them from clients; shells use `locked` and `request`.
 
-`covered` comes from foreign-toplevel: a fullscreen window on the output. glint follows
+`covered` comes from foreign-toplevel: a fullscreen window with focus on the output. The
+protocol does not say whether a window's workspace is visible, and on Hyprland a fullscreen
+window on a hidden or special workspace still reports fullscreen on its output, so without
+focus it does not count. A covered output that glint misses costs little: the compositor
+sends no frame callbacks to a surface it does not draw. glint follows
 toplevels only while an output shows something that wants frames (videos and scenes, from
 M2 on), because the protocol reports every title change of every window and would wake the
 daemon for nothing while it shows still pictures. A covered still picture costs nothing

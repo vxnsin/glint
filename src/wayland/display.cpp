@@ -34,6 +34,7 @@ constexpr std::uint32_t dmabuf_version = 4;  // default feedback
 
 // zwlr_foreign_toplevel_handle_v1 state values.
 constexpr std::uint32_t toplevel_state_minimized = 1;
+constexpr std::uint32_t toplevel_state_activated = 2;
 constexpr std::uint32_t toplevel_state_fullscreen = 3;
 
 template <typename T>
@@ -379,10 +380,12 @@ struct DisplayListeners {
         auto* entry = static_cast<Display::Toplevel*>(data);
         entry->pending_fullscreen = false;
         entry->pending_minimized = false;
+        entry->pending_activated = false;
         auto* begin = static_cast<const std::uint32_t*>(states->data);
         for (std::size_t i = 0; i < states->size / sizeof(std::uint32_t); ++i) {
             if (begin[i] == toplevel_state_fullscreen) entry->pending_fullscreen = true;
             if (begin[i] == toplevel_state_minimized) entry->pending_minimized = true;
+            if (begin[i] == toplevel_state_activated) entry->pending_activated = true;
         }
     }
     static void done(void* data, zwlr_foreign_toplevel_handle_v1*);
@@ -519,6 +522,7 @@ void DisplayListeners::done(void* data, zwlr_foreign_toplevel_handle_v1*) {
     auto* entry = static_cast<Display::Toplevel*>(data);
     entry->fullscreen = entry->pending_fullscreen;
     entry->minimized = entry->pending_minimized;
+    entry->activated = entry->pending_activated;
     entry->display->recompute_covered();
 }
 
@@ -645,8 +649,13 @@ void Display::track_toplevels(bool on) {
 
 void Display::recompute_covered() {
     for (const auto& output : outputs_) {
+        // Only a fullscreen window with focus counts. The protocol does not say whether a
+        // window's workspace is visible: on Hyprland a fullscreen window on a hidden or
+        // special workspace is still "fullscreen on DP-2", and pausing for it would freeze a
+        // wallpaper that is in plain view. Missing a covered output costs little, since the
+        // compositor sends no frame callbacks to a surface it does not draw.
         bool covered = std::ranges::any_of(toplevels_, [&](const auto& t) {
-            return t->fullscreen && !t->minimized &&
+            return t->fullscreen && t->activated && !t->minimized &&
                    std::ranges::find(t->outputs, output->handle()) != t->outputs.end();
         });
         if (covered == output->covered()) continue;

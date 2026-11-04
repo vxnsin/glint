@@ -178,8 +178,8 @@ private:
         Display* display = nullptr;
         zwlr_foreign_toplevel_handle_v1* handle = nullptr;
         std::vector<wl_output*> outputs;
-        bool fullscreen = false, minimized = false;
-        bool pending_fullscreen = false, pending_minimized = false;
+        bool fullscreen = false, minimized = false, activated = false;
+        bool pending_fullscreen = false, pending_minimized = false, pending_activated = false;
     };
 
     Output* find_surface(wl_surface* surface) const;
