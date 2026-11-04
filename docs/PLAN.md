@@ -184,7 +184,14 @@ driven by frame callbacks, never by a timer.
 
 Wallpaper Engine shaders are preprocessed (includes, combos, the HLSL compatibility
 defines, see FORMATS.md) and compiled with glslang straight to SPIR-V. No SPIRV-Cross round
-trip.
+trip. glint's own shaders (the picture pass) are compiled at build time with glslangValidator
+and embedded. Pipelines are created through a `VkPipelineCache` kept on disk.
+
+Uploads in M1 run on the graphics queue: the mip chain is blitted on the GPU, which needs
+graphics anyway, and one queue orders an upload before the first draw that uses it. A
+separate transfer queue comes with video, where uploads never stop. Pictures get dedicated
+allocations so their memory goes back when they go; the staging ring exists only while
+something loads.
 
 `.tex` payloads in BC1, BC2 and BC3 upload as they are. RGBA8, RG8 and R8 too. Embedded
 PNG and JPEG go through FFmpeg, and so do still pictures and video frames, so there is one
@@ -331,8 +338,8 @@ and the long tail of scene features after. Each milestone ends in something that
 the CachyOS box and a note in `docs/LOG.md` with the numbers: idle CPU, GPU busy, frame
 time, switch time, memory. The issues on GitHub carry the details.
 
-M0, this commit: CMake, the module layout, a `main` that prints its version. Written on
-Windows, not compiled anywhere yet.
+M0: CMake, the module layout, a `main` that prints its version. Written on Windows and first
+compiled on the CachyOS box at the start of M1.
 
 M1, the renderer: Wayland with outputs, hotplug, layer surfaces, fractional scale,
 pointer, foreign-toplevel. Vulkan with device pick, one swapchain per output, dynamic
@@ -341,7 +348,8 @@ loop on `poll`, pause reasons that stack, the covered case proven. The image kin
 FFmpeg decode on a worker, mipmaps on the GPU, scaling modes, crossfade. IPC and CLI with
 outputs, set, unset, status, pause, resume, subscribe, state file, restore on start. Done
 when idle is 0 % CPU and 0 % GPU, paused has no wakeups, a picture switch takes under 100
-ms, and two outputs with different scales look right.
+ms, and two outputs with different scales look right. Done on 2026-11-05;
+the numbers and what was left out are in `docs/LOG.md`.
 
 M2, scenes: the readers (project.json, pkg, tex, model, material and effect JSON, assets
 lookup), the shader pipeline with cache, the scene graph with image objects and transforms

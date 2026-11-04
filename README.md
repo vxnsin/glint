@@ -86,6 +86,7 @@ can use it directly; Quickshell's `Socket` type does, and `socat` works for scri
 - [docs/PLAN.md](docs/PLAN.md): the stack and why, modules, milestones, what is measured.
 - [docs/IPC.md](docs/IPC.md): the socket protocol and how facet moves onto it.
 - [docs/FORMATS.md](docs/FORMATS.md): what of Wallpaper Engine's formats glint reads.
+- [docs/LOG.md](docs/LOG.md): the measurements per milestone.
 
 ## License
 
