@@ -73,12 +73,19 @@ if(GLINT_PLATFORM)
     add_library(glint_scene STATIC
         src/wallpaper/scene/project.cpp
         src/wallpaper/scene/scene.cpp
+        src/wallpaper/scene/shader.cpp
         src/wallpaper/scene/tex.cpp
         src/wallpaper/scene/vfs.cpp
     )
     target_include_directories(glint_scene PUBLIC src)
-    target_link_libraries(glint_scene PUBLIC nlohmann_json::nlohmann_json PkgConfig::LZ4)
+    target_link_libraries(glint_scene PUBLIC nlohmann_json::nlohmann_json PkgConfig::LZ4
+        glslang::glslang glslang::glslang-default-resource-limits)
     target_compile_options(glint_scene PRIVATE ${GLINT_WARNINGS})
+    if(GLINT_SANITIZE)
+        # glslang is built without RTTI, which UBSan's vptr check needs.
+        set_source_files_properties(src/wallpaper/scene/shader.cpp PROPERTIES
+            COMPILE_OPTIONS -fno-sanitize=vptr)
+    endif()
 
     add_executable(we-inspect tools/we-inspect.cpp)
     target_link_libraries(we-inspect PRIVATE glint_scene)

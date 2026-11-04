@@ -212,6 +212,25 @@ Preprocessor, in order:
 7. Compile with glslang (GLSL 450 input, Vulkan 1.3 target), reflect uniforms into a UBO
    layout glint builds (WE uses loose uniforms; glint packs them into one block per pass).
 
+What glint does, in this order: includes are inlined and the annotations read from the raw
+text; glslang's own preprocessor runs with the combo defines and the compatibility macros,
+so every `#if` is settled before anything is rewritten; the global declarations of the
+result are then taken apart. Non-opaque uniforms of both stages go into one std140 block at
+set 0, binding 0 (glint computes the offsets itself), `g_TextureN` goes to binding N + 1,
+attributes get locations in order, and varyings one location map by name for both stages.
+
+Found on the corpus:
+
+- Workshop shaders use GLSL keywords as names (`sample`); they are renamed by macro
+  (`sample`, `input`, `output`, `filter`, `common`, `partition`, `active`, `buffer`,
+  `shared`, `patch`, `resource`).
+- The stages may disagree on a varying's width (`vec2 v_TexCoord` written, `vec4` read, and
+  the other way round), which Direct3D accepts and Vulkan does not. The fragment stage reads
+  the vertex type under another name and converts at the top of `main`: truncated, or padded
+  with zeros.
+- `#require LightingV1` provides `PerformLighting_V1`, called only under `#if LIGHTING`;
+  until lights in M5 the line is dropped.
+
 Built-in uniforms glint provides: `g_ModelMatrix`, `g_ViewProjectionMatrix`,
 `g_ModelViewProjectionMatrix`, `g_ModelViewProjectionMatrixInverse`, `g_EffectTextureProjectionMatrix`,
 `g_Time`, `g_Daytime`, `g_Screen` (w, h, aspect), `g_TexelSize`, `g_TextureNResolution`,

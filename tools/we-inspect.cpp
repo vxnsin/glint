@@ -4,6 +4,7 @@
 //   we-inspect <file.pkg>        the package listing
 //   we-inspect <file.tex>        texture header, mips, sprite frames
 //   we-inspect <item> <path>     one file through the item's file system (.tex or text)
+//   we-inspect <item> --shaders  compile every pass of the scene
 
 #include <cstdio>
 #include <filesystem>
@@ -12,6 +13,7 @@
 
 #include "wallpaper/scene/project.hpp"
 #include "wallpaper/scene/scene.hpp"
+#include "wallpaper/scene/shader.hpp"
 #include "wallpaper/scene/tex.hpp"
 #include "wallpaper/scene/vfs.hpp"
 
@@ -54,7 +56,60 @@ void dump_package(const Package& package) {
     }
 }
 
-int dump_item(const std::filesystem::path& folder) {
+// Compiles every pass of every image object and effect the way the renderer would.
+int compile_all(const Vfs& vfs, const SceneDesc& scene, bool verbose) {
+    ShaderCompiler compiler(vfs, {});
+    int ok = 0, failed = 0;
+    auto run = [&](const std::string& what, ShaderRequest request) {
+        CompiledShader shader = compiler.compile(request);
+        if (shader.error.empty()) {
+            ++ok;
+            if (verbose) {
+                std::printf("  ok   %-40s %zu uniforms (%u bytes), %zu samplers\n", what.c_str(),
+                            shader.uniforms.size(), shader.block_size, shader.samplers.size());
+            }
+        } else {
+            ++failed;
+            std::printf("  FAIL %s (%s)\n%s\n", what.c_str(), request.name.c_str(),
+                        shader.error.c_str());
+        }
+    };
+    for (const auto& image : scene.images) {
+        for (const auto& pass : image.material.passes) {
+            ShaderRequest request{pass.shader, pass.combos, 0};
+            for (std::size_t i = 0; i < pass.textures.size(); ++i) {
+                if (pass.textures[i]) request.bound_textures |= 1u << i;
+            }
+            run(image.name + " material", request);
+        }
+        for (const auto& effect : image.effects) {
+            for (std::size_t p = 0; p < effect.passes.size(); ++p) {
+                const EffectPass& pass = effect.passes[p];
+                for (const auto& mp : pass.material.passes) {
+                    ShaderRequest request{mp.shader, mp.combos, 1u};  // slot 0: the input
+                    auto textures = mp.textures;
+                    if (p < effect.overrides.size()) {
+                        const auto& o = effect.overrides[p];
+                        for (const auto& [k, v] : o.combos) request.combos[k] = v;
+                        if (o.textures.size() > textures.size()) textures.resize(o.textures.size());
+                        for (std::size_t i = 0; i < o.textures.size(); ++i) {
+                            if (o.textures[i]) textures[i] = o.textures[i];
+                        }
+                    }
+                    for (std::size_t i = 0; i < textures.size(); ++i) {
+                        if (textures[i]) request.bound_textures |= 1u << i;
+                    }
+                    for (const auto& bind : pass.binds) request.bound_textures |= 1u << bind.index;
+                    run(image.name + " " + mp.shader, request);
+                }
+            }
+        }
+    }
+    std::printf("shaders: %d compiled, %d failed\n", ok, failed);
+    return failed == 0 ? 0 : 1;
+}
+
+int dump_item(const std::filesystem::path& folder, bool shaders) {
     Vfs vfs(folder, default_assets());
     if (std::string error = vfs.open_package(); !error.empty()) {
         std::fprintf(stderr, "scene.pkg: %s\n", error.c_str());
@@ -132,6 +187,7 @@ int dump_item(const std::filesystem::path& folder) {
         std::printf("  not drawn yet: %d %s\n", count, kind.c_str());
     }
     for (const auto& warning : scene.warnings) std::printf("  warning: %s\n", warning.c_str());
+    if (shaders) return compile_all(vfs, scene, true);
     return 0;
 }
 
@@ -144,6 +200,7 @@ int main(int argc, char** argv) {
     }
     std::filesystem::path target = argv[1];
     std::error_code ec;
+    if (argc == 3 && std::string_view(argv[2]) == "--shaders") return dump_item(target, true);
     if (argc == 3) {
         Vfs vfs(target, default_assets());
         vfs.open_package();
@@ -159,7 +216,7 @@ int main(int argc, char** argv) {
         std::fwrite(file->bytes().data(), 1, file->bytes().size(), stdout);
         return 0;
     }
-    if (std::filesystem::is_directory(target, ec)) return dump_item(target);
+    if (std::filesystem::is_directory(target, ec)) return dump_item(target, false);
     if (target.extension() == ".pkg") {
         std::string error;
         auto package = Package::open(target, error);
