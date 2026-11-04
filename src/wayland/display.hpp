@@ -71,6 +71,12 @@ public:
 
     bool covered() const { return covered_; }
 
+    // Whether the surface takes pointer input. Off by default: an empty input region, so
+    // pointer motion over the desktop does not wake glint. On when a wallpaper wants the
+    // cursor. Pending state, like apply_surface_state().
+    void set_pointer_input(bool on);
+    bool pointer_input() const { return pointer_input_; }
+
     // Internal, called by Display and the listeners.
     std::uint32_t global() const { return global_; }
     wl_output* handle() const { return output_; }
@@ -104,6 +110,7 @@ private:
     std::uint32_t preferred120_ = 0;  // from wp_fractional_scale_v1, 0 until it says
 
     bool covered_ = false;
+    bool pointer_input_ = false;
 };
 
 class Display {

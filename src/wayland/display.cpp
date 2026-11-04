@@ -223,6 +223,9 @@ void Output::create_surface() {
     }
     preferred120_ = 0;
     update_scale();
+    bool input = pointer_input_;
+    pointer_input_ = !input;
+    set_pointer_input(input);
     wl_surface_commit(surface_);
 }
 
@@ -243,6 +246,18 @@ void Output::destroy_surface() {
     surface_ = nullptr;
     configured_ = false;
     logical_width_ = logical_height_ = 0;
+}
+
+void Output::set_pointer_input(bool on) {
+    if (on == pointer_input_ || surface_ == nullptr) return;
+    pointer_input_ = on;
+    if (on) {
+        wl_surface_set_input_region(surface_, nullptr);  // the whole surface
+    } else {
+        wl_region* empty = wl_compositor_create_region(display_.compositor());
+        wl_surface_set_input_region(surface_, empty);
+        wl_region_destroy(empty);
+    }
 }
 
 void Output::request_frame() {
