@@ -21,6 +21,7 @@ target_include_directories(glint_vma SYSTEM PUBLIC ${PROJECT_SOURCE_DIR}/third_p
 target_compile_definitions(glint_vma PUBLIC VMA_STATIC_VULKAN_FUNCTIONS=0
                                             VMA_DYNAMIC_VULKAN_FUNCTIONS=0)
 target_link_libraries(glint_vma PUBLIC volk::volk_headers)
+target_compile_definitions(glint_vma PUBLIC VK_NO_PROTOTYPES)
 
 # Wayland protocols. The xml comes from the packages; wayland-scanner writes a client header
 # and the interface code into ${CMAKE_BINARY_DIR}/generated/protocols at build time.
@@ -62,9 +63,10 @@ target_link_libraries(glint_protocols PUBLIC PkgConfig::WAYLAND)
 
 add_library(glint::platform INTERFACE IMPORTED)
 target_link_libraries(glint::platform INTERFACE
-    volk::volk glint_vma glint_protocols
+    volk::volk_headers glint_vma glint_protocols
     glslang::glslang nlohmann_json::nlohmann_json Threads::Threads
     PkgConfig::WAYLAND PkgConfig::PIPEWIRE PkgConfig::FFMPEG PkgConfig::LZ4)
-target_compile_definitions(glint::platform INTERFACE GLINT_PLATFORM=1)
+target_compile_definitions(glint::platform INTERFACE GLINT_PLATFORM=1 VK_NO_PROTOTYPES
+    VK_USE_PLATFORM_WAYLAND_KHR)
 # Libraries a milestone does not call yet (PipeWire and lz4 in M1) are not loaded.
 target_link_options(glint::platform INTERFACE -Wl,--as-needed)

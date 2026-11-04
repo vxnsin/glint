@@ -31,7 +31,8 @@ add_executable(glint
 target_include_directories(glint PRIVATE src ${CMAKE_BINARY_DIR}/generated)
 
 target_compile_options(glint PRIVATE
-    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wshadow -Wconversion>
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall -Wextra -Wpedantic -Wshadow -Wconversion
+        -Wno-missing-field-initializers>
     $<$<AND:$<BOOL:${GLINT_WERROR}>,$<CXX_COMPILER_ID:GNU,Clang>>:-Werror>
 )
 
@@ -46,6 +47,10 @@ if(GLINT_PLATFORM)
         src/daemon.cpp
         src/core/loop.cpp
         src/core/paths.cpp
+        src/gpu/buffer.cpp
+        src/gpu/context.cpp
+        src/gpu/surface.cpp
+        src/gpu/volk.cpp
         src/wayland/display.cpp
     )
     target_link_libraries(glint PRIVATE glint::platform)

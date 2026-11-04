@@ -4,13 +4,18 @@
 #include <sys/signalfd.h>
 #include <sys/sysmacros.h>
 
+#include <algorithm>
+
 #include "core/log.hpp"
 
 namespace glint {
 
 Daemon::Daemon() : display_(*this) {}
 
-Daemon::~Daemon() = default;
+Daemon::~Daemon() {
+    screens_.clear();
+    gpu_.reset();
+}
 
 bool Daemon::setup_signals() {
     sigset_t mask;
@@ -45,6 +50,16 @@ int Daemon::run() {
     if (auto device = display_.main_device()) {
         log::info("compositor renders on DRM device {}:{}", major(*device), minor(*device));
     }
+    std::string error;
+    gpu_ = gpu::Context::create(display_.handle(), display_.main_device(), error);
+    if (!gpu_) {
+        log::error("{}", error);
+        return 1;
+    }
+    // Outputs configured during connect() arrived before the GPU existed.
+    for (const auto& output : display_.outputs()) {
+        if (output->configured()) output_added(*output);
+    }
 
     wayland_id_ = loop_.add(display_.fd(), POLLIN, [](short) {});
     loop_.set_before_poll([this] {
@@ -73,20 +88,49 @@ int Daemon::run() {
     return ok ? 0 : 1;
 }
 
+Daemon::Screen* Daemon::screen(wl::Output& output) {
+    for (auto& entry : screens_) {
+        if (entry->output == &output) return entry.get();
+    }
+    return nullptr;
+}
+
 void Daemon::output_added(wl::Output& output) {
+    if (!gpu_ || screen(output) != nullptr) return;
     log::info("{}: {} {}x{} px, logical {}x{}, scale {:.3f}, {:.2f} Hz, at {},{}", output.name(),
               output.description(), output.pixel_width(), output.pixel_height(),
               output.logical_width(), output.logical_height(), output.scale(), output.refresh_hz(),
               output.x(), output.y());
+    auto entry = std::make_unique<Screen>();
+    entry->output = &output;
+    entry->surface = std::make_unique<gpu::Surface>(*gpu_, display_.handle(), output.surface());
+    if (!entry->surface->valid()) return;
+    Screen& added = *entry;
+    screens_.push_back(std::move(entry));
+    draw(added);
 }
 
 void Daemon::output_removed(wl::Output& output) {
     log::info("{}: surface gone", output.name());
+    std::erase_if(screens_, [&](const auto& entry) { return entry->output == &output; });
 }
 
 void Daemon::output_resized(wl::Output& output) {
     log::info("{}: now {}x{} px, scale {:.3f}", output.name(), output.pixel_width(),
               output.pixel_height(), output.scale());
+    if (Screen* entry = screen(output)) draw(*entry);
+}
+
+void Daemon::draw(Screen& entry) {
+    wl::Output& output = *entry.output;
+    output.apply_surface_state();
+    if (!entry.surface->resize(output.pixel_width(), output.pixel_height())) return;
+    gpu::FrameUniforms uniforms{};
+    uniforms.resolution[0] = static_cast<float>(output.pixel_width());
+    uniforms.resolution[1] = static_cast<float>(output.pixel_height());
+    gpu::Target target{};
+    if (!entry.surface->begin(entry.background, uniforms, target)) return;
+    entry.surface->end();
 }
 
 void Daemon::output_frame(wl::Output& output, std::uint32_t time_ms) {
