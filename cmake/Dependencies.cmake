@@ -16,7 +16,8 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libavut
 pkg_check_modules(LZ4 REQUIRED IMPORTED_TARGET liblz4)
 pkg_check_modules(TEXT REQUIRED IMPORTED_TARGET freetype2 harfbuzz fontconfig)
 # quickjs-ng ships a CMake config (target qjs), no pkg-config file.
-find_package(qjs REQUIRED)  # text objects
+find_package(qjs REQUIRED)
+pkg_check_modules(SDBUS REQUIRED IMPORTED_TARGET sdbus-c++)  # text objects
 
 # VMA: one translation unit holds the implementation. It loads Vulkan through volk, so no
 # static or loader-provided function pointers.

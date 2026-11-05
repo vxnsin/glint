@@ -97,6 +97,7 @@ if(GLINT_PLATFORM)
         src/gpu/video_pass.cpp
         src/gpu/volk.cpp
         src/ipc/server.cpp
+        src/media/mpris.cpp
         src/wallpaper/wallpaper.cpp
         src/wallpaper/image/decode.cpp
         src/wallpaper/image/image.cpp
@@ -109,7 +110,7 @@ if(GLINT_PLATFORM)
         src/wallpaper/video/video.cpp
         src/wayland/display.cpp
     )
-    target_link_libraries(glint PRIVATE glint::platform glint_scene glint_audio)
+    target_link_libraries(glint PRIVATE glint::platform glint_scene glint_audio PkgConfig::SDBUS)
     add_dependencies(glint glint_shaders)
 
     # The Wallpaper Engine readers, shared by the daemon, we-inspect and the tests.

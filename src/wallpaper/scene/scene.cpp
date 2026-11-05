@@ -192,6 +192,34 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
         std::string material = str(*model, "material");
         if (!material.empty()) parse_material(vfs, material, image.material, warnings);
     }
+    // A material instance: the object's own combos and textures over the material's first
+    // pass, and system textures ("$mediaThumbnail", the playing media's cover) in a slot.
+    if (object.contains("instance") && object["instance"].is_object() &&
+        !image.material.passes.empty()) {
+        const json& inst = object["instance"];
+        MaterialPass& pass = image.material.passes[0];
+        for (const auto& [k, v] : combo_map(inst.value("combos", json::object())))
+            pass.combos[k] = v;
+        if (inst.contains("textures") && inst["textures"].is_array()) {
+            auto list = texture_list(inst["textures"]);
+            if (pass.textures.size() < list.size()) pass.textures.resize(list.size());
+            for (std::size_t i = 0; i < list.size(); ++i) {
+                if (list[i]) pass.textures[i] = list[i];
+            }
+        }
+        if (inst.contains("usertextures") && inst["usertextures"].is_array()) {
+            std::size_t i = 0;
+            for (const json& ut : inst["usertextures"]) {
+                if (ut.is_object() && str(ut, "name") == "$mediaThumbnail") {
+                    if (pass.textures.size() <= i) pass.textures.resize(i + 1);
+                    std::string placeholder = pass.textures[i] ? *pass.textures[i] : "util/white";
+                    pass.textures[i] = "$mediaThumbnail:" + placeholder;
+                    image.media_thumbnail = true;
+                }
+                ++i;
+            }
+        }
+    }
     if (object.contains("effects") && object["effects"].is_array()) {
         for (const auto& entry : object["effects"]) {
             Effect effect;
@@ -485,7 +513,9 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
                 object.contains("visible") ? parse_bound(object["visible"]) : Bound{true};
             particle.parallax_depth = parse_vec2(object.value("parallaxDepth", json()), {1, 1});
             if (object.contains("instanceoverride") && object["instanceoverride"].is_object()) {
-                particle.instance_override = object["instanceoverride"];
+                for (const auto& [k, v] : object["instanceoverride"].items()) {
+                    particle.overrides[k] = parse_bound(v);
+                }
             }
             particle.desc = parse_particle(vfs, particle.file, out.warnings);
             if (particle.desc) {

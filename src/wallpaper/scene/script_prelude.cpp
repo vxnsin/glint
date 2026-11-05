@@ -223,13 +223,20 @@ function __wrap(name, raw) {
     if (raw === undefined || raw === null) return undefined;
     if (__stringFields.has(name)) return String(raw);
     if (typeof raw === 'string') {
+        // The shape decides: an effect's "scale" may be two numbers, a layer's three.
+        const parts = raw.trim().split(/\s+/).filter(p => p !== '');
         const f = __parseFloats(raw);
+        const numeric = parts.length > 0 && parts.every(p => /^-?(\d+\.?\d*|\.\d+)(e-?\d+)?$/i.test(p));
+        if (numeric && parts.length === 4) return new Vec4(f[0], f[1], f[2], f[3]);
+        if (numeric && parts.length === 3) return new Vec3(f[0], f[1], f[2]);
+        if (numeric && parts.length === 2) return new Vec2(f[0], f[1]);
+        if (numeric && parts.length === 1) {
+            if (__vec3Fields.has(name)) return new Vec3(f[0], f[0], f[0]);
+            if (__vec2Fields.has(name)) return new Vec2(f[0], f[0]);
+            return f[0];
+        }
         if (__vec3Fields.has(name)) return new Vec3(f[0] || 0, f[1] || 0, f[2] || 0);
         if (__vec2Fields.has(name)) return new Vec2(f[0] || 0, f[1] || 0);
-        if (f.length === 4 && raw.trim().split(/\s+/).length === 4) return new Vec4(f[0], f[1], f[2], f[3]);
-        if (f.length === 3 && raw.trim().split(/\s+/).length === 3) return new Vec3(f[0], f[1], f[2]);
-        if (f.length === 2 && raw.trim().split(/\s+/).length === 2) return new Vec2(f[0], f[1]);
-        if (f.length === 1 && /^\s*-?[\d.]+(e-?\d+)?\s*$/.test(raw)) return f[0];
         return raw;
     }
     if (typeof raw === 'number') {

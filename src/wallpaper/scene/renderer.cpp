@@ -148,6 +148,10 @@ SceneRenderer::SceneRenderer(gpu::Context& gpu, gpu::Blit& blit,
                                values_, size_of);
         });
         log::info("scene {}: {} scripts", assets_->project().title, scripts_->count());
+        if (scripts_->uses_media()) uses_media_ = true;
+    }
+    for (const ImageObject& im : assets_->scene().images) {
+        if (im.media_thumbnail) uses_media_ = true;
     }
     auto clear = parse_vec3(general.clear_color.resolve(values_), {0, 0, 0});
     clear_[0] = clear[0];
@@ -174,7 +178,25 @@ void SceneRenderer::set_values(const Values& values) {
     stale_ = true;
 }
 
+void SceneRenderer::set_media(const MediaState& state) {
+    bool thumbnail = state.thumbnail_version != media_.thumbnail_version;
+    media_ = state;
+    // A new cover: the draws hold its view.
+    if (thumbnail) stale_ = true;
+}
+
 const SceneTexture& SceneRenderer::texture_of(const std::string& name) const {
+    if (name.starts_with("$mediaThumbnail:")) {
+        if (media_.has_thumbnail && media_.thumbnail) {
+            static thread_local SceneTexture cover;
+            cover.texture = media_.thumbnail;
+            cover.tex_width = cover.img_width = media_.thumbnail_width;
+            cover.tex_height = cover.img_height = media_.thumbnail_height;
+            cover.clamp = true;
+            return cover;
+        }
+        return assets_->texture(name.substr(16));
+    }
     if (name.starts_with("_text_")) {
         int id = std::atoi(name.c_str() + 6);
         if (auto it = texts_.find(id); it != texts_.end()) return it->second.texture;
@@ -183,6 +205,13 @@ const SceneTexture& SceneRenderer::texture_of(const std::string& name) const {
 }
 
 std::optional<Vec2> SceneRenderer::picture_size_of(const std::string& name) const {
+    if (name.starts_with("$mediaThumbnail:")) {
+        if (media_.has_thumbnail) {
+            return Vec2{static_cast<float>(media_.thumbnail_width),
+                        static_cast<float>(media_.thumbnail_height)};
+        }
+        return assets_->picture_size(name.substr(16));
+    }
     if (name.starts_with("_text_")) {
         int id = std::atoi(name.c_str() + 6);
         if (auto it = texts_.find(id); it != texts_.end()) {
@@ -558,8 +587,13 @@ void SceneRenderer::build(VkExtent2D extent) {
     systems_.resize(scene.particles.size());
     for (std::size_t i = 0; i < scene.particles.size(); ++i) {
         const ParticleObject& object = scene.particles[i];
-        ParticleOverride over = resolve_override(object.instance_override, values_);
+        ParticleOverride over = resolve_override(object.overrides, values_);
         if (systems_[i] && systems_[i]->override_values() == over) continue;
+        if (systems_[i] && systems_[i]->override_values().count == over.count) {
+            // The same particles, new numbers: no restart.
+            systems_[i]->set_override(over);
+            continue;
+        }
         auto seed = static_cast<std::uint32_t>(object.id * 2654435761u) ^
                     static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(this));
         systems_[i] = std::make_unique<ParticleSystem>(object.desc, over, seed);
@@ -1117,6 +1151,19 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
         last_buttons_ = inputs.buttons;
         scripts_->frame(values_, f);
         if (scripts_->uses_pointer()) scripts_->cursor(values_, f, down_edge, up_edge);
+        if (scripts_->uses_media()) {
+            ScriptHost::MediaEvents events;
+            events.status = !media_status_sent_;
+            events.properties = media_.properties_version != media_seen_properties_;
+            events.playback = media_.playback_version != media_seen_playback_;
+            events.thumbnail = media_.thumbnail_version != media_seen_thumbnail_;
+            events.timeline = media_.available && media_.playback == 1;
+            media_status_sent_ = true;
+            media_seen_properties_ = media_.properties_version;
+            media_seen_playback_ = media_.playback_version;
+            media_seen_thumbnail_ = media_.thumbnail_version;
+            scripts_->media(values_, media_, events);
+        }
         for (int id : scripts_->take_changed_texts()) update_text(id, inputs.time);
         if (scripts_->structure_version() != built_structure_) stale_ = true;
         if (stale_) build(extent);
@@ -1223,6 +1270,10 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
             ParticleEnv env;
             env.delta = inputs.delta;
             env.time = inputs.time;
+            if (live_override(scene.particles[i].overrides)) {
+                ParticleOverride over = resolve_override(scene.particles[i].overrides, values_);
+                if (!(systems_[i]->override_values() == over)) systems_[i]->set_override(over);
+            }
             Vec3 origin = parse_vec3(scene.particles[i].origin.resolve(values_), {0, 0, 0});
             env.pointer = {canvas_left_ + inputs.pointer[0] * canvas_width_ - origin[0],
                            canvas_bottom_ + (1 - inputs.pointer[1]) * canvas_height_ - origin[1],

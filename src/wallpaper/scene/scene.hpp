@@ -154,10 +154,11 @@ struct ImageObject {
     bool autosize = false;
     bool fullscreen = false;
     bool passthrough = false;
-    int text = -1;            // index into SceneDesc::texts when this is a text object
-    Vec2 text_offset{0, 0};   // the text block's centre from the origin, set at load
-    bool puppet = false;      // drawn as its mesh, posed by its animation layers
-    std::string puppet_path;  // the .mdl
+    bool media_thumbnail = false;  // a slot shows the playing media's cover
+    int text = -1;                 // index into SceneDesc::texts when this is a text object
+    Vec2 text_offset{0, 0};        // the text block's centre from the origin, set at load
+    bool puppet = false;           // drawn as its mesh, posed by its animation layers
+    std::string puppet_path;       // the .mdl
     std::vector<AnimationLayer> animation_layers;
     Vec2 model_size{0, 0};
 
@@ -195,7 +196,9 @@ struct ParticleObject {
     Bound origin, scale, angles;
     Bound visible;
     Vec2 parallax_depth{1, 1};
-    nlohmann::json instance_override;    // rate, count, size, speed, lifetime, alpha, color...
+    // instanceoverride: rate, count, size, speed, lifetime, alpha, colorn...; each may be
+    // bound to a property or driven by a script.
+    std::map<std::string, Bound> overrides;
     std::shared_ptr<ParticleDesc> desc;  // null when the file did not read
 };
 

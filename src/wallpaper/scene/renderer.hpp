@@ -12,6 +12,7 @@
 #include "wallpaper/scene/particles.hpp"
 #include "wallpaper/scene/plan.hpp"
 #include "wallpaper/scene/script.hpp"
+#include "wallpaper/wallpaper.hpp"
 
 VK_DEFINE_HANDLE(VmaAllocation)
 
@@ -59,6 +60,9 @@ public:
     bool uses_pointer() const { return uses_pointer_ || (scripts_ && scripts_->uses_pointer()); }
     // Scripts run every frame: the scene never rests.
     bool scripted() const { return scripts_ != nullptr && !scripts_->empty(); }
+    // The playing media: for the thumbnail slot and the media events.
+    bool uses_media() const { return uses_media_; }
+    void set_media(const MediaState& state);
     std::size_t script_count() const { return scripts_ ? scripts_->count() : 0; }
     const std::vector<std::string>& warnings() const { return plan_.warnings; }
 
@@ -204,6 +208,10 @@ private:
         Vec2 center{0, 0};
     };
     std::map<int, TextOverride> texts_;  // by object id
+    bool uses_media_ = false;
+    MediaState media_;
+    std::uint64_t media_seen_properties_ = 0, media_seen_playback_ = 0, media_seen_thumbnail_ = 0;
+    bool media_status_sent_ = false;
     bool parallax_ = false;
     bool uses_audio_ = false;
     bool uses_pointer_ = false;

@@ -11,6 +11,7 @@ extern "C" {
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 
 #include "core/clock.hpp"
 
@@ -93,6 +94,11 @@ std::string decode(const std::filesystem::path& path, std::uint32_t max_dimensio
     av_log_set_level(AV_LOG_ERROR);
 
     AVFormatContext* raw_format = nullptr;
+    if (path.string().starts_with("http://") || path.string().starts_with("https://")) {
+        // Album covers come as URLs; FFmpeg fetches them itself.
+        static std::once_flag network;
+        std::call_once(network, [] { avformat_network_init(); });
+    }
     if (int r = avformat_open_input(&raw_format, path.c_str(), nullptr, nullptr); r < 0) {
         return "cannot open: " + av_error(r);
     }

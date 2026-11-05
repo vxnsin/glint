@@ -2,8 +2,8 @@
 
 #include <signal.h>
 #include <sys/signalfd.h>
-#include <sys/timerfd.h>
 #include <sys/sysmacros.h>
+#include <sys/timerfd.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -200,6 +200,31 @@ void Daemon::before_poll() {
         log::info("audio capture stopped");
     }
 
+    // The media client only while a shown, running wallpaper shows or reacts to media.
+    bool media = false;
+    for (const auto& entry : screens_) {
+        if (reasons(*entry) != 0) continue;
+        if ((entry->current && entry->current->wants_media()) ||
+            (entry->incoming && entry->incoming->ready() && entry->incoming->wants_media())) {
+            media = true;
+        }
+    }
+    if (media && !mpris_) {
+        mpris_ = std::make_unique<media::Mpris>(loop_, *workers_, *gpu_, *staging_);
+        if (std::string error = mpris_->start(); !error.empty()) {
+            log::warn("media: {}", error);
+            mpris_.reset();
+        } else {
+            log::info("media client started");
+            mpris_->set_listener([this] {
+                for (auto& entry : screens_) entry->dirty = true;
+            });
+        }
+    } else if (!media && mpris_) {
+        mpris_.reset();
+        log::info("media client stopped");
+    }
+
     // Free what the GPU is done with. Whatever is still in flight is waited for now, while
     // the GPU is busy for a millisecond at most, rather than needing a wakeup later.
     if (gpu_->collect()) gpu_->drain();
@@ -364,6 +389,11 @@ void Daemon::render(Screen& entry) {
         audio::Levels levels = capture_.levels();
         if (entry.current) entry.current->audio_spectrum(levels.left.data(), levels.right.data());
         if (fading) entry.incoming->audio_spectrum(levels.left.data(), levels.right.data());
+    }
+    if (mpris_) {
+        const MediaState& media = mpris_->state();
+        if (entry.current && entry.current->wants_media()) entry.current->media(media);
+        if (fading && entry.incoming->wants_media()) entry.incoming->media(media);
     }
 
     gpu::Target target{};

@@ -207,12 +207,12 @@ bool ParticleDesc::rope() const {
     return false;
 }
 
-ParticleOverride resolve_override(const json& o, const Values& values) {
+ParticleOverride resolve_override(const std::map<std::string, Bound>& o, const Values& values) {
     ParticleOverride over;
-    if (!o.is_object()) return over;
     auto number = [&](const char* key, float fallback) {
-        if (!o.contains(key)) return fallback;
-        json v = parse_bound(o[key]).resolve(values);
+        auto it = o.find(key);
+        if (it == o.end()) return fallback;
+        json v = it->second.resolve(values);
         if (v.is_number()) return v.get<float>();
         if (v.is_string()) return std::strtof(v.get<std::string>().c_str(), nullptr);
         return fallback;
@@ -224,13 +224,31 @@ ParticleOverride resolve_override(const json& o, const Values& values) {
     over.lifetime = number("lifetime", 1);
     over.alpha = number("alpha", 1);
     over.brightness = number("brightness", 1);
-    if (o.contains("colorn")) {
-        over.color = parse_vec3(parse_bound(o["colorn"]).resolve(values), {1, 1, 1});
-    } else if (o.contains("color")) {
-        Vec3 c = parse_vec3(parse_bound(o["color"]).resolve(values), {255, 255, 255});
+    if (auto it = o.find("colorn"); it != o.end()) {
+        over.color = parse_vec3(it->second.resolve(values), {1, 1, 1});
+    } else if (auto it2 = o.find("color"); it2 != o.end()) {
+        Vec3 c = parse_vec3(it2->second.resolve(values), {255, 255, 255});
         over.color = {c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f};
     }
     return over;
+}
+
+bool live_override(const std::map<std::string, Bound>& overrides) {
+    for (const auto& [name, bound] : overrides) {
+        if (bound.live()) return true;
+    }
+    return false;
+}
+
+void ParticleSystem::set_override(const ParticleOverride& over) {
+    float count = over_.count;
+    over_ = over;
+    over_.count = count;
+    for (auto& child : children_) {
+        ParticleOverride c = over;
+        c.count = child->over_.count;
+        child->set_override(c);
+    }
 }
 
 bool follows_pointer(const ParticleDesc& desc) {

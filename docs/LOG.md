@@ -525,3 +525,13 @@ Design note: scripts must not write into the scene description, which two output
 Every bound field got a key at parse time, and a per-output vector of cells, reachable
 through `Values`, holds what scripts wrote. The readers did not change; `Bound::at()` looks
 in the cell first.
+
+### Media
+
+The album cover and the song title. Players announce themselves on the session bus as
+MPRIS services; glint reads the playing one and hands the scene a state with versions, so
+the scripts get each event once (docs/FORMATS.md, 13). The cover comes as an https URL from
+Spotify, and FFmpeg's own http client fetches it, so no new dependency was needed for that;
+sdbus-c++ was agreed on earlier. The thumbnail slot in a scene is a material instance with
+a system texture, which the readers had skipped; it now resolves to the cover when there is
+one and to the scene's placeholder otherwise.

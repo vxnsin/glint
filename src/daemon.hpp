@@ -24,6 +24,7 @@
 #include "gpu/video_pass.hpp"
 #include "input/hyprland.hpp"
 #include "ipc/server.hpp"
+#include "media/mpris.hpp"
 #include "wallpaper/image/textures.hpp"
 #include "wallpaper/scene/scene_wallpaper.hpp"
 #include "wallpaper/video/source.hpp"
@@ -173,8 +174,9 @@ private:
     std::uint32_t paused_all_ = 0;  // reasons set for "*", on every output including new ones
     std::unique_ptr<ipc::Server> server_;
     audio::Capture capture_;
-    input::HyprlandCursor hyprland_;  // runs only while a shown, running scene wants audio
-    bool force_toplevels_ = false;    // GLINT_TRACK_TOPLEVELS=1
+    std::unique_ptr<media::Mpris> mpris_;  // runs while a shown scene wants media
+    input::HyprlandCursor hyprland_;       // runs only while a shown, running scene wants audio
+    bool force_toplevels_ = false;         // GLINT_TRACK_TOPLEVELS=1
 
     UniqueFd signal_fd_;
     int wayland_id_ = 0;

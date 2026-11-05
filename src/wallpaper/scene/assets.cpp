@@ -259,6 +259,7 @@ bool SceneAssets::make_text(const TextObject& text, const std::string& value, Sc
 }
 
 void SceneAssets::read_texture(const std::string& name) {
+    if (name.starts_with("$mediaThumbnail:")) return read_texture(name.substr(16));
     if (name.starts_with("_rt_") || name.starts_with("_text_")) return;  // not files
     std::string path = texture_path(name);
     auto file = vfs_.read(path);
@@ -474,12 +475,14 @@ SceneAssets::~SceneAssets() {
 }
 
 const SceneTexture& SceneAssets::texture(const std::string& name) const {
+    if (name.starts_with("$mediaThumbnail:")) return texture(name.substr(16));
     if (auto it = textures_.find(name); it != textures_.end()) return it->second;
     if (name.starts_with("_rt_")) return clear_;
     return white_;
 }
 
 std::optional<Vec2> SceneAssets::picture_size(const std::string& name) const {
+    if (name.starts_with("$mediaThumbnail:")) return picture_size(name.substr(16));
     if (auto it = textures_.find(name); it != textures_.end()) {
         return Vec2{static_cast<float>(it->second.img_width) * it->second.units,
                     static_cast<float>(it->second.img_height) * it->second.units};

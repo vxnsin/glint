@@ -377,8 +377,8 @@ set anew. A script that throws is logged once and left alone; a call that runs p
 is interrupted. `we-inspect <item> --scripts` runs a scene's scripts for two seconds
 without a GPU and prints what they wrote. The corpus (1266 scripts in 36 items) loads and
 runs clean except `thisScene.createLayer` (audio visualisers that spawn their bars: open),
-scripts on particle instance overrides (`rate`, `count`, `size`; they load but are not
-applied yet), and the media events, which wait for the MPRIS integration.
+and `createAnimationLayer`. Scripts on particle instance overrides (`rate`, `size`,
+`colorn`...) apply to the running system without restarting it; only `count` needs a new one.
 
 ## 12. Text objects (M5)
 
@@ -423,7 +423,37 @@ from the origin goes into the model matrix. `we-inspect <item> --text` writes ev
 object's block as a PAM file. Open: the font effects, rasterising at the shown density, and
 text driven by scripts or media (shown as the stored value until SceneScript lands).
 
-## 13. Video and web items (M4, M6)
+## 13. Media (M5)
+
+A scene shows what is playing in two ways. Scripts get the media events (section 11):
+`mediaPropertiesChanged` with `title`, `artist`, `albumTitle`, `albumArtist`, `contentType`,
+`mediaPlaybackChanged` with `state` (0 stopped, 1 playing, 2 paused), `mediaThumbnailChanged`
+with `hasThumbnail` and the cover's `primaryColor`, `secondaryColor`, `tertiaryColor`,
+`textColor` (one of the others that reads on the primary, else black or white) and
+`highContrastColor` (black or white), `mediaTimelineChanged` with `position` and `duration`
+in seconds, `mediaStatusChanged` with `enabled`. And an image layer shows the cover through
+a material instance:
+
+    "image": "models/solid_instance_model_<hash>.json",
+    "instance": {"combos": {...}, "textures": ["<placeholder>"],
+                 "usertextures": [{"name": "$mediaThumbnail", "type": "system"}]}
+
+The model is `{"instanced": true, "material": "materials/util/solidlayer_instance.json",
+"solidlayer": true}` (genericimage2 over util/white); the instance puts its combos and
+textures over the material's first pass, and a `usertextures` entry names a system texture
+for that slot: `$mediaThumbnail` is the cover, shown in place of the slot's texture (the
+scene's placeholder picture) while a cover is known.
+
+glint reads the players on the session bus (MPRIS, `org.mpris.MediaPlayer2.*`, through
+sdbus-c++, polled from the daemon's loop; src/media/mpris.cpp): the one playing, else the
+one that played last. Metadata, PlaybackStatus and Position come from the Properties
+interface, with `Seeked`; the position runs on from the last reading while playing. The
+cover (`mpris:artUrl`, a file or an https URL, which FFmpeg fetches itself) is decoded on a
+worker to at most 512 pixels, uploaded once, and shared by every output; the colours are the
+most common saturated 4-bit bins of the picture. The client runs only while a shown scene
+wants media (a thumbnail slot or a script with media handlers).
+
+## 14. Video and web items (M4, M6)
 
 - `type: video`: `file` is an mp4/webm; decode with FFmpeg, no special format.
 - `type: web`: `file` is the html; `general.properties` reach the page through

@@ -65,6 +65,10 @@ public:
 
     bool wants_cursor() const override;
     void cursor(const Cursor& cursor) override;
+    bool wants_media() const override { return renderer_ && renderer_->uses_media(); }
+    void media(const MediaState& state) override {
+        if (renderer_) renderer_->set_media(state);
+    }
 
     const SceneAssets* assets() const { return assets_.get(); }
     std::size_t draw_count() const { return renderer_ ? renderer_->draw_count() : 0; }

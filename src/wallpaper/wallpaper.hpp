@@ -22,6 +22,7 @@ class Workers;
 namespace gpu {
 class Context;
 class StagingRing;
+class Texture;
 struct Target;
 }  // namespace gpu
 
@@ -52,7 +53,7 @@ struct Options {
     float linear[3] = {0, 0, 0};      // the same colour, linear
     std::string transition = "fade";  // "fade" or "none"
     int duration_ms = 300;
-    int fps = 0;  // cap on frames drawn per second; 0: the output's rate
+    int fps = 0;                // cap on frames drawn per second; 0: the output's rate
     nlohmann::json properties;  // scene: values to start with, by property name
     float volume = 0;           // scene and video sound, 0 to 1; silent unless asked for
     bool mute = false;
@@ -106,6 +107,22 @@ struct Property {
     int order = 0;
 };
 
+// What is playing, for scenes that show or react to media (docs/FORMATS.md, 11). The
+// versions tell a wallpaper what changed since it last looked.
+struct MediaState {
+    bool available = false;  // a player is on the bus
+    int playback = 0;        // 0 stopped, 1 playing, 2 paused (MediaPlaybackEvent)
+    std::string title, artist, album, album_artist, content_type;
+    double position = 0;  // seconds
+    double duration = 0;
+    bool has_thumbnail = false;
+    std::shared_ptr<gpu::Texture> thumbnail;
+    std::uint32_t thumbnail_width = 0, thumbnail_height = 0;
+    float primary[3] = {0, 0, 0}, secondary[3] = {0, 0, 0}, tertiary[3] = {0, 0, 0};
+    float text_color[3] = {1, 1, 1}, high_contrast[3] = {1, 1, 1};
+    std::uint64_t properties_version = 0, playback_version = 0, thumbnail_version = 0;
+};
+
 struct Frame {
     double time;   // seconds since the wallpaper started, pauses excluded
     double delta;  // seconds since the last rendered frame
@@ -156,6 +173,10 @@ public:
     // 64 bands per channel, as Wallpaper Engine's g_AudioSpectrum64*. Only scenes use it.
     virtual void audio_spectrum(const float*, const float*) {}
     virtual bool wants_audio() const { return false; }
+    // Media: scenes with the thumbnail or media scripts. Called before each frame while the
+    // daemon's media client runs.
+    virtual bool wants_media() const { return false; }
+    virtual void media(const MediaState&) {}
 };
 
 // The checks make_wallpaper does, without making one: error message or empty.

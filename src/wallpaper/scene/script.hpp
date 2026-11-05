@@ -9,6 +9,7 @@
 
 #include "core/math.hpp"
 #include "wallpaper/scene/scene.hpp"
+#include "wallpaper/wallpaper.hpp"
 
 // SceneScript (docs/FORMATS.md, 11): the scripts bound to a scene's fields, run on
 // quickjs-ng. One host per scene on one output, driven from the render thread: scripts
@@ -63,6 +64,14 @@ public:
     // down, up, click. world in canvas units, y up.
     void cursor(const Values& values, const ScriptFrame& frame, bool down_edge, bool up_edge);
 
+    // The media events, as far as they are due (the renderer tracks the versions).
+    struct MediaEvents {
+        bool status = false, properties = false, playback = false, thumbnail = false,
+             timeline = false;
+    };
+    void media(const Values& values, const MediaState& state, const MediaEvents& events);
+    bool uses_media() const { return uses_media_; }
+
     // Bumped when a script changed something the plan depends on (visibility).
     std::uint64_t structure_version() const { return structure_; }
     // Text objects (by object id) whose string a script changed since the last call.
@@ -90,6 +99,7 @@ private:
     std::set<int> changed_texts_;
     bool uses_pointer_ = false;
     bool uses_audio_ = false;
+    bool uses_media_ = false;
     std::vector<Script> scripts_;
     friend struct Impl;
 };

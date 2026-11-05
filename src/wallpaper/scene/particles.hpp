@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -64,9 +65,12 @@ struct ParticleOverride {
     bool operator==(const ParticleOverride&) const = default;
 };
 
-// An object's instanceoverride with the property values applied: a value may be bound to a
-// property ({"user": "bokeh", "value": 0.2}).
-ParticleOverride resolve_override(const nlohmann::json& instance_override, const Values& values);
+// An object's instanceoverride with the property values applied (a value may be bound to a
+// property, {"user": "bokeh", "value": 0.2}, or written by a script).
+ParticleOverride resolve_override(const std::map<std::string, Bound>& overrides,
+                                  const Values& values);
+// Whether any override is a timeline or a script, so it is read every frame.
+bool live_override(const std::map<std::string, Bound>& overrides);
 
 // Whether the system or any child has a control point that follows the cursor.
 bool follows_pointer(const ParticleDesc& desc);
@@ -108,6 +112,9 @@ public:
     }
     const ParticleDesc& desc() const { return *desc_; }
     const ParticleOverride& override_values() const { return over_; }
+    // New override values for the running system (rate, size, speed, lifetime, alpha,
+    // colour); a changed count needs a new system, it is left as it was.
+    void set_override(const ParticleOverride& over);
 
     // The children are drawn as systems of their own with their materials.
     std::vector<std::unique_ptr<ParticleSystem>>& children() { return children_; }

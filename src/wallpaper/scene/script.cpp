@@ -236,7 +236,11 @@ struct ScriptHost::Impl {
             if (index < 0 || static_cast<std::size_t>(index) >= scene.particles.size())
                 return nullptr;
             const ParticleObject& p = scene.particles[static_cast<std::size_t>(index)];
-            return of(p.origin, p.scale, p.angles, p.visible);
+            if (const Bound* b = of(p.origin, p.scale, p.angles, p.visible)) return b;
+            if (auto it = p.overrides.find(std::string(name)); it != p.overrides.end()) {
+                return &it->second;
+            }
+            return nullptr;
         }
         if (kind == kind_group) {
             if (index < 0 || static_cast<std::size_t>(index) >= scene.groups.size()) return nullptr;
@@ -294,11 +298,6 @@ struct ScriptHost::Impl {
             if (name == "id") return p.id;
             if (name == "name") return p.name;
             if (name == "parallaxDepth") return vec_text(p.parallax_depth);
-            if (p.instance_override.is_object() && p.instance_override.contains(name)) {
-                const json& v = p.instance_override[std::string(name)];
-                if (v.is_object() && v.contains("value")) return v["value"];
-                return v;
-            }
             return json();
         }
         if (kind == kind_group) {
@@ -459,6 +458,9 @@ struct ScriptHost::Impl {
         for (const ParticleObject& p : scene.particles) {
             for (const Bound* b : {&p.origin, &p.scale, &p.angles, &p.visible}) {
                 if (b->key == key) return b;
+            }
+            for (const auto& [n, b] : p.overrides) {
+                if (b.key == key) return &b;
             }
         }
         for (const GroupObject& g : scene.groups) {
@@ -979,14 +981,7 @@ ScriptHost::ScriptHost(const SceneDesc& scene, const Project& project, std::stri
         add(p.scale, kind_particle, idx, -1, -1, "scale", owner);
         add(p.angles, kind_particle, idx, -1, -1, "angles", owner);
         add(p.visible, kind_particle, idx, -1, -1, "visible", owner);
-        if (p.instance_override.is_object()) {
-            for (const auto& [name, v] : p.instance_override.items()) {
-                if (v.is_object() && v.contains("script")) {
-                    impl_->warn_once("particle " + owner + ": a script on " + name +
-                                     " is not run yet");
-                }
-            }
-        }
+        for (const auto& [name, b] : p.overrides) add(b, kind_particle, idx, -1, -1, name, owner);
     }
     for (std::size_t i = 0; i < scene.groups.size(); ++i) {
         const GroupObject& g = scene.groups[i];
@@ -1164,6 +1159,7 @@ ScriptHost::ScriptHost(const SceneDesc& scene, const Project& project, std::stri
         if (s.bound->script_source.find("registerAudioBuffers") != std::string::npos) {
             uses_audio_ = true;
         }
+        if (s.bound->script_source.find("media") != std::string::npos) uses_media_ = true;
     }
 }
 
@@ -1383,6 +1379,81 @@ bool ScriptHost::empty() const {
 
 std::size_t ScriptHost::count() const {
     return scripts_.size();
+}
+
+void ScriptHost::media(const Values& values, const MediaState& state, const MediaEvents& events) {
+    if (scripts_.empty() || !uses_media_) return;
+    Impl& impl = *impl_;
+    JSContext* ctx = impl.ctx;
+    current_values = &values;
+    auto vec3 = [&](JSValueConst object, const char* name, const float* c) {
+        JSValue v = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, v, "x", JS_NewFloat64(ctx, c[0]));
+        JS_SetPropertyStr(ctx, v, "y", JS_NewFloat64(ctx, c[1]));
+        JS_SetPropertyStr(ctx, v, "z", JS_NewFloat64(ctx, c[2]));
+        // A real Vec3, so scripts may call its methods.
+        JSValue global = JS_GetGlobalObject(ctx);
+        JSValue ctor = JS_GetPropertyStr(ctx, global, "Vec3");
+        JSValue made = JS_CallConstructor(ctx, ctor, 1, &v);
+        JS_FreeValue(ctx, ctor);
+        JS_FreeValue(ctx, global);
+        JS_FreeValue(ctx, v);
+        JS_SetPropertyStr(ctx, object, name, made);
+    };
+    auto send = [&](const char* name, JSValue ev) {
+        for (std::size_t s = 0; s < scripts_.size(); ++s) {
+            Script& script = scripts_[s];
+            if (script.failed) continue;
+            JSValue args[3] = {JS_NewInt32(ctx, static_cast<int>(s)), JS_NewString(ctx, name),
+                               JS_DupValue(ctx, ev)};
+            JSValue r = impl.call(impl.event, 3, args);
+            for (JSValue& a : args) JS_FreeValue(ctx, a);
+            if (JS_IsException(r)) {
+                impl.warn_once(script.label + ": " + name + ": " + impl.exception());
+                script.failed = true;
+            }
+            JS_FreeValue(ctx, r);
+        }
+        JS_FreeValue(ctx, ev);
+    };
+    if (events.status) {
+        JSValue ev = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, ev, "enabled", JS_NewBool(ctx, true));
+        send("mediaStatusChanged", ev);
+    }
+    if (events.properties) {
+        JSValue ev = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, ev, "title", JS_NewString(ctx, state.title.c_str()));
+        JS_SetPropertyStr(ctx, ev, "artist", JS_NewString(ctx, state.artist.c_str()));
+        JS_SetPropertyStr(ctx, ev, "subTitle", JS_NewString(ctx, ""));
+        JS_SetPropertyStr(ctx, ev, "albumTitle", JS_NewString(ctx, state.album.c_str()));
+        JS_SetPropertyStr(ctx, ev, "albumArtist", JS_NewString(ctx, state.album_artist.c_str()));
+        JS_SetPropertyStr(ctx, ev, "genres", JS_NewString(ctx, ""));
+        JS_SetPropertyStr(ctx, ev, "contentType", JS_NewString(ctx, state.content_type.c_str()));
+        send("mediaPropertiesChanged", ev);
+    }
+    if (events.playback) {
+        JSValue ev = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, ev, "state", JS_NewInt32(ctx, state.playback));
+        send("mediaPlaybackChanged", ev);
+    }
+    if (events.thumbnail) {
+        JSValue ev = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, ev, "hasThumbnail", JS_NewBool(ctx, state.has_thumbnail));
+        vec3(ev, "primaryColor", state.primary);
+        vec3(ev, "secondaryColor", state.secondary);
+        vec3(ev, "tertiaryColor", state.tertiary);
+        vec3(ev, "textColor", state.text_color);
+        vec3(ev, "highContrastColor", state.high_contrast);
+        send("mediaThumbnailChanged", ev);
+    }
+    if (events.timeline) {
+        JSValue ev = JS_NewObject(ctx);
+        JS_SetPropertyStr(ctx, ev, "position", JS_NewFloat64(ctx, state.position));
+        JS_SetPropertyStr(ctx, ev, "duration", JS_NewFloat64(ctx, state.duration));
+        send("mediaTimelineChanged", ev);
+    }
+    current_values = nullptr;
 }
 
 std::vector<int> ScriptHost::take_changed_texts() {
