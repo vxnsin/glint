@@ -62,7 +62,6 @@ private:
         VkExtent2D extent{0, 0};
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkDeviceSize memory = 0;
-        bool repeat = false;
     };
     struct Dynamic {  // a uniform written every frame
         enum class What {
@@ -128,7 +127,14 @@ private:
     math::Mat4 projection_;
     Image scene_;
     Image framebuffer_;
-    std::vector<Image> targets_;
+    // The plan's targets, sharing images: a target that is finished with for the frame
+    // hands its image to the next one of the same size.
+    std::vector<std::unique_ptr<Image>> images_;
+    struct TargetUse {
+        Image* image = nullptr;
+        bool repeat = false;  // sampled wrapping, like the picture it holds
+    };
+    std::vector<TargetUse> targets_;
     std::vector<Draw> draws_;
     gpu::Buffer vertices_;
     gpu::Buffer indices_;

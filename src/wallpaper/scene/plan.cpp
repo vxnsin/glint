@@ -70,11 +70,15 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
         auto note = [&](const std::optional<std::string>& t) {
             if (t && std::regex_match(*t, composite)) names.insert(*t);
         };
+        // Only what is drawn reads them: a hidden object, or an effect a property turned
+        // off, must not cost a target.
         for (const ImageObject& image : scene.images) {
+            if (!everything && !image.visible.resolve_bool(values, true)) continue;
             for (const auto& pass : image.material.passes) {
                 for (const auto& t : pass.textures) note(t);
             }
             for (const Effect& effect : image.effects) {
+                if (!everything && !effect.visible.resolve_bool(values, true)) continue;
                 for (const EffectPass& ep : effect.passes) {
                     for (const auto& mp : ep.material.passes) {
                         for (const auto& t : mp.textures) note(t);
@@ -100,6 +104,15 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
                 continue;
             }
             const ImageObject& image = scene.images[static_cast<std::size_t>(object)];
+            // _a and _b hold the same picture (the object without its effects), so _b is
+            // _a's target under another name; the set lists _a first.
+            if (name.ends_with("_b")) {
+                auto a = plan.composites.find(name.substr(0, name.size() - 2) + "_a");
+                if (a != plan.composites.end()) {
+                    plan.composites[name] = a->second;
+                    continue;
+                }
+            }
             int target = static_cast<int>(plan.targets.size());
             plan.targets.push_back({object, object_size(image, scene.general, values, texture_size),
                                     false, false, name});

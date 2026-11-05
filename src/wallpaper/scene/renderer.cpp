@@ -206,7 +206,8 @@ void SceneRenderer::destroy_image(Image& image) {
 void SceneRenderer::release() {
     destroy_image(scene_);
     destroy_image(framebuffer_);
-    for (Image& t : targets_) destroy_image(t);
+    for (auto& t : images_) destroy_image(*t);
+    images_.clear();
     targets_.clear();
     draws_.clear();
     // Buffers may be read by frames in flight.
@@ -277,23 +278,77 @@ void SceneRenderer::build(VkExtent2D extent) {
 
     scene_ = make_image(extent, target_format);
     if (plan_.reads_framebuffer) framebuffer_ = make_image(extent, target_format);
-    for (const PlanTarget& t : plan_.targets) {
+    // When each target is first and last touched in the frame.
+    std::size_t draw_count = plan_.draws.size();
+    std::vector<std::size_t> first(plan_.targets.size(), draw_count);
+    std::vector<std::size_t> last(plan_.targets.size(), 0);
+    auto touch = [&](int target, std::size_t at) {
+        if (target < 0) return;
+        auto i = static_cast<std::size_t>(target);
+        first[i] = std::min(first[i], at);
+        last[i] = std::max(last[i], at);
+    };
+    for (std::size_t d = 0; d < draw_count; ++d) {
+        const PlanDraw& p = plan_.draws[d];
+        touch(p.target, d);
+        for (const PlanTexture& t : p.textures) {
+            if (t.kind == PlanTexture::Kind::target) touch(t.target, d);
+        }
+    }
+
+    struct Want {
+        std::size_t target;
+        VkExtent2D extent;
+        bool repeat;
+    };
+    std::vector<Want> wants;
+    for (std::size_t i = 0; i < plan_.targets.size(); ++i) {
+        const PlanTarget& t = plan_.targets[i];
         float sx = t.fixed ? t.size[0] : t.size[0] * canvas_scale_;
         float sy = t.fixed ? t.size[1] : t.size[1] * canvas_scale_;
         VkExtent2D e{std::clamp(static_cast<std::uint32_t>(std::lround(sx)), 1u, max_target),
                      std::clamp(static_cast<std::uint32_t>(std::lround(sy)), 1u, max_target)};
-        Image image = make_image(e, target_format);
-        image.repeat = t.repeat;
+        bool repeat = t.repeat;
         // A layer wraps like the picture it holds: a scrolling effect moves a repeating
         // picture across its edge, and clamping would smear the edge into long bars.
         if (t.name == "layer a" || t.name == "layer b") {
             const ImageObject& owner = scene.images[static_cast<std::size_t>(t.object)];
             if (!owner.material.passes.empty() && !owner.material.passes[0].textures.empty() &&
                 owner.material.passes[0].textures[0]) {
-                image.repeat = !assets_->texture(*owner.material.passes[0].textures[0]).clamp;
+                repeat = !assets_->texture(*owner.material.passes[0].textures[0]).clamp;
             }
         }
-        targets_.push_back(image);
+        wants.push_back({i, e, repeat});
+    }
+    std::ranges::stable_sort(wants, [&](const Want& x, const Want& y) {
+        return first[x.target] < first[y.target];
+    });
+    targets_.assign(plan_.targets.size(), {});
+    struct Holder {  // an image and the target using it
+        Image* image;
+        std::size_t target;
+    };
+    std::vector<Holder> holders;
+    for (const Want& want : wants) {
+        Image* found = nullptr;
+        for (Holder& held : holders) {
+            if (held.image->extent.width == want.extent.width &&
+                held.image->extent.height == want.extent.height && last[held.target] < first[want.target]) {
+                found = held.image;
+                held.target = want.target;
+                break;
+            }
+        }
+        if (found == nullptr) {
+            images_.push_back(std::make_unique<Image>(make_image(want.extent, target_format)));
+            found = images_.back().get();
+            holders.push_back({found, want.target});
+        }
+        targets_[want.target] = {found, want.repeat};
+        log::debug("scene: target {} ({}) {}x{}, draws {} to {}, image {}", want.target,
+                   plan_.targets[want.target].name, want.extent.width, want.extent.height,
+                   first[want.target], last[want.target],
+                   static_cast<const void*>(found));
     }
 
     models_.clear();
@@ -326,7 +381,7 @@ void SceneRenderer::build(VkExtent2D extent) {
     for (const PlanDraw& p : plan_.draws) {
         Draw draw;
         draw.plan = &p;
-        draw.target = p.target >= 0 ? &targets_[static_cast<std::size_t>(p.target)] : nullptr;
+        draw.target = p.target >= 0 ? targets_[static_cast<std::size_t>(p.target)].image : nullptr;
         draw.first_vertex = static_cast<std::uint32_t>(vertices.size() / 5);
         draw.first_index = static_cast<std::uint32_t>(indices.size());
         float u1 = 1, v1 = 1;
@@ -412,10 +467,10 @@ void SceneRenderer::build(VkExtent2D extent) {
                 if (tex.texture) draw.views[i] = tex.texture->view();
                 draw.samplers[i] = assets_->sampler(tex.clamp, tex.nearest);
             } else if (t.kind == PlanTexture::Kind::target) {
-                Image& image = targets_[static_cast<std::size_t>(t.target)];
-                draw.views[i] = image.view;
-                draw.sampled[i] = &image;
-                draw.samplers[i] = assets_->sampler(!image.repeat, false);
+                const TargetUse& use = targets_[static_cast<std::size_t>(t.target)];
+                draw.views[i] = use.image->view;
+                draw.sampled[i] = use.image;
+                draw.samplers[i] = assets_->sampler(!use.repeat, false);
             } else if (t.kind == PlanTexture::Kind::framebuffer) {
                 draw.views[i] = framebuffer_.view;
                 draw.sampled[i] = &framebuffer_;
@@ -454,8 +509,8 @@ void SceneRenderer::build(VkExtent2D extent) {
     uniforms_ =
         gpu::Buffer(gpu_.allocator(), uniform_slot_ * 2, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
     stale_ = false;
-    log::debug("scene: {} draws, {} targets, {} KB of uniforms per frame", draws_.size(),
-               targets_.size(), uniform_slot_ / 1024);
+    log::debug("scene: {} draws, {} targets in {} images, {} KB of uniforms per frame",
+               draws_.size(), targets_.size(), images_.size(), uniform_slot_ / 1024);
 }
 
 void SceneRenderer::fill_block(Draw& draw) {
@@ -591,7 +646,7 @@ void SceneRenderer::fill_block(Draw& draw) {
                 ih = static_cast<float>(tex.img_height);
                 levels = tex.texture ? static_cast<float>(tex.texture->levels()) : 1;
             } else if (t.kind == PlanTexture::Kind::target) {
-                const Image& image2 = targets_[static_cast<std::size_t>(t.target)];
+                const Image& image2 = *targets_[static_cast<std::size_t>(t.target)].image;
                 tw = iw = static_cast<float>(image2.extent.width);
                 th = ih = static_cast<float>(image2.extent.height);
             } else if (t.kind == PlanTexture::Kind::framebuffer) {
@@ -855,7 +910,7 @@ void SceneRenderer::composite(const gpu::Target& target, float opacity) {
 
 std::uint64_t SceneRenderer::memory() const {
     std::uint64_t total = scene_.memory + framebuffer_.memory;
-    for (const Image& t : targets_) total += t.memory;
+    for (const auto& t : images_) total += t->memory;
     return total;
 }
 
