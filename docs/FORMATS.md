@@ -280,28 +280,44 @@ from the object (cursor-following ones from `g_PointerPosition`).
 ## 10. Puppet, animation, model (M5)
 
 - `puppet` in a model json names a `.mdl` (`models/x_puppet.mdl`): the mesh, its bones and
-  their animations. The picture of a puppet is an atlas of the parts, so drawn as a flat
-  quad it shows the parts scattered; the mesh puts them together.
-- MDLV0023, read from the puppets of 3426865175 and 2857144643: `char[9] "MDLV0023"`, three
-  u32 (`0x01800009 1 1`), the material path NUL-terminated, seven u32 of zero, a u32 of flags
-  (`0x0180000f`), u32 byte size of the vertices, the vertices at 80 bytes (position 3 floats
-  in picture pixels with y up, relative to the object's origin; normal 3, tangent 4, bone
-  indices 4 x u32, weights 4, uv 2), u32 byte size of the indices, u16 triangles. Then a
-  block that starts `01 01 00 00 00` (not read yet), then:
-  - `MDLS0004`: u32 end offset, u16 bone count, per bone four bytes, i32 parent (-1 for the
-    root), u32 64, the 4x4 rest matrix relative to the parent (column-major), a
-    NUL-terminated JSON string (often empty).
-  - `MDAT0001`: u32 end offset, u16 count, per attachment u16 bone, the name NUL-terminated,
-    a 4x4 matrix relative to that bone.
-  - `MDLA0006`: the animations (not read yet).
+  their animations. The picture of a puppet is an atlas of the parts; the mesh's rest pose
+  is that atlas, and an animation's keyframes put the parts together. Drawn in the rest pose
+  a puppet shows its parts scattered (a face off to the side, say).
+- Header, MDLV0013 to MDLV0023: `char[9] "MDLVnnnn\0"`, three u32 (`0x01800009 1 1`), the
+  material path NUL-terminated, seven u32 of zero, a u32 of flags (`0x0180000f`), u32 byte
+  size of the vertices, the vertices at 80 bytes (position 3 floats in picture pixels with y
+  up, relative to the object's origin; normal 3; tangent 4; bone indices 4 x u32; weights 4;
+  uv 2), u32 byte size of the indices, u16 triangles.
+- `MDLS0001` to `MDLS0004`: u32 end offset, u32 bone count, per bone five bytes, i32 parent
+  (-1 for the root), u32 64, the 4x4 rest matrix relative to the parent (column-major), a
+  NUL-terminated JSON string with the physics settings (`a`, `lamin`, `lamax`, `rax`, `ray`,
+  `raz`, `s`, `tm`, `tp`). More per-bone data follows up to the end offset (further matrices
+  and a bone order), which glint does not need: composing the rest matrices down the chain
+  lands each bone where its vertices are.
+- `MDAT0001`: u32 end offset, u16 count, per attachment u16 bone, the name NUL-terminated,
+  a 4x4 matrix relative to that bone.
+- `MDLA0001` to `MDLA0006`: u32 end offset, u32 animation count; per animation u32 id (what
+  an object's `animationlayers[].animation` names), u32 zero, the name, the mode (`loop`,
+  `mirror` or `single`), f32 fps, u32 length in frames, u32 zero, u32 track count; per track
+  (one per bone, in bone order) u32 zero, u32 byte size, then length + 1 keyframes of nine
+  floats: translation, rotation (radians about x, y, z) and scale, the bone's transform
+  relative to its parent. After the tracks a few zero bytes (0, 0, 5, 6, 30, 31 by version)
+  and a u32 count of events, each f32 time and a JSON string (`{"frame": 105, "name":
+  "changeAnimation"}`). The last track in every file read so far ends exactly at the end
+  offset.
+- Skinning: vertex' = sum over its four bones of weight x global(pose) x inverse(global(rest))
+  x vertex, with global = the parent's global times the bone's local transform (translation,
+  then rotation z, y, x, then scale). glint does this on the CPU each frame; the posed
+  vertices go into a buffer of their own.
+- An object's `animationlayers`: `animation` (id), `rate`, `blend`, `visible`, `additive`.
+  The first visible layer gives the pose; later ones blend in by their weight, additive ones
+  as their difference from the rest pose. An object without a layer that names one of the
+  mesh's animations stays in the rest pose.
 - An image object with `"parent"` and `"attachment": "name"` hangs from that attachment of
   the parent puppet: its transform is the parent's, then the attachment's place in the rest
-  pose (the bone chain's translations plus its own), then the object's own origin.
-- Until bones and animations arrive in M5, glint draws every puppet mesh in its rest pose.
-  That puts figures together whose rest pose is their shown pose (3426865175). Rigs whose
-  pose comes from an animation (the sitting figure of 2857144643) show their rest pose,
-  which is not what Wallpaper Engine shows.
-- Object `animationlayers` blend the animations; bone physics (spring, gravity, limits).
+  pose (the bone chain's translations plus its own), then the object's own origin. The
+  attachment does not yet follow the animated bone.
+- Bone physics (spring, gravity, limits from the JSON above) are not simulated.
 - `.mdl` (3D models, compiled from obj/fbx): header `MDLV0001`, meshes with vertex
   streams, skeleton (`MDLS`), animations (`MDLA`), morph (`MDMP`), attachments (`MDAT`).
   Layout to be confirmed on real files; last in the plan.

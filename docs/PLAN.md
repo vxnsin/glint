@@ -377,7 +377,8 @@ Built on 2026-11-05 except video textures in scenes; `docs/LOG.md` has the measu
 
 M5, the rest of scenes: particles as compute shaders, text objects with FreeType and
 HarfBuzz, puppet warp, lights, camera paths and shake, bloom, SceneScript on QuickJS-ng,
-and `.mdl` models last.
+and `.mdl` models last. Particles (on the CPU, not compute) and puppet animation were built
+on 2026-11-05; `docs/LOG.md` has what was checked.
 
 M6, the platform: the NVIDIA pass, web wallpapers as an optional module, a D-Bus bridge if
 asked for, the power policy and window rules from `src/policy` wired to UPower and the

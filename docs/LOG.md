@@ -396,3 +396,45 @@ and the decoder ran as fast as it could (the 42 % and 203 % measured then were t
 - Video textures inside scenes (TEXB0004 with the video flag) are not decoded yet.
 - 10-bit (P010) import is written but untested; none of the videos is 10-bit.
 - NVDEC and Vulkan Video decode are not done; this machine has neither need.
+
+## M5, particles and puppets (2026-11-05)
+
+### Particles
+
+Of the 107 scene items installed, 80 have particle systems (389 in all, up to 41 in one
+scene). A survey of their json (scratch script, not in the tree) gave the module list in
+docs/FORMATS.md 9: two emitters, ten initializers, twelve operators, four renderers, with
+`sprite` and `alphafade`/`movement` in nearly every system, and `genericparticle` as the
+only material shader (318 additive, 70 translucent). glint simulates on the CPU, one quad
+per particle in the shader's own vertex layout (`THICKFORMAT`), and uses Wallpaper Engine's
+genericparticle shader unchanged, so sprite sheets, overbright and cutout come for free.
+
+Two things it found on the way: the particle textures `particle/light/light_shafts_0` and
+most halos are two-channel (RG88, luminance and alpha), which the shaders only read right
+with `TEX0FORMAT` set, a define glint had never passed (it now passes `TEXnFORMAT` for every
+non-RGBA8 texture, which can matter for image materials too); and reading json per particle
+per frame cost 77 % CPU on a 100000-particle system, so the modules are compiled to structs
+once (15 % now, 2.7 % for ordinary scenes).
+
+Rope trails (56 systems) are drawn as sprite trails of the rope's length along the velocity,
+which is right for straight streaks (meteors) and wrong for curved ones; a real ribbon along
+the particle's path is still to do. The children types eventfollow, eventspawn and
+eventdeath work; the audio-response fields on emitters and operators are ignored.
+
+### Puppets
+
+The Frieren scene 3104057965 showed a head without a face: the figure is one puppet whose
+rest pose is the parts atlas, and the pose comes from the animation. The .mdl animation
+block (MDLA) and the bone list (MDLS) are decoded in docs/FORMATS.md 10, checked by a script
+that walks all 68 puppet files of the corpus to their block end offsets: 67 parse, one
+(3577990983, with a morph block) does not. Composing the rest matrices down the bone chain
+puts every bone where its weighted vertices are (checked on 23 bones), and the keyframes'
+translations differ from the rest pose exactly for the parts that were scattered.
+
+With CPU skinning each frame, Frieren has her face, hair and the flowers in her hands, Yosuga
+(2857144643) sits as in the Workshop preview, and Frieren and Himmel (3426865175) stand
+together; the hair and breathing move. A posed puppet costs about 8 % CPU on this machine
+(the Frieren scene, 2433 vertices and 21 particle systems).
+
+Not done: attachments following the animated bone (objects hung on a puppet stay at the
+rest-pose point), bone physics, morphs (MDMP).

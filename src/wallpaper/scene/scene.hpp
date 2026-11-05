@@ -122,6 +122,15 @@ struct Effect {
     std::vector<Override> overrides;  // by pass index
 };
 
+// A puppet's animation layer: which animation of its .mdl plays, how fast, how strongly.
+struct AnimationLayer {
+    int animation = 0;
+    float rate = 1;
+    float blend = 1;
+    bool visible = true;
+    bool additive = false;
+};
+
 struct ImageObject {
     int id = 0;
     std::string name;
@@ -139,8 +148,9 @@ struct ImageObject {
     bool autosize = false;
     bool fullscreen = false;
     bool passthrough = false;
-    bool puppet = false;      // drawn as its mesh in the rest pose; bones move it in M5
+    bool puppet = false;      // drawn as its mesh, posed by its animation layers
     std::string puppet_path;  // the .mdl
+    std::vector<AnimationLayer> animation_layers;
     Vec2 model_size{0, 0};
 
     Material material;

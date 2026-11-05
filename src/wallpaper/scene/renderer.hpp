@@ -110,6 +110,11 @@ private:
         ParticleSystem* particles = nullptr;
         std::uint32_t particle_offset = 0;
         std::map<std::string, std::vector<float>> extra;
+        // A puppet posed by its animation: the mesh, its vertices as built (positions in the
+        // rest pose, uvs scaled), and where the skinned copy goes each frame.
+        const Mesh* skin = nullptr;
+        std::vector<float> skin_base;
+        std::uint32_t skin_offset = 0;
     };
 
     void build(VkExtent2D extent);
@@ -159,6 +164,9 @@ private:
     std::array<gpu::Buffer, 2> particle_vertices_;
     gpu::Buffer particle_indices_;
     std::uint32_t particle_capacity_ = 0;  // particles over all systems
+    // Skinned puppet vertices, written each frame: a slot per frame in flight.
+    std::array<gpu::Buffer, 2> skinned_vertices_;
+    std::uint32_t skinned_capacity_ = 0;  // vertices over all posed puppets
     float canvas_left_ = 0, canvas_bottom_ = 0, canvas_width_ = 1, canvas_height_ = 1;
     std::vector<bool> moving_;  // per object: a timeline moves its transform
     bool parallax_ = false;

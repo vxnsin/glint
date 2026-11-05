@@ -166,6 +166,18 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
     image.copy_background = boolean(object, "copybackground", false);
     image.perspective = boolean(object, "perspective", false);
 
+    if (object.contains("animationlayers") && object["animationlayers"].is_array()) {
+        for (const auto& layer : object["animationlayers"]) {
+            if (!layer.is_object()) continue;
+            AnimationLayer a;
+            a.animation = static_cast<int>(number(layer, "animation", 0));
+            a.rate = number(layer, "rate", 1);
+            a.blend = number(layer, "blend", 1);
+            a.visible = boolean(layer, "visible", true);
+            a.additive = boolean(layer, "additive", false);
+            image.animation_layers.push_back(a);
+        }
+    }
     image.model_path = str(object, "image");
     auto model = read_json(vfs, image.model_path, warnings);
     if (model) {

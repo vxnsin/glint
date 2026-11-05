@@ -218,13 +218,17 @@ void SceneRenderer::release() {
     auto pv0 = std::make_shared<gpu::Buffer>(std::move(particle_vertices_[0]));
     auto pv1 = std::make_shared<gpu::Buffer>(std::move(particle_vertices_[1]));
     auto pi = std::make_shared<gpu::Buffer>(std::move(particle_indices_));
-    gpu_.defer([vertices, indices, uniforms, pv0, pv1, pi]() mutable {
+    auto sv0 = std::make_shared<gpu::Buffer>(std::move(skinned_vertices_[0]));
+    auto sv1 = std::make_shared<gpu::Buffer>(std::move(skinned_vertices_[1]));
+    gpu_.defer([vertices, indices, uniforms, pv0, pv1, pi, sv0, sv1]() mutable {
         vertices.reset();
         indices.reset();
         uniforms.reset();
         pv0.reset();
         pv1.reset();
         pi.reset();
+        sv0.reset();
+        sv1.reset();
     });
     extent_ = {0, 0};
 }
@@ -431,6 +435,7 @@ void SceneRenderer::build(VkExtent2D extent) {
     VkDeviceSize alignment = 256;
     VkDeviceSize uniform_bytes = 0;
     std::uint32_t particle_vertices = 0;
+    std::uint32_t skinned_total = 0;
     for (const PlanDraw& p : plan_.draws) {
         Draw draw;
         draw.plan = &p;
@@ -526,6 +531,7 @@ void SceneRenderer::build(VkExtent2D extent) {
                 su = static_cast<float>(t.tex_width) / static_cast<float>(t.img_width);
                 sv = static_cast<float>(t.tex_height) / static_cast<float>(t.img_height);
             }
+            std::size_t base = vertices.size();
             for (std::size_t i = 0; i < mesh->vertices.size(); i += 5) {
                 vertices.push_back(mesh->vertices[i]);
                 vertices.push_back(mesh->vertices[i + 1]);
@@ -535,6 +541,20 @@ void SceneRenderer::build(VkExtent2D extent) {
             }
             indices.insert(indices.end(), mesh->indices.begin(), mesh->indices.end());
             draw.index_count = static_cast<std::uint32_t>(mesh->indices.size());
+            // Posed by an animation layer that names one of the mesh's animations: skinned
+            // on the CPU every frame into a buffer of its own.
+            bool posed = false;
+            for (const AnimationLayer& layer : object.animation_layers) {
+                if (layer.visible && mesh->animation(layer.animation) != nullptr) posed = true;
+            }
+            if (posed && !mesh->bones.empty() &&
+                mesh->bone_indices.size() * 5 == mesh->vertices.size()) {
+                draw.skin = mesh;
+                draw.skin_base.assign(vertices.begin() + static_cast<std::ptrdiff_t>(base),
+                                      vertices.end());
+                draw.skin_offset = skinned_total;
+                skinned_total += static_cast<std::uint32_t>(draw.skin_base.size() / 5);
+            }
         } else if (p.geometry == Geometry::object) {
             Vec2 size = object_size(object, general, values_, size_of);
             float x = size[0] * 0.5f, y = size[1] * 0.5f;
@@ -619,6 +639,14 @@ void SceneRenderer::build(VkExtent2D extent) {
     if (indices_ && !indices.empty()) {
         std::memcpy(indices_.mapped(), indices.data(), indices.size() * 2);
         indices_.flush(0, VK_WHOLE_SIZE);
+    }
+    // Skinned puppet vertices: a slot per frame in flight.
+    skinned_capacity_ = skinned_total;
+    for (gpu::Buffer& b : skinned_vertices_) {
+        b = skinned_total > 0
+                ? gpu::Buffer(gpu_.allocator(), static_cast<VkDeviceSize>(skinned_total) * 20,
+                              VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true)
+                : gpu::Buffer();
     }
     // The particle quads: a slot per frame in flight, and u32 indices for every quad.
     particle_capacity_ = particle_vertices / 4;
@@ -956,6 +984,66 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
         particle_vertices_[frame_].flush(0, VK_WHOLE_SIZE);
     }
 
+    // Puppets: the animation layers' pose, blended, skins the rest-pose vertices.
+    if (skinned_capacity_ > 0 && skinned_vertices_[frame_]) {
+        const SceneDesc& scene = assets_->scene();
+        auto* out = reinterpret_cast<float*>(skinned_vertices_[frame_].mapped());
+        std::vector<math::Mat4> locals, layer_locals, rest, skin;
+        for (Draw& draw : draws_) {
+            if (draw.skin == nullptr) continue;
+            const Mesh& mesh = *draw.skin;
+            const ImageObject& object = scene.images[static_cast<std::size_t>(draw.plan->object)];
+            mesh.rest_pose(rest);
+            bool first = true;
+            for (const AnimationLayer& layer : object.animation_layers) {
+                const Mesh::Animation* animation =
+                    layer.visible ? mesh.animation(layer.animation) : nullptr;
+                if (animation == nullptr) continue;
+                double frame = Mesh::frame_at(*animation, inputs.time, layer.rate);
+                mesh.pose(*animation, frame, layer_locals);
+                if (first) {
+                    locals = layer_locals;
+                    first = false;
+                    continue;
+                }
+                // Later layers blend in by their weight: additive ones add their change from
+                // the rest pose, the others move toward their pose.
+                float w = std::clamp(layer.blend, 0.0f, 1.0f);
+                for (std::size_t b = 0; b < locals.size() && b < layer_locals.size(); ++b) {
+                    for (int k = 0; k < 16; ++k) {
+                        float v = layer.additive ? layer_locals[b].m[k] - rest[b].m[k]
+                                                 : layer_locals[b].m[k] - locals[b].m[k];
+                        locals[b].m[k] += v * w;
+                    }
+                }
+            }
+            if (first) locals = rest;
+            mesh.skin_matrices(locals, skin);
+            const std::vector<float>& base = draw.skin_base;
+            float* dst = out + static_cast<std::size_t>(draw.skin_offset) * 5;
+            for (std::size_t v = 0; v < base.size() / 5; ++v) {
+                float x = base[v * 5], y = base[v * 5 + 1];
+                float px = 0, py = 0;
+                const auto& bi = mesh.bone_indices[v];
+                const auto& bw = mesh.bone_weights[v];
+                for (int k = 0; k < 4; ++k) {
+                    float w = bw[static_cast<std::size_t>(k)];
+                    auto bone = static_cast<std::size_t>(bi[static_cast<std::size_t>(k)]);
+                    if (w == 0 || bone >= skin.size()) continue;
+                    const math::Mat4& m = skin[bone];
+                    px += w * (m.m[0] * x + m.m[4] * y + m.m[12]);
+                    py += w * (m.m[1] * x + m.m[5] * y + m.m[13]);
+                }
+                dst[v * 5] = px;
+                dst[v * 5 + 1] = py;
+                dst[v * 5 + 2] = 0;
+                dst[v * 5 + 3] = base[v * 5 + 3];
+                dst[v * 5 + 4] = base[v * 5 + 4];
+            }
+        }
+        skinned_vertices_[frame_].flush(0, VK_WHOLE_SIZE);
+    }
+
     // The scene target starts as the clear colour.
     transition(cmd, scene_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
     {
@@ -1042,7 +1130,10 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
         }
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline);
         bool particle = draw.particles != nullptr;
-        VkBuffer buffers[] = {particle ? particle_vertices_[frame_].get() : vertices_.get(),
+        bool skinned = draw.skin != nullptr && skinned_vertices_[frame_];
+        VkBuffer buffers[] = {particle  ? particle_vertices_[frame_].get()
+                              : skinned ? skinned_vertices_[frame_].get()
+                                        : vertices_.get(),
                               zeros_.get()};
         VkDeviceSize offsets[] = {0, 0};
         vkCmdBindVertexBuffers(cmd, 0, 2, buffers, offsets);
@@ -1086,8 +1177,9 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
             vkCmdDrawIndexed(cmd, draw.index_count, 1, 0,
                              static_cast<std::int32_t>(draw.particle_offset), 0);
         } else {
-            vkCmdDrawIndexed(cmd, draw.index_count, 1, draw.first_index,
-                             static_cast<std::int32_t>(draw.first_vertex), 0);
+            vkCmdDrawIndexed(
+                cmd, draw.index_count, 1, draw.first_index,
+                static_cast<std::int32_t>(skinned ? draw.skin_offset : draw.first_vertex), 0);
         }
         vkCmdEndRendering(cmd);
     }
