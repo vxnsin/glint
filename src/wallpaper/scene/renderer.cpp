@@ -455,34 +455,18 @@ void SceneRenderer::build(VkExtent2D extent) {
     }
 
     // Particle systems keep running across rebuilds (a property change must not restart
-    // the snow); they are made once per object and seeded by it.
-    if (systems_.size() != scene.particles.size()) {
-        systems_.clear();
-        for (std::size_t i = 0; i < scene.particles.size(); ++i) {
-            const ParticleObject& object = scene.particles[i];
-            ParticleOverride over;
-            const nlohmann::json& o = object.instance_override;
-            auto f = [&](const char* key, float fallback) {
-                return o.is_object() && o.contains(key) && o[key].is_number() ? o[key].get<float>()
-                                                                              : fallback;
-            };
-            over.rate = f("rate", 1);
-            over.count = f("count", 1);
-            over.size = f("size", 1);
-            over.speed = f("speed", 1);
-            over.lifetime = f("lifetime", 1);
-            over.alpha = f("alpha", 1);
-            over.brightness = f("brightness", 1);
-            if (o.is_object() && o.contains("colorn")) {
-                over.color = parse_vec3(o["colorn"], {1, 1, 1});
-            } else if (o.is_object() && o.contains("color")) {
-                Vec3 c = parse_vec3(o["color"], {255, 255, 255});
-                over.color = {c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f};
-            }
-            auto seed = static_cast<std::uint32_t>(object.id * 2654435761u) ^
-                        static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(this));
-            systems_.push_back(std::make_unique<ParticleSystem>(object.desc, over, seed));
-        }
+    // the snow); they are made once per object and seeded by it, and remade only when a
+    // property changes one of their overrides.
+    if (systems_.size() != scene.particles.size()) systems_.clear();
+    systems_.resize(scene.particles.size());
+    for (std::size_t i = 0; i < scene.particles.size(); ++i) {
+        const ParticleObject& object = scene.particles[i];
+        ParticleOverride over = resolve_override(object.instance_override, values_);
+        if (systems_[i] && systems_[i]->override_values() == over) continue;
+        auto seed = static_cast<std::uint32_t>(object.id * 2654435761u) ^
+                    static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(this));
+        systems_[i] = std::make_unique<ParticleSystem>(object.desc, over, seed);
+        if (follows_pointer(*object.desc)) uses_pointer_ = true;
     }
     particle_models_.clear();
     for (std::size_t i = 0; i < scene.particles.size(); ++i) {
@@ -703,6 +687,32 @@ void SceneRenderer::build(VkExtent2D extent) {
                 draw.sampled[i] = &framebuffer_;
                 draw.framebuffer = true;
                 draw.samplers[i] = assets_->sampler(true, false);
+            }
+        }
+        // A sampler's annotated default fills a slot the material leaves empty: the scene so
+        // far (_rt_FullFrameBuffer, which refraction reads) or a texture file.
+        for (const ShaderSampler& sampler : draw.program->shader.samplers) {
+            if (sampler.slot < 0 || static_cast<std::size_t>(sampler.slot) >= max_texture_slots ||
+                sampler.fallback.empty()) {
+                continue;
+            }
+            auto slot = static_cast<std::size_t>(sampler.slot);
+            if (p.textures[slot].kind != PlanTexture::Kind::none) continue;
+            if (sampler.fallback == "_rt_FullFrameBuffer") {
+                if (framebuffer_.image == VK_NULL_HANDLE) {
+                    framebuffer_ = make_image(extent, target_format);
+                }
+                draw.views[slot] = framebuffer_.view;
+                draw.sampled[slot] = &framebuffer_;
+                draw.framebuffer = true;
+                draw.samplers[slot] = assets_->sampler(true, false);
+            } else if (!sampler.fallback.starts_with("_rt_") &&
+                       !sampler.fallback.starts_with("_alias_")) {
+                const SceneTexture& tex = assets_->texture(sampler.fallback);
+                if (tex.texture) {
+                    draw.views[slot] = tex.texture->view();
+                    draw.samplers[slot] = assets_->sampler(tex.clamp, tex.nearest);
+                }
             }
         }
         draw.block.assign(std::max<std::uint32_t>(draw.program->shader.block_size, 16), {});

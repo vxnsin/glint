@@ -207,6 +207,42 @@ bool ParticleDesc::rope() const {
     return false;
 }
 
+ParticleOverride resolve_override(const json& o, const Values& values) {
+    ParticleOverride over;
+    if (!o.is_object()) return over;
+    auto number = [&](const char* key, float fallback) {
+        if (!o.contains(key)) return fallback;
+        json v = parse_bound(o[key]).resolve(values);
+        if (v.is_number()) return v.get<float>();
+        if (v.is_string()) return std::strtof(v.get<std::string>().c_str(), nullptr);
+        return fallback;
+    };
+    over.rate = number("rate", 1);
+    over.count = number("count", 1);
+    over.size = number("size", 1);
+    over.speed = number("speed", 1);
+    over.lifetime = number("lifetime", 1);
+    over.alpha = number("alpha", 1);
+    over.brightness = number("brightness", 1);
+    if (o.contains("colorn")) {
+        over.color = parse_vec3(parse_bound(o["colorn"]).resolve(values), {1, 1, 1});
+    } else if (o.contains("color")) {
+        Vec3 c = parse_vec3(parse_bound(o["color"]).resolve(values), {255, 255, 255});
+        over.color = {c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f};
+    }
+    return over;
+}
+
+bool follows_pointer(const ParticleDesc& desc) {
+    for (const ParticleControlPoint& p : desc.control_points) {
+        if (p.pointer) return true;
+    }
+    for (const ParticleDesc::Child& c : desc.children) {
+        if (c.desc && follows_pointer(*c.desc)) return true;
+    }
+    return false;
+}
+
 std::shared_ptr<ParticleDesc> parse_particle(const Vfs& vfs, const std::string& path,
                                              std::vector<std::string>& warnings) {
     auto file = vfs.read(path);
@@ -329,8 +365,9 @@ std::unique_ptr<ParticleSystem::Module> ParticleSystem::compile(const ParticleMo
     out->outer = num(j, "distanceouter", 100);
     out->speedinner = num(j, "speedinner", 0);
     out->speedouter = num(j, "speedouter", 0);
-    out->fadein = num(j, "fadeintime", 0);
-    out->fadeout = num(j, "fadeouttime", 0);
+    // An alphafade with a time left out still fades: particles are never meant to pop.
+    out->fadein = num(j, "fadeintime", 0.1f);
+    out->fadeout = num(j, "fadeouttime", 0.5f);
     out->starttime = num(j, "starttime", 0);
     out->endtime = num(j, "endtime", 1);
     out->startvalue = num(j, "startvalue", out->kind == Kind::alpha_change ? 1.0f : 0.0f);
@@ -367,6 +404,7 @@ ParticleSystem::ParticleSystem(std::shared_ptr<const ParticleDesc> desc,
     for (const ParticleModule& m : desc_->initializers) initializers_.push_back(compile(m));
     for (const ParticleModule& m : desc_->operators) operators_.push_back(compile(m));
     for (const ParticleModule& r : desc_->renderers) {
+        if (r.name == "rope") rope_ = true;
         if (r.name == "ropetrail") {
             rope_length_ = std::clamp(num(r.json, "length", 1), 0.05f, 10.0f);
             rope_samples_ = static_cast<std::uint32_t>(
@@ -559,7 +597,11 @@ void ParticleSystem::spawn(const Module& emitter, const Vec3* at) {
     Particle p{};
     p.seed = hash(static_cast<std::uint32_t>(rng_ >> 32) ^ static_cast<std::uint32_t>(rng_));
     random();
+    // An emitter sits at its control point (0 unless it says otherwise), which may follow
+    // the cursor; its origin is an offset from there.
     Vec3 origin = emitter.origin * scale_;
+    std::size_t cp = emitter.controlpoint >= 0 ? static_cast<std::size_t>(emitter.controlpoint) : 0;
+    if (cp < control_points_.size()) origin = origin + control_points_[cp];
     if (at != nullptr) origin = origin + *at;
     Vec3 dir;
     if (emitter.kind == Kind::box) {
@@ -686,6 +728,7 @@ std::uint32_t ParticleSystem::write(ParticleVertex* out, std::uint32_t capacity,
     bool trail = desc_->sprite_trail();
     (void)texture_ratio;
     constexpr float two_pi = 2 * std::numbers::pi_v<float>;
+    if (rope_) return write_rope_chain(out, capacity);
     for (const Particle& p : particles_) {
         if (count >= capacity) break;
         float life = p.age / p.life;
@@ -776,6 +819,67 @@ std::uint32_t ParticleSystem::write(ParticleVertex* out, std::uint32_t capacity,
             v.texcoord[0] = uv[k][0];
             v.texcoord[1] = uv[k][1];
             out[count * 4 + static_cast<std::uint32_t>(k)] = v;
+        }
+        ++count;
+    }
+    return count;
+}
+
+std::uint32_t ParticleSystem::write_rope_chain(ParticleVertex* out, std::uint32_t capacity) const {
+    // A rope: one ribbon through every live particle, newest first, each as wide as its
+    // size; its alpha follows the particles. Used for cursor trails.
+    std::vector<std::size_t> order(particles_.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::ranges::sort(
+        order, [&](std::size_t a, std::size_t b) { return particles_[a].age < particles_[b].age; });
+    std::uint32_t count = 0;
+    if (order.size() < 2) return 0;
+    auto side = [&](std::size_t k) {
+        const Vec3& here = particles_[order[k]].position;
+        Vec3 d = k == 0 ? here - particles_[order[1]].position
+                        : particles_[order[k - 1]].position - here;
+        if (k > 0 && k + 1 < order.size()) d = d + (here - particles_[order[k + 1]].position);
+        float l = std::sqrt(d[0] * d[0] + d[1] * d[1]);
+        float half = particles_[order[k]].size * 0.5f;
+        if (l < 1e-4f) return Vec3{0, half, 0};
+        return Vec3{-d[1] / l * half, d[0] / l * half, 0};
+    };
+    auto alpha_of = [&](const Particle& p) {
+        float life = p.age / p.life, alpha = p.alpha;
+        for (const auto& op : operators_) {
+            if (op->kind == Module::Kind::alpha_fade) {
+                if (op->fadein > 0) alpha *= std::min(1.0f, life / op->fadein);
+                if (op->fadeout > 0) alpha *= std::min(1.0f, (1 - life) / op->fadeout);
+            }
+        }
+        return std::clamp(alpha, 0.0f, 1.0f);
+    };
+    Vec3 prev_side = side(0);
+    float n = static_cast<float>(order.size() - 1);
+    for (std::size_t k = 1; k < order.size(); ++k) {
+        if (count >= capacity) return count;
+        const Particle& a = particles_[order[k - 1]];
+        const Particle& b = particles_[order[k]];
+        Vec3 s0 = prev_side, s1 = side(k);
+        prev_side = s1;
+        float u0 = static_cast<float>(k - 1) / n, u1 = static_cast<float>(k) / n;
+        const Vec3 corners[4] = {a.position + s0, a.position - s0, b.position + s1,
+                                 b.position - s1};
+        const float uv[4][2] = {{u0, 0}, {u0, 1}, {u1, 0}, {u1, 1}};
+        const float alphas[4] = {alpha_of(a), alpha_of(a), alpha_of(b), alpha_of(b)};
+        const Vec3* colors[4] = {&a.color, &a.color, &b.color, &b.color};
+        for (int c = 0; c < 4; ++c) {
+            ParticleVertex v{};
+            v.position[0] = corners[c][0];
+            v.position[1] = corners[c][1];
+            v.position[2] = corners[c][2];
+            v.texcoord[0] = uv[c][0];
+            v.texcoord[1] = uv[c][1];
+            v.color[0] = (*colors[c])[0];
+            v.color[1] = (*colors[c])[1];
+            v.color[2] = (*colors[c])[2];
+            v.color[3] = alphas[c];
+            out[count * 4 + static_cast<std::uint32_t>(c)] = v;
         }
         ++count;
     }

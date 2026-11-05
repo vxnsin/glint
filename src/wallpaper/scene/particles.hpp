@@ -61,7 +61,15 @@ std::shared_ptr<ParticleDesc> parse_particle(const Vfs& vfs, const std::string& 
 struct ParticleOverride {
     float rate = 1, count = 1, size = 1, speed = 1, lifetime = 1, alpha = 1, brightness = 1;
     Vec3 color{1, 1, 1};
+    bool operator==(const ParticleOverride&) const = default;
 };
+
+// An object's instanceoverride with the property values applied: a value may be bound to a
+// property ({"user": "bokeh", "value": 0.2}).
+ParticleOverride resolve_override(const nlohmann::json& instance_override, const Values& values);
+
+// Whether the system or any child has a control point that follows the cursor.
+bool follows_pointer(const ParticleDesc& desc);
 
 // The per-frame inputs a system needs from the scene.
 struct ParticleEnv {
@@ -99,6 +107,7 @@ public:
         return static_cast<std::uint32_t>(max_) * (rope_samples_ > 1 ? rope_samples_ - 1 : 1);
     }
     const ParticleDesc& desc() const { return *desc_; }
+    const ParticleOverride& override_values() const { return over_; }
 
     // The children are drawn as systems of their own with their materials.
     std::vector<std::unique_ptr<ParticleSystem>>& children() { return children_; }
@@ -145,6 +154,8 @@ private:
     std::vector<std::uint32_t> history_count_;
     std::vector<float> history_since_;
     void remember(std::size_t index, float dt);
+    bool rope_ = false;  // a "rope" renderer: one ribbon through all the particles
+    std::uint32_t write_rope_chain(ParticleVertex* out, std::uint32_t capacity) const;
     void write_rope(const Particle& p, std::size_t index, float alpha, float size, Vec3 color,
                     float frame, ParticleVertex* out, std::uint32_t& count,
                     std::uint32_t capacity) const;

@@ -195,6 +195,17 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
     auto particle_draws = [&](int index) {
         const ParticleObject& object = scene.particles[static_cast<std::size_t>(index)];
         if (!everything && !visible_with_parents(scene, object.id, values)) return;
+        // GLINT_SKIP_PARTICLES=1: no particle draws, to see what the rest of a scene does;
+        // GLINT_SKIP_PARTICLE=<substring>: leave out the systems whose file matches.
+        if (const char* skip = std::getenv("GLINT_SKIP_PARTICLES");
+            !everything && skip != nullptr && skip[0] == '1') {
+            return;
+        }
+        if (const char* skip = std::getenv("GLINT_SKIP_PARTICLE");
+            !everything && skip != nullptr && skip[0] != 0 &&
+            object.file.find(skip) != std::string::npos) {
+            return;
+        }
         int child = -1;
         auto add = [&](const ParticleDesc& desc, auto& self) -> void {
             int which = child++;
@@ -232,6 +243,12 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
     auto image_draws = [&](std::size_t index) {
         const ImageObject& image = scene.images[index];
         if (!everything && !visible_with_parents(scene, image.id, values)) return;
+        // GLINT_SKIP_OBJECT=<substring>: leave out image objects by name, for debugging.
+        if (const char* skip = std::getenv("GLINT_SKIP_OBJECT");
+            !everything && skip != nullptr && skip[0] != 0 &&
+            image.name.find(skip) != std::string::npos) {
+            return;
+        }
         if (image.material.passes.empty()) {
             plan.warnings.push_back(image.name + ": no material");
             return;
@@ -240,7 +257,14 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
         Geometry geometry = image.fullscreen ? Geometry::clip : Geometry::object;
 
         std::vector<int> effects;
+        // GLINT_SKIP_EFFECT=<substring>: leave matching effects out, to find which one draws
+        // something wrong.
+        const char* skip = std::getenv("GLINT_SKIP_EFFECT");
         for (std::size_t e = 0; e < image.effects.size(); ++e) {
+            if (!everything && skip != nullptr && skip[0] != 0 &&
+                image.effects[e].file.find(skip) != std::string::npos) {
+                continue;
+            }
             if (everything || image.effects[e].visible.resolve_bool(values, true)) {
                 if (!image.effects[e].passes.empty()) effects.push_back(static_cast<int>(e));
             }

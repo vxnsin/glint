@@ -159,6 +159,15 @@ std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item
         for (const auto& u : program.shader.uniforms) {
             if (u.name == "g_Time" || u.name == "g_Daytime") self->animated_ = true;
         }
+        // Texture files the shader names as a sampler's default (util/white and the like).
+        for (const ShaderSampler& sampler : program.shader.samplers) {
+            const std::string& f = sampler.fallback;
+            if (f.empty() || f.starts_with("_rt_") || f.starts_with("_alias_")) continue;
+            if (!self->textures_.contains(f) && !self->vfs_.exists(texture_path(f))) continue;
+            bool pending = false;
+            for (const PendingTexture& t : self->pending_) pending = pending || t.name == f;
+            if (!pending) self->read_texture(f);
+        }
         self->programs_[key] = std::move(program);
     }
     // Timelines move a scene even when no shader reads the time.

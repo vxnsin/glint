@@ -101,9 +101,10 @@ std::string parse_mdl(std::span<const std::byte> data, Mesh& out) {
     }
     offset += index_size;
 
-    // MDLS: u32 end offset, u32 bone count, per bone five bytes, i32 parent (-1 for the root),
-    // u32 64, the 4x4 rest matrix relative to the parent, a NUL-terminated JSON string with
-    // the physics settings. More per-bone data follows up to the end offset, not read.
+    // MDLS: u32 end offset, u32 bone count, per bone its name NUL-terminated (often empty),
+    // u32 (1), i32 parent (-1 for the root), u32 64, the 4x4 rest matrix relative to the
+    // parent, a NUL-terminated JSON string with the physics settings. More per-bone data
+    // follows up to the end offset, not read.
     std::size_t skeleton = find_block(data, offset, "MDLS");
     if (skeleton < data.size()) {
         std::size_t at = skeleton + 9;
@@ -112,10 +113,10 @@ std::string parse_mdl(std::span<const std::byte> data, Mesh& out) {
             for (std::uint32_t b = 0; b < bones; ++b) {
                 Mesh::Bone bone;
                 std::int32_t parent = -1;
-                std::uint32_t size = 0;
-                at += 5;
+                std::uint32_t size = 0, flag = 0;
                 std::string json;
-                if (!read(data, at, parent) || !read(data, at, size) || size != 64 ||
+                if (!read_string(data, at, bone.name) || !read(data, at, flag) ||
+                    !read(data, at, parent) || !read(data, at, size) || size != 64 ||
                     at + 64 > data.size()) {
                     out.bones.clear();
                     break;

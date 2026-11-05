@@ -25,6 +25,7 @@ struct Mesh {
     // The skeleton's rest pose: per bone its parent and its matrix relative to the parent
     // (column-major), and named attachment points on bones that other objects hang from.
     struct Bone {
+        std::string name;  // often empty
         int parent = -1;
         float matrix[16];
     };

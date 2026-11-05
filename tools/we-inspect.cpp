@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "wallpaper/scene/mdl.hpp"
 #include "wallpaper/scene/project.hpp"
 #include "wallpaper/scene/scene.hpp"
 #include "wallpaper/scene/shader.hpp"
@@ -47,6 +48,17 @@ int dump_tex(std::span<const std::byte> data, const std::string& name) {
         std::printf("  frame image %d %.3fs at %.0f,%.0f %.0fx%.0f\n", frame.image, frame.time,
                     frame.x, frame.y, frame.width, frame.height);
     }
+    // GLINT_TEX_RAW=<file>: the first mip's payload after LZ4, for looking at outside.
+    if (const char* raw = std::getenv("GLINT_TEX_RAW");
+        raw != nullptr && !tex.images.empty() && !tex.images[0].empty()) {
+        std::vector<std::byte> bytes;
+        if (mip_bytes(tex.images[0][0], bytes)) {
+            if (FILE* f = std::fopen(raw, "wb")) {
+                std::fwrite(bytes.data(), 1, bytes.size(), f);
+                std::fclose(f);
+            }
+        }
+    }
     return 0;
 }
 
@@ -63,6 +75,22 @@ int compile_all(const Vfs& vfs, const SceneDesc& scene, bool verbose) {
     int ok = 0, failed = 0;
     auto run = [&](const std::string& what, ShaderRequest request) {
         CompiledShader shader = compiler.compile(request);
+        // GLINT_SHADER_DUMP_ALL=<dir>: every generated source, failed or not.
+        if (const char* dir = std::getenv("GLINT_SHADER_DUMP_ALL"); dir != nullptr) {
+            std::string base = request.name;
+            for (char& c : base) {
+                if (c == '/' || c == ' ') c = '_';
+            }
+            std::string path = std::string(dir) + "/" + base + "-" + std::to_string(ok + failed);
+            if (FILE* f = std::fopen((path + ".vert").c_str(), "w")) {
+                std::fputs(compiler.last_vertex_source().c_str(), f);
+                std::fclose(f);
+            }
+            if (FILE* f = std::fopen((path + ".frag").c_str(), "w")) {
+                std::fputs(compiler.last_fragment_source().c_str(), f);
+                std::fclose(f);
+            }
+        }
         if (shader.error.empty()) {
             ++ok;
             if (verbose) {
@@ -231,6 +259,29 @@ int main(int argc, char** argv) {
         }
         std::fprintf(stderr, "%s from %s\n", path.c_str(), source_name(vfs.locate(path)));
         if (path.ends_with(".tex")) return dump_tex(file->bytes(), path);
+        if (path.ends_with(".mdl")) {
+            Mesh mesh;
+            std::string error = parse_mdl(file->bytes(), mesh);
+            std::printf("%s: %s, %zu vertices, %zu triangles, material %s\n", path.c_str(),
+                        error.empty() ? "ok" : error.c_str(), mesh.vertices.size() / 5,
+                        mesh.indices.size() / 3, mesh.material.c_str());
+            std::printf("  %zu bones, %zu attachments, %zu animations\n", mesh.bones.size(),
+                        mesh.attachments.size(), mesh.animations.size());
+            for (std::size_t b = 0; b < mesh.bones.size(); ++b) {
+                const Mesh::Bone& bone = mesh.bones[b];
+                std::printf("  bone %zu: parent %d, at %.1f %.1f\n", b, bone.parent,
+                            bone.matrix[12], bone.matrix[13]);
+            }
+            for (const Mesh::Animation& a : mesh.animations) {
+                std::printf("  animation %d \"%s\": %s, %.1f fps, %u frames, %zu tracks\n", a.id,
+                            a.name.c_str(),
+                            a.mode == Mesh::Animation::Mode::loop     ? "loop"
+                            : a.mode == Mesh::Animation::Mode::mirror ? "mirror"
+                                                                      : "single",
+                            static_cast<double>(a.fps), a.length, a.tracks.size());
+            }
+            return 0;
+        }
         std::fwrite(file->bytes().data(), 1, file->bytes().size(), stdout);
         return 0;
     }
