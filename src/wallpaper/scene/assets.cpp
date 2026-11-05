@@ -29,7 +29,8 @@ VkFormat format_of(const Tex& tex) {
     switch (tex.format) {
         case 0: return VK_FORMAT_R8G8B8A8_UNORM;
         case 1:
-        case 2: return VK_FORMAT_BC2_UNORM_BLOCK;
+        case 2:
+        case 6: return VK_FORMAT_BC2_UNORM_BLOCK;
         case 4: return VK_FORMAT_BC3_UNORM_BLOCK;
         case 7: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
         case 8: return VK_FORMAT_R8G8_UNORM;
@@ -329,7 +330,8 @@ void SceneAssets::read_texture(const std::string& name) {
     pending.info.nearest = tex.no_interpolation();
     switch (tex.format) {  // the shaders' FORMAT_ codes
         case 1:
-        case 2: pending.info.format = 6; break;
+        case 2:
+        case 6: pending.info.format = 6; break;
         case 4: pending.info.format = 4; break;
         case 7: pending.info.format = 7; break;
         case 8: pending.info.format = 8; break;

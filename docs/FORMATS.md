@@ -59,8 +59,9 @@ one virtual file system: item folder first, then `scene.pkg`, then `assets/`.
 ```
 char[9]  "TEXV0005\0"
 char[9]  "TEXI0001\0"
-i32 format          0 RGBA8888 (payload may be a whole PNG/JPEG), 1 or 2 DXT3, 4 DXT5,
-                    7 DXT1, 8 RG88, 9 R8
+i32 format          0 RGBA8888 (payload may be a whole PNG/JPEG), 1, 2 or 6 DXT3, 4 DXT5,
+                    7 DXT1, 8 RG88, 9 R8 (6 seen in 3287654481: explicit 4-bit alpha
+                    blocks such as fe ff ff ff ff ff ff ff)
 i32 flags           bit 0 no interpolation, bit 1 clamp u, bit 2 clamp v, bit 3 sprite sheet
                     (animated), bit 4 LZ4 (older), bit 5 video texture
 i32 texWidth, texHeight     padded to 4

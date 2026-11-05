@@ -115,7 +115,8 @@ std::string parse_tex(std::span<const std::byte> data, Tex& out) {
                 switch (out.format) {
                     case 1:
                     case 2:
-                    case 4: expect = blocks(w) * blocks(h) * 16; break;             // DXT3, DXT5
+                    case 4:
+                    case 6: expect = blocks(w) * blocks(h) * 16; break;             // DXT3, DXT5
                     case 7: expect = blocks(w) * blocks(h) * 8; break;              // DXT1
                     case 8: expect = static_cast<std::uint64_t>(w) * h * 2; break;  // RG88
                     case 9: expect = static_cast<std::uint64_t>(w) * h; break;      // R8
@@ -176,7 +177,8 @@ const char* tex_format_name(std::int32_t format) {
     switch (format) {
         case 0: return "RGBA8";
         case 1:
-        case 2: return "DXT3";
+        case 2:
+        case 6: return "DXT3";
         case 4: return "DXT5";
         case 7: return "DXT1";
         case 8: return "RG8";
