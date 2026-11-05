@@ -42,13 +42,13 @@ constexpr const char* compat = R"(#define GLSL 1
 #define lerp mix
 #define frac fract
 #define saturate(x) clamp(x, 0.0, 1.0)
-#define texSample2D texture
-#define texSample2DLod textureLod
+#define texSample2D glint_tex
+#define texSample2DLod glint_texlod
 #define atan2 atan
 #define fmod(x, y) ((x) - (y) * trunc((x) / (y)))
 #define ddx dFdx
 #define ddy(x) dFdy(-(x))
-#define log10(x) (log2(x) * 0.30103)
+#define log10 glint_log10
 #define rsqrt inversesqrt
 #define CAST2(x) (vec2(x))
 #define CAST3(x) (vec3(x))
@@ -115,6 +115,22 @@ std::string overload_helpers() {
         out +=
             T + " glint_mix(float a, " + T + " b, float t) { return mix(" + T + "(a), b, t); }\n";
     }
+    // texSample2D with a float3 or float4 coordinate: HLSL truncates to the first two.
+    out += "vec4 glint_tex(sampler2D s, vec2 uv) { return texture(s, uv); }\n";
+    out += "vec4 glint_tex(sampler2D s, vec3 uv) { return texture(s, uv.xy); }\n";
+    out += "vec4 glint_tex(sampler2D s, vec4 uv) { return texture(s, uv.xy); }\n";
+    out += "vec4 glint_texlod(sampler2D s, vec2 uv, float l) { return textureLod(s, uv, l); }\n";
+    out += "vec4 glint_texlod(sampler2D s, vec3 uv, float l) { return textureLod(s, uv.xy, l); }\n";
+    out += "vec4 glint_texlod(sampler2D s, vec4 uv, float l) { return textureLod(s, uv.xy, l); }\n";
+    // lerp between vectors of different widths: the result has the shorter's.
+    out += "vec3 glint_mix(vec4 a, vec3 b, float t) { return mix(a.xyz, b, t); }\n";
+    out += "vec3 glint_mix(vec3 a, vec4 b, float t) { return mix(a, b.xyz, t); }\n";
+    out += "vec3 glint_mix(vec4 a, vec3 b, vec3 t) { return mix(a.xyz, b, t); }\n";
+    out += "vec3 glint_mix(vec3 a, vec4 b, vec3 t) { return mix(a, b.xyz, t); }\n";
+    out += "vec2 glint_mix(vec4 a, vec2 b, float t) { return mix(a.xy, b, t); }\n";
+    out += "vec2 glint_mix(vec2 a, vec4 b, float t) { return mix(a, b.xy, t); }\n";
+    out += "vec2 glint_mix(vec3 a, vec2 b, float t) { return mix(a.xy, b, t); }\n";
+    out += "vec2 glint_mix(vec2 a, vec3 b, float t) { return mix(a, b.xy, t); }\n";
     // % on floats: HLSL's fmod.
     out += "int glint_mod(int a, int b) { return a % b; }\n";
     out += "uint glint_mod(uint a, uint b) { return a % b; }\n";
@@ -158,13 +174,234 @@ void hlsl_conversions(std::string& body, std::map<std::string, std::string> glob
     static const std::regex times_compare(R"((\*\s*)\(([^()]*?(?:<=|>=|==|!=|<|>)[^()]*?)\))");
     // a % b on anything: an overload set sorts out ints and floats.
     static const std::regex modulo(
-        R"(((?:[\w.]+|\([^()]*\))(?:\[[^\]]*\])?)\s*%\s*((?:[\w.]+|\([^()]*\))(?:\[[^\]]*\])?))");
+        R"(((?:[\w.]+\([^()]*\)|[\w.]+|\([^()]*\))(?:\[[^\]]*\])?)\s*%\s*((?:[\w.]+\([^()]*\)|[\w.]+|\([^()]*\))(?:\[[^\]]*\])?))");
     static const std::regex function(R"(^\s*(\w+)\s+(\w+)\s*\(([^)]*)\)\s*\{?\s*$)");
     static const std::regex parameter(R"((?:in|out|inout|const|\s)*\b(\w+)\s+(\w+)\s*$)");
+    // float2 a = 0.0, b = 0.0, c = x: every declarator gets its constructor.
+    static const std::regex declarators(
+        R"(^(\s*)((?:const\s+)?)(float|int|uint|bool|[biu]?vec[234])\s+(.+);\s*$)");
+    // a.xy = ...: the swizzle's width is the target type.
+    static const std::regex swizzle_assignment(
+        R"(^(\s*)(\w+)\.([xyzwrgba]{1,4})\s*=\s*([^=].*);\s*$)");
+    // for (int i = f; ...): the initialiser converted like a declaration's.
+    static const std::regex for_init(
+        R"(^(\s*for\s*\(\s*)(float|int|uint|[biu]?vec[234])\s+(\w+)\s*=\s*([^;]+);(.*)$)");
+    static const std::regex uniform_ref(R"(\b[ug]_\w+)");
     std::istringstream in(body);
     std::string out, line;
     std::map<std::string, std::string> locals;
     int depth = 0;
+
+    // The shader's own functions and their parameter types, for calls that pass a longer
+    // vector than the parameter (HLSL truncates, GLSL refuses).
+    std::map<std::string, std::vector<std::string>> functions;
+    {
+        std::istringstream scan(body);
+        std::string l;
+        while (std::getline(scan, l)) {
+            std::smatch m;
+            if (!std::regex_match(l, m, function)) continue;
+            std::vector<std::string> types;
+            std::string params = m[3].str();
+            std::size_t start = 0;
+            while (start <= params.size()) {
+                std::size_t end = params.find(',', start);
+                if (end == std::string::npos) end = params.size();
+                std::string one = params.substr(start, end - start);
+                std::smatch p;
+                types.push_back(std::regex_search(one, p, parameter) ? p[1].str() : "");
+                start = end + 1;
+            }
+            if (!types.empty() && !params.empty()) functions[m[2].str()] = types;
+        }
+    }
+    auto width = [](const std::string& type) {
+        if (type == "vec2") return 2;
+        if (type == "vec3") return 3;
+        if (type == "vec4") return 4;
+        if (type == "float") return 1;
+        return 0;
+    };
+    auto type_of = [&](const std::string& name) {
+        if (auto it = locals.find(name); it != locals.end()) return it->second;
+        if (auto g = globals.find(name); g != globals.end()) return g->second;
+        return std::string();
+    };
+    // Calls of the shader's functions on this line: an argument that is a bare variable
+    // wider than the parameter gets the swizzle that truncates it.
+    auto truncate_arguments = [&](std::string& text) {
+        for (const auto& [name, types] : functions) {
+            std::size_t at = 0;
+            while ((at = text.find(name + "(", at)) != std::string::npos) {
+                bool word = at == 0 || !(std::isalnum(static_cast<unsigned char>(text[at - 1])) ||
+                                         text[at - 1] == '_');
+                std::size_t open = at + name.size();
+                if (!word) {
+                    at = open;
+                    continue;
+                }
+                int level = 0;
+                std::size_t close = std::string::npos;
+                std::vector<std::size_t> commas;
+                for (std::size_t i = open; i < text.size(); ++i) {
+                    if (text[i] == '(') ++level;
+                    if (text[i] == ')' && --level == 0) {
+                        close = i;
+                        break;
+                    }
+                    if (text[i] == ',' && level == 1) commas.push_back(i);
+                }
+                if (close == std::string::npos) break;
+                std::vector<std::pair<std::size_t, std::size_t>> args;
+                std::size_t from = open + 1;
+                for (std::size_t c : commas) {
+                    args.push_back({from, c});
+                    from = c + 1;
+                }
+                args.push_back({from, close});
+                std::string rebuilt = text.substr(0, open + 1);
+                for (std::size_t i = 0; i < args.size(); ++i) {
+                    std::string arg = text.substr(args[i].first, args[i].second - args[i].first);
+                    std::string trimmed = arg;
+                    while (!trimmed.empty() &&
+                           std::isspace(static_cast<unsigned char>(trimmed.front())))
+                        trimmed.erase(trimmed.begin());
+                    while (!trimmed.empty() &&
+                           std::isspace(static_cast<unsigned char>(trimmed.back())))
+                        trimmed.pop_back();
+                    bool identifier = !trimmed.empty() && std::ranges::all_of(trimmed, [](char c) {
+                        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+                    }) && !std::isdigit(static_cast<unsigned char>(trimmed[0]));
+                    if (identifier && i < types.size()) {
+                        int have = width(type_of(trimmed)), want = width(types[i]);
+                        if (want >= 2 && have > want) {
+                            arg =
+                                " " + trimmed +
+                                std::string(".xyzw").substr(0, static_cast<std::size_t>(want) + 1);
+                        }
+                    }
+                    rebuilt += arg;
+                    if (i + 1 < args.size()) rebuilt += ",";
+                }
+                rebuilt += text.substr(close);
+                text = std::move(rebuilt);
+                at = open;
+            }
+        }
+    };
+    // Identifiers of a wider vector than `want`, used in arithmetic at the top level of
+    // `text` (not inside a call), get the swizzle HLSL's truncation implies.
+    auto truncate_operands = [&](std::string& text, int want) {
+        std::string rebuilt;
+        int level = 0;
+        std::size_t i = 0;
+        while (i < text.size()) {
+            char c = text[i];
+            if (c == '(' || c == '[') {
+                ++level;
+                rebuilt += c;
+                ++i;
+                continue;
+            }
+            if (c == ')' || c == ']') {
+                --level;
+                rebuilt += c;
+                ++i;
+                continue;
+            }
+            bool start = std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+            if (!start) {
+                rebuilt += c;
+                ++i;
+                continue;
+            }
+            std::size_t j = i;
+            while (j < text.size() &&
+                   (std::isalnum(static_cast<unsigned char>(text[j])) || text[j] == '_'))
+                ++j;
+            std::string token = text.substr(i, j - i);
+            bool before_ok = i == 0 || !(text[i - 1] == '.');
+            std::size_t k = j;
+            while (k < text.size() && std::isspace(static_cast<unsigned char>(text[k]))) ++k;
+            bool call_or_member =
+                k < text.size() && (text[k] == '(' || text[k] == '.' || text[k] == '[');
+            rebuilt += token;
+            if (level == 0 && before_ok && !call_or_member && width(type_of(token)) > want &&
+                want >= 2) {
+                rebuilt += std::string(".xyzw").substr(0, static_cast<std::size_t>(want) + 1);
+            }
+            i = j;
+        }
+        text = std::move(rebuilt);
+    };
+    // The coordinate of a texture read is two wide, whatever is added to it.
+    auto truncate_coordinates = [&](std::string& text) {
+        for (const char* fn : {"glint_tex(", "glint_texlod("}) {
+            std::size_t at = 0;
+            std::string name = fn;
+            while ((at = text.find(name, at)) != std::string::npos) {
+                std::size_t open = at + name.size() - 1;
+                int level = 0;
+                std::size_t first_comma = std::string::npos, second = std::string::npos;
+                for (std::size_t i = open; i < text.size(); ++i) {
+                    if (text[i] == '(') ++level;
+                    if (text[i] == ')' && --level == 0) {
+                        second = i;
+                        break;
+                    }
+                    if (text[i] == ',' && level == 1) {
+                        if (first_comma == std::string::npos) {
+                            first_comma = i;
+                        } else {
+                            second = i;
+                            break;
+                        }
+                    }
+                }
+                if (first_comma == std::string::npos || second == std::string::npos) break;
+                std::string coord = text.substr(first_comma + 1, second - first_comma - 1);
+                truncate_operands(coord, 2);
+                text = text.substr(0, first_comma + 1) + coord + text.substr(second);
+                at = open + 1;
+            }
+        }
+    };
+    // x ? a : b with a number or a plain variable for x: HLSL's truthiness.
+    auto bool_ternaries = [&](std::string& text) {
+        for (std::size_t q = text.find('?'); q != std::string::npos; q = text.find('?', q + 1)) {
+            std::size_t end = q;
+            while (end > 0 && std::isspace(static_cast<unsigned char>(text[end - 1]))) --end;
+            std::size_t start = end;
+            while (start > 0 && (std::isalnum(static_cast<unsigned char>(text[start - 1])) ||
+                                 text[start - 1] == '_' || text[start - 1] == '.')) {
+                --start;
+            }
+            if (start == end) continue;
+            if (start > 0 && (text[start - 1] == ')' || text[start - 1] == ']')) continue;
+            // Only when the token is the whole condition: what precedes it must open it.
+            std::size_t before = start;
+            while (before > 0 && std::isspace(static_cast<unsigned char>(text[before - 1])))
+                --before;
+            if (before > 0) {
+                char c = text[before - 1];
+                bool opens = c == '(' || c == ',' || c == '?' || c == ':' || c == '{' || c == ';';
+                if (c == '=' && before > 1) {
+                    char d = text[before - 2];
+                    opens = d != '=' && d != '!' && d != '<' && d != '>';
+                }
+                if (!opens && std::isalpha(static_cast<unsigned char>(c))) {
+                    opens = before >= 6 && text.compare(before - 6, 6, "return") == 0;
+                }
+                if (!opens) continue;
+            }
+            std::string token = text.substr(start, end - start);
+            if (token == "true" || token == "false") continue;
+            text.insert(end, ")");
+            text.insert(start, "bool(");
+            q += 6;
+        }
+    };
+
     while (std::getline(in, line)) {
         std::smatch m;
         if (depth == 0 && std::regex_match(line, m, function)) {
@@ -182,8 +419,55 @@ void hlsl_conversions(std::string& body, std::map<std::string, std::string> glob
         } else if (std::regex_match(line, m, declaration) && !top_level_comma(m[5].str())) {
             std::string type = m[3].str();
             (depth == 0 ? globals : locals)[m[4].str()] = type;
-            line = m[1].str() + m[2].str() + type + " " + m[4].str() + " = " + type + "(" +
-                   m[5].str() + ");";
+            std::string qualifier = m[2].str();
+            // A global const from a uniform is no constant in GLSL.
+            if (depth == 0 && !qualifier.empty() && std::regex_search(m[5].str(), uniform_ref)) {
+                qualifier.clear();
+            }
+            std::string init = m[5].str();
+            if (depth > 0 && (type == "vec2" || type == "vec3"))
+                truncate_operands(init, width(type));
+            line =
+                m[1].str() + qualifier + type + " " + m[4].str() + " = " + type + "(" + init + ");";
+        } else if (std::regex_match(line, m, declarators) && top_level_comma(m[4].str())) {
+            std::string type = m[3].str();
+            std::string list = m[4].str(), rebuilt;
+            int level = 0;
+            std::size_t start = 0;
+            auto one = [&](std::string item) {
+                while (!item.empty() && std::isspace(static_cast<unsigned char>(item.front())))
+                    item.erase(item.begin());
+                std::size_t eq = item.find('=');
+                std::string name = item.substr(0, eq);
+                while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back())))
+                    name.pop_back();
+                (depth == 0 ? globals : locals)[name] = type;
+                if (eq == std::string::npos) return item;
+                return name + " = " + type + "(" + item.substr(eq + 1) + ")";
+            };
+            for (std::size_t i = 0; i <= list.size(); ++i) {
+                if (i < list.size() && (list[i] == '(' || list[i] == '[')) ++level;
+                if (i < list.size() && (list[i] == ')' || list[i] == ']')) --level;
+                if (i == list.size() || (list[i] == ',' && level == 0)) {
+                    if (!rebuilt.empty()) rebuilt += ", ";
+                    rebuilt += one(list.substr(start, i - start));
+                    start = i + 1;
+                }
+            }
+            line = m[1].str() + m[2].str() + type + " " + rebuilt + ";";
+        } else if (depth > 0 && std::regex_match(line, m, for_init)) {
+            std::string type = m[2].str();
+            locals[m[3].str()] = type;
+            line = m[1].str() + type + " " + m[3].str() + " = " + type + "(" + m[4].str() + ");" +
+                   m[5].str();
+        } else if (depth > 0 && std::regex_match(line, m, swizzle_assignment)) {
+            std::string base = type_of(m[2].str());
+            std::size_t n = m[3].str().size();
+            if (base == "vec2" || base == "vec3" || base == "vec4") {
+                const char* targets[] = {"float", "vec2", "vec3", "vec4"};
+                line = m[1].str() + m[2].str() + "." + m[3].str() + " = " + targets[n - 1] + "(" +
+                       m[4].str() + ");";
+            }
         } else if (depth > 0 && std::regex_match(line, m, assignment)) {
             std::string name = m[2].str();
             auto it = locals.find(name);
@@ -192,7 +476,9 @@ void hlsl_conversions(std::string& body, std::map<std::string, std::string> glob
                 if (auto g = globals.find(name); g != globals.end()) type = g->second;
             }
             if (convertible(type) && !top_level_comma(m[3].str())) {
-                line = m[1].str() + name + " = " + type + "(" + m[3].str() + ");";
+                std::string value = m[3].str();
+                if (type == "vec2" || type == "vec3") truncate_operands(value, width(type));
+                line = m[1].str() + name + " = " + type + "(" + value + ");";
             }
         } else if (depth > 0 && std::regex_match(line, m, compound)) {
             // x /= a vec4 with a vec2 x: HLSL truncates, GLSL wants the constructor.
@@ -214,6 +500,13 @@ void hlsl_conversions(std::string& body, std::map<std::string, std::string> glob
         if (line.find('*') != std::string::npos) {
             line = std::regex_replace(line, compare_times, "float($1)$2");
             line = std::regex_replace(line, times_compare, "$1float($2)");
+        }
+        if (!functions.empty() && line.find('(') != std::string::npos && depth > 0) {
+            truncate_arguments(line);
+        }
+        if (depth > 0 && line.find("glint_tex") != std::string::npos) truncate_coordinates(line);
+        if (line.find('?') != std::string::npos && line.find('#') == std::string::npos) {
+            bool_ternaries(line);
         }
         // if (x) with a float x: HLSL's truthiness.
         for (std::size_t at = line.find("if"); at != std::string::npos;
@@ -601,6 +894,14 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
     }
     result.block_size = round_up(offset, 16);
     std::string header = "#version 450\n" + overload_helpers();
+    static const std::regex own_log10(R"(\b(?:float|vec[234])\s+(?:glint_)?log10\s*\()");
+    if (!std::regex_search(stages[0].body, own_log10) &&
+        !std::regex_search(stages[1].body, own_log10)) {
+        header += "float glint_log10(float x) { return log2(x) * 0.30103; }\n";
+        header += "vec2 glint_log10(vec2 x) { return log2(x) * 0.30103; }\n";
+        header += "vec3 glint_log10(vec3 x) { return log2(x) * 0.30103; }\n";
+        header += "vec4 glint_log10(vec4 x) { return log2(x) * 0.30103; }\n";
+    }
     if (!block.empty()) {
         header += "layout(std140, set = 0, binding = 0) uniform GlintUniforms {\n" + block + "};\n";
     }
@@ -642,7 +943,10 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
         for (const auto& d : *list) {
             if (varying_locations.contains(d.name)) continue;
             varying_locations[d.name] = next;
-            next += locations_of(d.type);
+            std::uint32_t count = 1;
+            if (!d.array.empty())
+                count = static_cast<std::uint32_t>(std::max(1, std::atoi(d.array.c_str() + 1)));
+            next += locations_of(d.type) * count;
         }
     }
     // Direct3D lets the stages disagree on a varying's width; Vulkan does not. The fragment
@@ -665,7 +969,11 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
         } else {
             vertex_io += where + d.type + " " + d.name + d.array + ";\n";
         }
-        attribute += locations_of(d.type);
+        attribute +=
+            locations_of(d.type) *
+            (d.array.empty()
+                 ? 1u
+                 : static_cast<std::uint32_t>(std::max(1, std::atoi(d.array.c_str() + 1))));
     }
     vertex_io += vertex_globals;
     for (const auto& d : stages[0].outputs) {

@@ -544,3 +544,16 @@ host now owns a copy of the scene description and adds layers to it, with their 
 and shader variants read and compiled on the spot; `alignment`, which no static layer in
 the corpus uses, puts a bar's origin on its bottom edge so it grows upward. The image list
 is reserved ahead, because scripts and draws point into it.
+
+### The last shader failures
+
+Of the corpus's shaders 28 passes had refused to compile; none is left. They were all
+HLSL letting things slide that GLSL does not: a float4 texture coordinate (`texSample2D`
+with the varying as a whole), a float4 passed to a function taking float2, a float4 in
+arithmetic whose result is assigned to a float2, `float2 a = 0.0, b = 0.0` in one
+declaration, `for (int i = someFloat; ...)`, a global `const` fed by a uniform, `x ? a :
+b` with a number for x, a varying array that needs a location per element, and a shader
+defining its own `log10` beside the dialect's macro. Each got its rule in the translator
+(src/wallpaper/scene/shader.cpp, `hlsl_conversions`): the types of globals, parameters and
+locals are known from their declarations, so an identifier wider than the slot it goes
+into gets the swizzle that HLSL's truncation implies.

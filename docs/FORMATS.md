@@ -270,6 +270,16 @@ Built-in uniforms glint provides: `g_ModelMatrix`, `g_ViewProjectionMatrix`,
 
 Shader source hash (after preprocessing, including defines) keys the SPIR-V cache.
 
+HLSL's implicit conversions, as the translator handles them (`hlsl_conversions`): a scalar
+into a vector and a wider vector into a narrower one at declarations and assignments
+(`vec2 x = vec2(...)`, also with several declarators and for `for` initialisers), a float
+into an int the same way, `if (x)` and `x ? a : b` on numbers through `bool()`, `%` on
+floats, a float4 texture coordinate or argument where float2 is wanted (`.xy`, by the
+declared types of globals, parameters and locals), a global `const` fed by a uniform
+(the `const` goes), `log10` and `lerp` with mixed widths as overload sets, and varying
+arrays with one location per element.
+
+
 ## 9. Particle json (M5)
 
 `particles/x.json` in the item or assets: `emitter[]` (box/sphere, rate, count, origin,
