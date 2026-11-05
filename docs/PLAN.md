@@ -222,7 +222,7 @@ from `wl_pointer` on the layer surface. The lock screen is not ours: the shell s
 
 PipeWire's native API, no PulseAudio shim. Playback: one stream per output that has a
 sound object, mixed in glint, volume and mute per output. Capture: one stream on the
-default sink's monitor for audio-reactive scenes, FFT with a small vendored routine (no
+default sink's monitor for audio-reactive scenes, an own radix-2 FFT in `src/audio` (no
 FFTW), binned to Wallpaper Engine's 64 bands per channel and smoothed the way it expects.
 The capture only runs while a loaded scene asks for it.
 
