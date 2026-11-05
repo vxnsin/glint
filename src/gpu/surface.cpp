@@ -169,6 +169,8 @@ bool Surface::resize(std::uint32_t width, std::uint32_t height) {
 bool Surface::begin(const float clear[4], const FrameUniforms& uniforms, Target& target,
                     const std::function<void(VkCommandBuffer, VkExtent2D)>& before) {
     if (swapchain_ == VK_NULL_HANDLE || recording_) return false;
+    // After a suboptimal or out-of-date present the swapchain must be made anew first.
+    if (extent_.width == 0 || extent_.height == 0) return false;
     VkDevice device = context_.device();
     Slot& slot = slots_[slot_];
     context_.wait(slot.value);
@@ -206,7 +208,7 @@ bool Surface::begin(const float clear[4], const FrameUniforms& uniforms, Target&
     vkBeginCommandBuffer(cmd, &begin_info);
     if (queries_ != VK_NULL_HANDLE) {
         vkCmdResetQueryPool(cmd, queries_, slot_ * 2, 2);
-        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_NONE, queries_, slot_ * 2);
+        vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, queries_, slot_ * 2);
     }
 
     if (before) before(cmd, extent_);
@@ -275,7 +277,7 @@ bool Surface::end() {
     if (capture_ && can_capture_) {
         VkDeviceSize bytes = static_cast<VkDeviceSize>(extent_.width) * extent_.height * 4;
         readback = std::make_shared<Buffer>(context_.allocator(), bytes,
-                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, true, true);
         VkImageMemoryBarrier2 to_copy{
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -336,6 +338,7 @@ bool Surface::end() {
         capture.width = extent_.width;
         capture.height = extent_.height;
         capture.format = format_;
+        readback->invalidate(0, VK_WHOLE_SIZE);
         capture.pixels.assign(readback->mapped(), readback->mapped() + readback->size());
         auto done = std::move(capture_);
         capture_ = {};

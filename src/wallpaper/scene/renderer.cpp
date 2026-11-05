@@ -502,6 +502,11 @@ void SceneRenderer::build(VkExtent2D extent) {
     // Depth covers what scenes use: objects sit at z = -100 and similar, WE's farz is 10000.
     projection_ = math::Mat4::ortho(left, left + vw, bottom, bottom + vh, -10000, 10000);
 
+    // The clear colour may be bound to a property.
+    auto clear = parse_vec3(general.clear_color.resolve(values_), {0, 0, 0});
+    clear_[0] = clear[0];
+    clear_[1] = clear[1];
+    clear_[2] = clear[2];
     auto size_of = [this](const std::string& name) { return picture_size_of(name); };
     auto info_of = [this](const std::string& name) { return texture_of(name).plan_info(); };
     plan_ = build_plan(scene, values_, size_of, false, info_of);
@@ -1366,6 +1371,9 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
         vkCmdBeginRendering(cmd, &info);
         vkCmdEndRendering(cmd);
     }
+    // The target the last rendering wrote: the next one into it needs a write-after-write
+    // dependency, which a layout that does not change gives no barrier for.
+    Image* written = &scene_;
 
     for (Draw& draw : draws_) {
         if (!draw.copy && draw.pipeline == VK_NULL_HANDLE) continue;
@@ -1388,7 +1396,11 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
                 transition(cmd, *sampled, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         }
         Image& target = draw.target != nullptr ? *draw.target : scene_;
+        if (&target == written && target.layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+            barrier(cmd, target.image, target.layout, target.layout);
+        }
         transition(cmd, target, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        written = &target;
 
         VkRenderingAttachmentInfo color{
             .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,

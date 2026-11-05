@@ -13,7 +13,9 @@ namespace glint::gpu {
 class Buffer {
 public:
     Buffer() = default;
-    Buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, bool host);
+    // host: mapped for writing from the CPU; readback: mapped for reading (random access).
+    Buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, bool host,
+           bool readback = false);
     ~Buffer() { reset(); }
     Buffer(Buffer&& other) noexcept;
     Buffer& operator=(Buffer&& other) noexcept;
@@ -28,6 +30,8 @@ public:
     std::byte* mapped() const { return mapped_; }
     // Makes host writes visible to the device (no-op on coherent memory).
     void flush(VkDeviceSize offset, VkDeviceSize size) const;
+    // Before the CPU reads what the GPU wrote (a readback buffer).
+    void invalidate(VkDeviceSize offset, VkDeviceSize size) const;
 
 private:
     VmaAllocator allocator_ = VK_NULL_HANDLE;

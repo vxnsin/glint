@@ -1,7 +1,5 @@
 #include "wayland/display.hpp"
 
-#include "core/clock.hpp"
-
 #include <errno.h>
 #include <linux/input-event-codes.h>
 #include <unistd.h>
@@ -11,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "core/clock.hpp"
 #include "core/log.hpp"
 #include "fractional-scale-v1.h"
 #include "linux-dmabuf-v1.h"
@@ -347,9 +346,14 @@ struct DisplayListeners {
     };
 
     // Foreign toplevels: only fullscreen, minimized and the outputs matter.
-    static void toplevel(void* data, zwlr_foreign_toplevel_manager_v1*,
+    static void toplevel(void* data, zwlr_foreign_toplevel_manager_v1* manager,
                          zwlr_foreign_toplevel_handle_v1* handle) {
         auto* self = static_cast<Display*>(data);
+        if (manager != self->toplevel_manager_) {
+            // From a manager that was told to stop: its handles are not wanted.
+            zwlr_foreign_toplevel_handle_v1_destroy(handle);
+            return;
+        }
         auto entry = std::make_unique<Display::Toplevel>();
         entry->display = self;
         entry->handle = handle;
@@ -359,7 +363,8 @@ struct DisplayListeners {
     static void finished(void* data, zwlr_foreign_toplevel_manager_v1* manager) {
         auto* self = static_cast<Display*>(data);
         zwlr_foreign_toplevel_manager_v1_destroy(manager);
-        self->toplevel_manager_ = nullptr;
+        if (manager == self->toplevel_manager_) self->toplevel_manager_ = nullptr;
+        std::erase(self->stopping_managers_, manager);
     }
 
     static constexpr zwlr_foreign_toplevel_manager_v1_listener manager = {
@@ -526,6 +531,7 @@ void DisplayListeners::done(void* data, zwlr_foreign_toplevel_handle_v1*) {
     entry->fullscreen = entry->pending_fullscreen;
     entry->minimized = entry->pending_minimized;
     entry->activated = entry->pending_activated;
+    if (entry->activated) entry->activated_serial = ++entry->display->activation_serial_;
     entry->display->recompute_covered();
 }
 
@@ -539,8 +545,7 @@ void DisplayListeners::closed(void* data, zwlr_foreign_toplevel_handle_v1* handl
 Display::Display(Listener& listener) : listener_(listener) {}
 
 Display::~Display() {
-    track_toplevels(false);
-    outputs_.clear();
+    shutdown();
     if (pointer_ != nullptr) wl_pointer_release(pointer_);
     if (seat_ != nullptr) wl_seat_release(seat_);
     if (feedback_ != nullptr) zwp_linux_dmabuf_feedback_v1_destroy(feedback_);
@@ -555,6 +560,15 @@ Display::~Display() {
         wl_display_flush(display_);
         wl_display_disconnect(display_);
     }
+}
+
+void Display::shutdown() {
+    track_toplevels(false);
+    for (auto* manager : stopping_managers_) {
+        wl_proxy_destroy(reinterpret_cast<wl_proxy*>(manager));
+    }
+    stopping_managers_.clear();
+    outputs_.clear();
 }
 
 std::string Display::connect() {
@@ -575,6 +589,10 @@ std::string Display::connect() {
 
 int Display::fd() const {
     return wl_display_get_fd(display_);
+}
+
+int Display::dispatch_pending() {
+    return wl_display_dispatch_pending(display_);
 }
 
 bool Display::prepare() {
@@ -642,9 +660,10 @@ void Display::track_toplevels(bool on) {
     }
     for (auto& toplevel : toplevels_) zwlr_foreign_toplevel_handle_v1_destroy(toplevel->handle);
     toplevels_.clear();
-    // No "finished" is waited for; events to the destroyed proxy are dropped by libwayland.
+    // The manager stays until "finished": handles the compositor announced meanwhile are
+    // bound (and destroyed) by the handler instead of leaking and waking the daemon.
     zwlr_foreign_toplevel_manager_v1_stop(toplevel_manager_);
-    wl_proxy_destroy(reinterpret_cast<wl_proxy*>(toplevel_manager_));
+    stopping_managers_.push_back(toplevel_manager_);
     toplevel_manager_ = nullptr;
     recompute_covered();
     log::debug("foreign-toplevel: stopped");
@@ -652,15 +671,29 @@ void Display::track_toplevels(bool on) {
 
 void Display::recompute_covered() {
     for (const auto& output : outputs_) {
-        // Only a fullscreen window with focus counts. The protocol does not say whether a
-        // window's workspace is visible: on Hyprland a fullscreen window on a hidden or
-        // special workspace is still "fullscreen on DP-2", and pausing for it would freeze a
-        // wallpaper that is in plain view. Missing a covered output costs little, since the
-        // compositor sends no frame callbacks to a surface it does not draw.
+        // The protocol does not say whether a window's workspace is visible: on Hyprland a
+        // fullscreen window on a hidden or special workspace is still "fullscreen on DP-2",
+        // and pausing for it would freeze a wallpaper that is in plain view. So a fullscreen
+        // window counts when it has focus, or, on an output where nothing has focus (the
+        // pointer is on another one), when it was the last window there to have it.
+        // Missing a covered output costs little, since the compositor sends no frame
+        // callbacks to a surface it does not draw.
+        auto on_output = [&](const auto& t) {
+            return std::ranges::find(t->outputs, output->handle()) != t->outputs.end();
+        };
+        const Toplevel* last = nullptr;
+        bool any_active = false;
+        for (const auto& t : toplevels_) {
+            if (!on_output(t) || t->minimized) continue;
+            if (t->activated) any_active = true;
+            if (last == nullptr || t->activated_serial > last->activated_serial) last = t.get();
+        }
         bool covered = std::ranges::any_of(toplevels_, [&](const auto& t) {
-            return t->fullscreen && t->activated && !t->minimized &&
-                   std::ranges::find(t->outputs, output->handle()) != t->outputs.end();
+            return t->fullscreen && t->activated && !t->minimized && on_output(t);
         });
+        if (!covered && !any_active && last != nullptr && last->activated_serial > 0) {
+            covered = last->fullscreen;
+        }
         if (covered == output->covered()) continue;
         output->set_covered(covered);
         if (output->configured()) listener_.output_covered(*output, covered);

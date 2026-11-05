@@ -1,6 +1,10 @@
-#include <cmath>
 #include "core/state.hpp"
 
+#include <fcntl.h>
+#include <unistd.h>
+
+#include <cerrno>
+#include <cmath>
 #include <fstream>
 #include <system_error>
 
@@ -33,8 +37,14 @@ std::optional<Entry> entry_from(const nlohmann::json& json) {
 
 }  // namespace
 
+// One file per Wayland display: a nested compositor's daemon keeps its own assignments.
+// The first display keeps the old name, so nothing is lost on an update.
 std::filesystem::path file() {
-    return paths::state_dir() / "state.json";
+    std::string display = paths::display_name();
+    if (display == "wayland-0" || display == "wayland-1" || display.empty()) {
+        return paths::state_dir() / "state.json";
+    }
+    return paths::state_dir() / ("state-" + display + ".json");
 }
 
 nlohmann::json options_json(const Options& options) {
@@ -156,11 +166,22 @@ bool save(const State& state) {
     auto path = file();
     auto tmp = path;
     tmp += ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::trunc);
-        out << json.dump(2) << '\n';
-        if (!out) return false;
+    std::string text = json.dump(2) + "\n";
+    // Written, synced, then renamed over the old file: a crash leaves one or the other.
+    int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+    std::size_t done = 0;
+    while (done < text.size()) {
+        ssize_t n = ::write(fd, text.data() + done, text.size() - done);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            ::close(fd);
+            return false;
+        }
+        done += static_cast<std::size_t>(n);
     }
+    ::fsync(fd);
+    ::close(fd);
     std::filesystem::rename(tmp, path, ec);
     return !ec;
 }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 
 #include "core/log.hpp"
 #include "core/paths.hpp"
@@ -31,6 +32,62 @@ std::string to_ipc(const ProjectProperty& p, const nlohmann::json& value) {
     }
     if (p.type == "bool" && value.is_number()) return value.get<double>() != 0 ? "true" : "false";
     return value.dump();
+}
+
+}  // namespace
+
+namespace {
+
+// A value as a client or the state file gives it, in the form the project stores (colours
+// as "r g b", combos as their option string, sliders within their range); an error when it
+// is not one the property takes.
+std::string normalize_property(const ProjectProperty& p, nlohmann::json& value) {
+    if (p.type == "color") {
+        if (value.is_string() && value.get<std::string>().starts_with("#")) {
+            auto rgb = hex_to_color(value.get<std::string>());
+            if (!rgb) return "a colour is #rrggbb";
+            value = *rgb;
+        } else {
+            // "r g b" as the project stores it.
+            int numbers = 0;
+            if (value.is_string()) {
+                std::istringstream in(value.get<std::string>());
+                float f = 0;
+                while (in >> f) ++numbers;
+            }
+            if (numbers != 3) return "a colour is #rrggbb";
+        }
+        return {};
+    }
+    if (p.type == "combo") {
+        if (!value.is_string()) value = value.dump();
+        if (!p.options.empty()) {
+            std::string v = value.get<std::string>();
+            bool known = false;
+            for (const auto& [label, option] : p.options) known = known || option == v;
+            if (!known) return "not one of the options";
+        }
+        return {};
+    }
+    if (p.type == "bool") {
+        if (value.is_number()) value = value.get<double>() != 0;
+        if (!value.is_boolean()) return "a bool is true or false";
+        return {};
+    }
+    if (p.type == "slider") {
+        if (!value.is_number()) return "a slider takes a number";
+        double v = value.get<double>();
+        if (p.min.is_number()) v = std::max(v, p.min.get<double>());
+        if (p.max.is_number()) v = std::min(v, p.max.get<double>());
+        value = v;
+        return {};
+    }
+    if (p.type == "textinput" || p.type == "text" || p.type == "file" || p.type == "directory" ||
+        p.type == "scenetexture") {
+        if (!value.is_string()) return "a string is wanted";
+        return {};
+    }
+    return {};
 }
 
 }  // namespace
@@ -145,9 +202,14 @@ void Scene::load(std::function<void(std::string error)> done) {
             renderer_ = std::make_unique<SceneRenderer>(services_.gpu, services_.blit, assets_);
             // Values set over IPC earlier for this project.
             if (options_.properties.is_object()) {
+                // Values from the state file or a set: through the same conversion as a
+                // props request, so a colour given as #rrggbb comes back.
                 Values values = renderer_->values();
                 for (const auto& [name, value] : options_.properties.items()) {
-                    if (assets_->project().property(name) != nullptr) values[name] = value;
+                    const ProjectProperty* p = assets_->project().property(name);
+                    if (p == nullptr) continue;
+                    nlohmann::json v = value;
+                    if (normalize_property(*p, v).empty()) values[name] = v;
                 }
                 renderer_->set_values(values);
             }
@@ -276,21 +338,22 @@ std::vector<Property> Scene::properties() const {
     return out;
 }
 
+std::string Scene::check_property(std::string_view name, std::string_view json) const {
+    if (!assets_ || !renderer_) return "still loading";
+    const ProjectProperty* p = assets_->project().property(name);
+    if (p == nullptr) return "no such setting";
+    nlohmann::json value = nlohmann::json::parse(json, nullptr, false);
+    if (value.is_discarded()) return "not JSON";
+    return normalize_property(*p, value);
+}
+
 std::vector<std::string> Scene::set_property(std::string_view name, std::string_view json) {
     if (!assets_ || !renderer_) return {};
     const ProjectProperty* p = assets_->project().property(name);
     if (p == nullptr) return {};
     nlohmann::json value = nlohmann::json::parse(json, nullptr, false);
     if (value.is_discarded()) return {};
-    // Colours come as #rrggbb and are kept the way the project stores them.
-    if (p->type == "color" && value.is_string()) {
-        auto rgb = hex_to_color(value.get<std::string>());
-        if (!rgb) return {};
-        value = *rgb;
-    }
-    if (p->type == "combo" && !value.is_string()) value = value.dump();
-    if (p->type == "bool" && !value.is_boolean()) return {};
-    if (p->type == "slider" && !value.is_number()) return {};
+    if (!normalize_property(*p, value).empty()) return {};
     Values values = renderer_->values();
     values[std::string(name)] = value;
     renderer_->set_values(values);

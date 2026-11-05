@@ -97,8 +97,31 @@ std::string parse_tex(std::span<const std::byte> data, Tex& out) {
                 return "truncated mip";
             }
             if (!in.value(stored) || stored < 0 || raw < 0) return "truncated mip";
+            if (w < 1 || h < 1 || w > 32768 || h > 32768) return "bad mip size";
+            if (raw > (256 << 20)) return "mip too large";
             if (!in.bytes(static_cast<std::size_t>(stored), mip.stored)) {
                 return "mip data runs past the end";
+            }
+            // The bytes a mip of this size takes in the format; an embedded file (PNG, JPEG)
+            // and a video are read by their own decoders and checked there.
+            if (!out.embedded() && !out.video) {
+                std::uint64_t expect = 0;
+                auto blocks = [](std::int32_t n) {
+                    return static_cast<std::uint64_t>((n + 3) / 4);
+                };
+                switch (out.format) {
+                    case 1:
+                    case 2:
+                    case 4: expect = blocks(w) * blocks(h) * 16; break;             // DXT3, DXT5
+                    case 7: expect = blocks(w) * blocks(h) * 8; break;              // DXT1
+                    case 8: expect = static_cast<std::uint64_t>(w) * h * 2; break;  // RG88
+                    case 9: expect = static_cast<std::uint64_t>(w) * h; break;      // R8
+                    case 0: expect = static_cast<std::uint64_t>(w) * h * 4; break;  // RGBA8
+                    default: break;
+                }
+                std::uint64_t have = compressed == 1 ? static_cast<std::uint64_t>(raw)
+                                                     : static_cast<std::uint64_t>(stored);
+                if (expect != 0 && have < expect) return "mip data shorter than its size";
             }
             mip.width = static_cast<std::uint32_t>(w);
             mip.height = static_cast<std::uint32_t>(h);

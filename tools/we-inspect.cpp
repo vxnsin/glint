@@ -128,7 +128,7 @@ int compile_all(const Vfs& vfs, const SceneDesc& scene, bool verbose) {
         for (const auto& pass : image.material.passes) {
             ShaderRequest request{pass.shader, pass.combos, 0};
             for (std::size_t i = 0; i < pass.textures.size(); ++i) {
-                if (pass.textures[i]) request.bound_textures |= 1u << i;
+                if (pass.textures[i] && i < 32) request.bound_textures |= 1u << i;
             }
             run(image.name + " material", request);
         }
@@ -147,9 +147,12 @@ int compile_all(const Vfs& vfs, const SceneDesc& scene, bool verbose) {
                         }
                     }
                     for (std::size_t i = 0; i < textures.size(); ++i) {
-                        if (textures[i]) request.bound_textures |= 1u << i;
+                        if (textures[i] && i < 32) request.bound_textures |= 1u << i;
                     }
-                    for (const auto& bind : pass.binds) request.bound_textures |= 1u << bind.index;
+                    for (const auto& bind : pass.binds) {
+                        if (bind.index >= 0 && bind.index < 32)
+                            request.bound_textures |= 1u << bind.index;
+                    }
                     run(image.name + " " + mp.shader, request);
                 }
             }

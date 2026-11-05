@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "core/log.hpp"
 #include "core/loop.hpp"
 
 namespace glint {
@@ -48,7 +49,14 @@ void Workers::run() {
             job = std::move(queue_.front());
             queue_.pop_front();
         }
-        job.work();
+        try {
+            job.work();
+        } catch (const std::exception& e) {
+            // A loader that throws must not take the daemon down; its done() sees no result.
+            log::error("worker: {}", e.what());
+        } catch (...) {
+            log::error("worker: unknown exception");
+        }
         {
             std::lock_guard lock(mutex_);
             if (stopping_) return;

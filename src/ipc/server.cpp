@@ -20,6 +20,7 @@ namespace {
 
 // A client that sends this much without a newline is dropped.
 constexpr std::size_t max_line = 1 << 20;
+constexpr std::size_t max_outgoing = 4u << 20;  // bytes queued for one client
 
 bool fill_address(sockaddr_un& address, const std::string& path) {
     address = {};
@@ -62,22 +63,24 @@ std::string Server::listen(const std::string& path) {
     if (!fill_address(address, path)) return "socket path too long: " + path;
     std::error_code ec;
     auto dir = std::filesystem::path(path).parent_path();
-    std::filesystem::create_directories(dir, ec);
-    ::chmod(dir.c_str(), 0700);
+    bool made = !std::filesystem::exists(dir, ec) && std::filesystem::create_directories(dir, ec);
+    // Only a directory of glint's own is made private; GLINT_SOCKET may point anywhere.
+    if (made || dir.filename() == "glint") ::chmod(dir.c_str(), 0700);
 
-    // A socket file left behind: if a daemon answers on it, it is in use.
-    if (std::filesystem::exists(path, ec)) {
+    listen_fd_.reset(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0));
+    if (!listen_fd_) return std::string("socket: ") + std::strerror(errno);
+    if (::bind(listen_fd_.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        if (errno != EADDRINUSE) return "bind " + path + ": " + std::strerror(errno);
+        // A socket file is there: if a daemon answers on it, it is in use; else it was left
+        // behind, and the bind is tried once more without it.
         UniqueFd probe(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
         if (::connect(probe.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
             return "another glint is already running on " + path;
         }
         ::unlink(path.c_str());
-    }
-
-    listen_fd_.reset(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0));
-    if (!listen_fd_) return std::string("socket: ") + std::strerror(errno);
-    if (::bind(listen_fd_.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-        return "bind " + path + ": " + std::strerror(errno);
+        if (::bind(listen_fd_.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+            return "bind " + path + ": " + std::strerror(errno);
+        }
     }
     ::chmod(path.c_str(), 0600);
     if (::listen(listen_fd_.get(), 16) != 0) return std::string("listen: ") + std::strerror(errno);
@@ -122,6 +125,7 @@ void Server::readable(Client& client) {
         ssize_t n = ::read(client.fd.get(), buffer, sizeof(buffer));
         if (n > 0) {
             client.in.append(buffer, static_cast<std::size_t>(n));
+            if (client.in.size() > max_line) break;  // a flood: dropped below
             continue;
         }
         if (n < 0 && (errno == EAGAIN || errno == EINTR)) break;
@@ -150,7 +154,10 @@ void Server::readable(Client& client) {
             reply.id_ = request["id"];
             reply.has_id_ = true;
         }
-        if (request.value("op", "") == "subscribe") {
+        std::string op = request.contains("op") && request["op"].is_string()
+                             ? request["op"].get<std::string>()
+                             : "";
+        if (op == "subscribe") {
             client.events.clear();
             if (request.contains("events") && request["events"].is_array()) {
                 for (const auto& name : request["events"]) {
@@ -163,7 +170,17 @@ void Server::readable(Client& client) {
                 std::vector<std::string>(client.events.begin(), client.events.end())));
             continue;
         }
-        handler_(request, std::move(reply));
+        try {
+            handler_(request, std::move(reply));
+        } catch (const std::exception& e) {
+            // A field of the wrong type, or anything else: the request fails, not glint.
+            Reply failed;
+            failed.server_ = this;
+            failed.client_ = token;
+            failed.has_id_ = true;
+            if (request.contains("id")) failed.id_ = request["id"];
+            failed.error(std::string("bad request: ") + e.what());
+        }
         // The handler may have dropped this client (it cannot, today) or added others.
         if (find(token) == nullptr) return;
     }
@@ -175,6 +192,12 @@ void Server::send(Client& client, const nlohmann::json& message) {
     bool was_empty = client.out.empty();
     client.out += message.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     client.out += '\n';
+    if (client.out.size() > max_outgoing) {
+        // A subscriber that never reads: the daemon does not keep its backlog.
+        client.out.clear();
+        drop(client);
+        return;
+    }
     if (was_empty) writable(client);
 }
 

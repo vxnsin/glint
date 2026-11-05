@@ -149,6 +149,11 @@ public:
     // The poll protocol of libwayland: prepare() before poll, then read() if the fd was
     // readable or cancel() if not, then dispatch(). prepare() returns false when the
     // connection broke. flush_pending() says whether poll should wait for POLLOUT.
+    // Events already read but not yet handled (none while a read is prepared); how many.
+    int dispatch_pending();
+    // Lets go of the outputs and the toplevel tracking while the listener is still whole
+    // (the destructor does it too).
+    void shutdown();
     bool prepare();
     void read();
     void cancel();
@@ -184,7 +189,9 @@ private:
         std::vector<wl_output*> outputs;
         bool fullscreen = false, minimized = false, activated = false;
         bool pending_fullscreen = false, pending_minimized = false, pending_activated = false;
+        std::uint64_t activated_serial = 0;  // when it last had focus, by order
     };
+    std::uint64_t activation_serial_ = 0;
 
     Output* find_surface(wl_surface* surface) const;
     void remove_output(std::uint32_t global);
@@ -207,6 +214,7 @@ private:
 
     std::vector<std::unique_ptr<Output>> outputs_;
     std::vector<std::unique_ptr<Toplevel>> toplevels_;
+    std::vector<zwlr_foreign_toplevel_manager_v1*> stopping_managers_;  // told to stop
     std::optional<dev_t> main_device_;
     bool flush_pending_ = false;
 

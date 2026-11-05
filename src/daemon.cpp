@@ -66,6 +66,7 @@ Daemon::~Daemon() {
     // Clients first, wallpapers (they hold textures), then the loaders, then the GPU.
     server_.reset();
     screens_.clear();
+    display_.shutdown();  // its outputs call back into screens_, which is still here
     workers_.reset();
     textures_.reset();
     scenes_.reset();
@@ -166,8 +167,13 @@ int Daemon::run() {
 // Everything that draws happens here, outside libwayland's prepared-read window: the
 // present calls into the Wayland connection.
 void Daemon::before_poll() {
-    for (auto& entry : screens_) {
-        if (drawable(*entry) && due(*entry)) render(*entry);
+    // Mesa reads the connection while a frame is presented; events for this client that
+    // arrive then are dispatched here, and what they changed is drawn in the same pass.
+    for (int pass = 0; pass < 3; ++pass) {
+        for (auto& entry : screens_) {
+            if (drawable(*entry) && due(*entry)) render(*entry);
+        }
+        if (display_.dispatch_pending() <= 0) break;
     }
     emit_states();
     // Fullscreen windows matter only while something animates (or when asked to for tests).
@@ -328,7 +334,10 @@ void Daemon::render(Screen& entry) {
     wl::Output& output = *entry.output;
     if (entry.resized) {
         output.apply_surface_state();
-        if (!entry.surface->resize(output.pixel_width(), output.pixel_height())) return;
+        if (!entry.surface->resize(output.pixel_width(), output.pixel_height())) {
+            loop_.wake();  // tried again with the next pass, which needs a wakeup
+            return;
+        }
         entry.resized = false;
     }
 
@@ -402,8 +411,9 @@ void Daemon::render(Screen& entry) {
         if (fading) entry.incoming->prepare(incoming_frame, cmd, extent);
     };
     if (!entry.surface->begin(clear, uniforms, target, offscreen)) {
-        // Out of date: recreate with the next draw.
+        // Out of date: recreate with the next draw, which needs a wakeup of its own.
         entry.resized = true;
+        loop_.wake();
         return;
     }
     if (entry.current) entry.current->render(current_frame, target, 1.0f);
@@ -416,8 +426,14 @@ void Daemon::render(Screen& entry) {
     // Only ask for a frame callback when another frame will be wanted; a still picture
     // presents once and then gets no more callbacks, so no more wakeups.
     if (more) output.request_frame();
-    entry.surface->end();
-    entry.dirty = more;
+    if (!entry.surface->end()) {
+        // Suboptimal or out of date: the swapchain is made anew with the next draw.
+        entry.resized = true;
+        entry.dirty = true;
+        loop_.wake();
+    } else {
+        entry.dirty = more;
+    }
 
     entry.present_ns[entry.frames % entry.present_ns.size()] = start;
     entry.last_present_ns = start;
@@ -484,7 +500,10 @@ void Daemon::set(std::string_view output, const std::filesystem::path& path, con
         finish(request, {});
         return;
     }
-    for (Screen* entry : targets) apply(*entry, *assignment(entry->output->name()), request);
+    // Resolved before applying: a failure rolls the assignments back while this loop runs.
+    std::vector<std::pair<Screen*, Assignment>> resolved;
+    for (Screen* entry : targets) resolved.emplace_back(entry, *assignment(entry->output->name()));
+    for (auto& [entry, a] : resolved) apply(*entry, a, request);
 }
 
 void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<Request> request) {
@@ -603,8 +622,11 @@ void Daemon::output_added(wl::Output& output) {
 
 void Daemon::output_removed(wl::Output& output) {
     log::info("{}: surface gone", output.name());
-    if (Screen* entry = screen(output); entry != nullptr && entry->request) {
-        finish(entry->request, "output removed");
+    if (Screen* entry = screen(output); entry != nullptr) {
+        // The set did not fail, one of its targets went away: it is done as far as this
+        // output is concerned.
+        if (entry->request) finish(entry->request, {});
+        if (entry->surface) entry->surface->cancel_capture();
     }
     bool had = screen(output) != nullptr;
     if (Screen* entry = screen(output); entry != nullptr && entry->timer_id >= 0) {
@@ -653,6 +675,7 @@ void Daemon::pause_changed(Screen& entry, std::uint32_t before) {
         entry.paused_at_ns = 0;
     }
     if (now != 0) {
+        if (entry.surface) entry.surface->cancel_capture();  // no frame will come
         if (entry.current) entry.current->pause();
         // A set waiting for its first frame will not get one while paused.
         if (entry.request && entry.incoming && entry.incoming->ready()) {
@@ -661,6 +684,7 @@ void Daemon::pause_changed(Screen& entry, std::uint32_t before) {
         }
     } else if (entry.current) {
         entry.current->resume();
+        entry.dirty = true;  // the frame it would have drawn while paused
     }
 }
 
@@ -670,6 +694,7 @@ void Daemon::pointer(wl::Output& output, double x, double y, std::uint32_t butto
         entry->pointer[1] = y;
         if (entry->current && entry->current->wants_cursor()) {
             entry->current->cursor({x, y, buttons});
+            entry->dirty = true;  // a parallax scene at rest moves with the pointer
         }
     }
 }
@@ -845,7 +870,11 @@ std::string Daemon::pause(std::string_view output, std::uint32_t reason, bool on
 }
 
 void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
-    std::string op = request.value("op", "");
+    auto text_field = [&](const char* key, const char* fallback) {
+        return request.contains(key) && request[key].is_string() ? request[key].get<std::string>()
+                                                                 : std::string(fallback);
+    };
+    std::string op = text_field("op", "");
     std::string output = request.contains("output") && request["output"].is_string()
                              ? request["output"].get<std::string>()
                              : "";
@@ -892,7 +921,7 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
         if (std::string error = unset(output); !error.empty()) return reply.error(error);
         reply.ok();
     } else if (op == "pause" || op == "resume") {
-        std::string reason_name = request.value("reason", "request");
+        std::string reason_name = text_field("reason", "request");
         std::uint32_t reason = pause_reason_from(reason_name);
         if (reason != pause_locked && reason != pause_request) {
             return reply.error("reason is locked or request (glint sets covered and idle itself)");
@@ -909,11 +938,20 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
             return reply.error("screenshot needs a path");
         }
         if (reasons(*entry) != 0) return reply.error("the output is paused, nothing is drawn");
+        if (!entry->surface || !entry->surface->can_capture()) {
+            return reply.error("the output cannot be read back");
+        }
+        if (entry->surface->capture_pending())
+            return reply.error("a screenshot is already pending");
         std::filesystem::path path = request["path"].get<std::string>();
+        if (!path.is_absolute()) return reply.error("path must be absolute");
         bool bgra = entry->surface->format() == VK_FORMAT_B8G8R8A8_SRGB ||
                     entry->surface->format() == VK_FORMAT_B8G8R8A8_UNORM;
         Workers* workers = workers_.get();
         entry->surface->capture_next([reply, path, bgra, workers](gpu::Surface::Capture c) mutable {
+            if (c.pixels.empty()) {
+                return reply.error("no frame came: the output is not being drawn (covered?)");
+            }
             auto shot = std::make_shared<gpu::Surface::Capture>(std::move(c));
             auto error = std::make_shared<std::string>();
             workers->post(
@@ -928,6 +966,24 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
                 });
         });
         entry->dirty = true;  // a still output draws once more for it
+        // A compositor that does not draw this output sends no frame: the request is
+        // answered after a while instead of waiting forever.
+        int timer = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+        if (timer >= 0) {
+            itimerspec spec{};
+            spec.it_value.tv_sec = 3;
+            ::timerfd_settime(timer, 0, &spec, nullptr);
+            wl::Output* output_ptr = entry->output;
+            int* id = new int(0);
+            *id = loop_.add(timer, POLLIN, [this, timer, id, output_ptr](short) {
+                if (Screen* late = screen(*output_ptr); late != nullptr && late->surface) {
+                    late->surface->cancel_capture();
+                }
+                loop_.remove(*id);
+                ::close(timer);
+                delete id;
+            });
+        }
     } else if (op == "props") {
         props(request, std::move(reply));
     } else if (op == "inspect") {
@@ -936,7 +992,12 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
         // For compositors where glint cannot see the pointer: the shell sends it.
         Screen* entry = screen(output);
         if (entry == nullptr) return reply.error("cursor needs an output");
-        Cursor c{request.value("x", 0.0), request.value("y", 0.0), request.value("buttons", 0u)};
+        auto number_field = [&](const char* key) {
+            return request.contains(key) && request[key].is_number() ? request[key].get<double>()
+                                                                     : 0.0;
+        };
+        Cursor c{number_field("x"), number_field("y"),
+                 static_cast<std::uint32_t>(std::max(0.0, number_field("buttons")))};
         if (entry->current) entry->current->cursor(c);
         entry->dirty = true;
         reply.ok();
@@ -950,7 +1011,9 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
 }
 
 void Daemon::props(const nlohmann::json& request, ipc::Server::Reply reply) {
-    std::string output = request.value("output", "");
+    std::string output = request.contains("output") && request["output"].is_string()
+                             ? request["output"].get<std::string>()
+                             : "";
     Screen* entry = screen(output);
     if (entry == nullptr) return reply.error("props needs an output");
     Wallpaper* wallpaper =
@@ -971,7 +1034,8 @@ void Daemon::props(const nlohmann::json& request, ipc::Server::Reply reply) {
         entry->dirty = true;
     };
 
-    if (request.value("reset", false)) {
+    if (request.contains("reset") && request["reset"].is_boolean() &&
+        request["reset"].get<bool>()) {
         auto names = wallpaper->reset_properties();
         properties_.erase(path);
         save_state();
@@ -980,10 +1044,16 @@ void Daemon::props(const nlohmann::json& request, ipc::Server::Reply reply) {
     }
     if (request.contains("set")) {
         if (!request["set"].is_object()) return reply.error("set is an object of name: value");
+        // Every value is checked before any is applied: a request fails whole.
+        for (const auto& [name, value] : request["set"].items()) {
+            std::string why = wallpaper->check_property(name, value.dump());
+            if (!why.empty()) {
+                return reply.error("cannot set " + name + " to " + value.dump() + ": " + why);
+            }
+        }
         std::vector<std::string> changed;
         for (const auto& [name, value] : request["set"].items()) {
             auto names = wallpaper->set_property(name, value.dump());
-            if (names.empty()) return reply.error("cannot set " + name + " to " + value.dump());
             changed.insert(changed.end(), names.begin(), names.end());
             properties_[path][name] = value;
         }

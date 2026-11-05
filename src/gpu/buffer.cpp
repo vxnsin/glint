@@ -6,7 +6,8 @@
 
 namespace glint::gpu {
 
-Buffer::Buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, bool host)
+Buffer::Buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, bool host,
+               bool readback)
     : allocator_(allocator), size_(size) {
     VkBufferCreateInfo info{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -15,9 +16,11 @@ Buffer::Buffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usa
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
     VmaAllocationCreateInfo alloc{
-        .flags = host ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                            VMA_ALLOCATION_CREATE_MAPPED_BIT
-                      : 0u,
+        .flags = readback ? VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                                VMA_ALLOCATION_CREATE_MAPPED_BIT
+                 : host   ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                VMA_ALLOCATION_CREATE_MAPPED_BIT
+                          : 0u,
         .usage = VMA_MEMORY_USAGE_AUTO,
     };
     VmaAllocationInfo result{};
@@ -59,6 +62,12 @@ void Buffer::reset() {
 
 void Buffer::flush(VkDeviceSize offset, VkDeviceSize size) const {
     if (allocation_ != VK_NULL_HANDLE) vmaFlushAllocation(allocator_, allocation_, offset, size);
+}
+
+void Buffer::invalidate(VkDeviceSize offset, VkDeviceSize size) const {
+    if (allocation_ != VK_NULL_HANDLE) {
+        vmaInvalidateAllocation(allocator_, allocation_, offset, size);
+    }
 }
 
 }  // namespace glint::gpu

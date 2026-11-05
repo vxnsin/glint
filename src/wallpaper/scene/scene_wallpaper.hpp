@@ -54,6 +54,7 @@ public:
 
     std::vector<Property> properties() const override;
     std::vector<std::string> set_property(std::string_view name, std::string_view json) override;
+    std::string check_property(std::string_view name, std::string_view json) const override;
     std::vector<std::string> reset_properties() override;
     Values property_values() const;
 

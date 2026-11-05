@@ -73,6 +73,15 @@ public:
     };
     void capture_next(std::function<void(Capture)> done) { capture_ = std::move(done); }
     bool capture_pending() const { return static_cast<bool>(capture_); }
+    // Whether the swapchain can be read back at all (TRANSFER_SRC).
+    bool can_capture() const { return can_capture_; }
+    // Answers a pending capture with no pixels: the output went away or stopped drawing.
+    void cancel_capture() {
+        if (!capture_) return;
+        auto done = std::move(capture_);
+        capture_ = {};
+        done(Capture{});
+    }
 
     // GPU time of the latest finished frame in milliseconds, -1 if not known yet.
     double gpu_ms();

@@ -27,6 +27,9 @@ public:
     // During the after-poll hook: what poll reported for an entry.
     short revents(int id) const;
 
+    // Makes the next poll return at once (a retry that has no fd of its own to wait on).
+    void wake();
+
     // Runs until quit(). Returns false if poll failed.
     bool run();
     void quit() { running_ = false; }
@@ -48,6 +51,7 @@ private:
     std::function<void()> before_poll_;
     std::function<void()> after_poll_;
     int next_id_ = 1;
+    int wake_fd_ = -1;
     bool running_ = false;
     std::uint64_t wakeups_ = 0;
 };

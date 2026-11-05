@@ -30,6 +30,8 @@ void Textures::request(const std::filesystem::path& path, Callback callback) {
         }
         ready_.erase(it);
     }
+    // Pictures no longer shown leave dead entries behind; a slideshow would collect them.
+    if (ready_.size() > 64) std::erase_if(ready_, [](const auto& e) { return e.second.expired(); });
     auto& waiters = loading_[key];
     waiters.push_back(std::move(callback));
     if (waiters.size() > 1) return;  // already on its way

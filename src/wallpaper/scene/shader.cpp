@@ -404,6 +404,12 @@ void hlsl_conversions(std::string& body, std::map<std::string, std::string> glob
 
     while (std::getline(in, line)) {
         std::smatch m;
+        if (line.size() > 4096) {
+            // Not a line of shader code: the regexes below backtrack per character.
+            out += line;
+            out += '\n';
+            continue;
+        }
         if (depth == 0 && std::regex_match(line, m, function)) {
             locals.clear();
             std::string params = m[3].str();
@@ -755,7 +761,7 @@ std::uint32_t locations_of(const std::string& type) {
 }
 
 int texture_slot(const std::string& name) {
-    static const std::regex slot(R"(^g_Texture(\d+)$)");
+    static const std::regex slot(R"(^g_Texture(\d{1,2})$)");
     std::smatch m;
     if (std::regex_match(name, m, slot)) return std::stoi(m[1].str());
     return -1;
@@ -823,6 +829,7 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
         if (slot < 0 || !annotation.contains("combo") || !annotation["combo"].is_string()) {
             continue;
         }
+        if (slot < 0 || static_cast<std::uint32_t>(slot) >= max_texture_slots) continue;
         if ((request.bound_textures & (1u << slot)) != 0) {
             result.combos[upper(annotation["combo"].get<std::string>())] = 1;
         }
@@ -874,7 +881,7 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
             std::uint32_t count = 1;
             if (!d.array.empty()) {
                 std::string n = d.array.substr(1, d.array.size() - 2);
-                count = static_cast<std::uint32_t>(std::max(1, std::atoi(n.c_str())));
+                count = static_cast<std::uint32_t>(std::clamp(std::atoi(n.c_str()), 1, 1024));
                 align = 16;
                 size = round_up(size, 16) * count;
             }
@@ -945,7 +952,8 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
             varying_locations[d.name] = next;
             std::uint32_t count = 1;
             if (!d.array.empty())
-                count = static_cast<std::uint32_t>(std::max(1, std::atoi(d.array.c_str() + 1)));
+                count =
+                    static_cast<std::uint32_t>(std::clamp(std::atoi(d.array.c_str() + 1), 1, 64));
             next += locations_of(d.type) * count;
         }
     }
@@ -973,7 +981,7 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
             locations_of(d.type) *
             (d.array.empty()
                  ? 1u
-                 : static_cast<std::uint32_t>(std::max(1, std::atoi(d.array.c_str() + 1))));
+                 : static_cast<std::uint32_t>(std::clamp(std::atoi(d.array.c_str() + 1), 1, 64)));
     }
     vertex_io += vertex_globals;
     for (const auto& d : stages[0].outputs) {

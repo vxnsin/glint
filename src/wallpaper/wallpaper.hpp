@@ -166,6 +166,10 @@ public:
     // Returns the names that changed; a shader recompile, if one is needed, runs in the
     // background and the old pipeline keeps drawing until it is ready.
     virtual std::vector<std::string> set_property(std::string_view, std::string_view) { return {}; }
+    // Whether set_property would take the value: an error message, or empty.
+    virtual std::string check_property(std::string_view, std::string_view) const {
+        return "no settings";
+    }
     // Back to the project's defaults; returns the names that changed.
     virtual std::vector<std::string> reset_properties() { return {}; }
     virtual bool wants_cursor() const { return false; }

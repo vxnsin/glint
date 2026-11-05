@@ -43,6 +43,22 @@ bool boolean(const json& j, const char* key, bool fallback) {
     return fallback;
 }
 
+// An integer that may be stored as a number or a string ("7"), never throwing.
+int integer(const json& j, const char* key, int fallback) {
+    if (!j.is_object() || !j.contains(key)) return fallback;
+    const json& v = j[key];
+    if (v.is_number_integer()) return v.get<int>();
+    if (v.is_number()) return static_cast<int>(v.get<double>());
+    if (v.is_string()) {
+        char* end = nullptr;
+        long n = std::strtol(v.get<std::string>().c_str(), &end, 10);
+        return end != nullptr && end != v.get<std::string>().c_str() ? static_cast<int>(n)
+                                                                     : fallback;
+    }
+    if (v.is_object() && v.contains("value")) return integer(v, "value", fallback);
+    return fallback;
+}
+
 float number(const json& j, const char* key, float fallback) {
     if (!j.is_object() || !j.contains(key)) return fallback;
     const json& v = j[key];
@@ -92,11 +108,12 @@ std::map<std::string, int> combo_map(const json& j) {
 void parse_effect(const Vfs& vfs, const json& entry, Effect& effect,
                   std::vector<std::string>& warnings) {
     effect.file = str(entry, "file");
-    effect.id = entry.value("id", 0);
+    effect.id = integer(entry, "id", 0);
     effect.name = str(entry, "name");
     effect.visible = entry.contains("visible") ? parse_bound(entry["visible"]) : Bound{true};
     if (entry.contains("passes") && entry["passes"].is_array()) {
         for (const auto& pass : entry["passes"]) {
+            if (!pass.is_object()) continue;
             Effect::Override o;
             o.combos = combo_map(pass.value("combos", json::object()));
             if (pass.contains("constantshadervalues") && pass["constantshadervalues"].is_object()) {
@@ -120,7 +137,8 @@ void parse_effect(const Vfs& vfs, const json& entry, Effect& effect,
             p.source = str(pass, "source");
             if (pass.contains("bind") && pass["bind"].is_array()) {
                 for (const auto& bind : pass["bind"]) {
-                    p.binds.push_back({str(bind, "name"), bind.value("index", 0)});
+                    if (!bind.is_object()) continue;
+                    p.binds.push_back({str(bind, "name"), integer(bind, "index", 0)});
                 }
             }
             if (!p.material_path.empty()) {
@@ -146,7 +164,7 @@ void parse_effect(const Vfs& vfs, const json& entry, Effect& effect,
 
 void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
                  std::vector<std::string>& warnings) {
-    image.id = object.value("id", 0);
+    image.id = integer(object, "id", 0);
     image.name = str(object, "name");
     if (object.contains("parent") && object["parent"].is_number()) {
         image.parent = object["parent"].get<int>();
@@ -223,6 +241,7 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
     }
     if (object.contains("effects") && object["effects"].is_array()) {
         for (const auto& entry : object["effects"]) {
+            if (!entry.is_object()) continue;
             Effect effect;
             parse_effect(vfs, entry, effect, warnings);
             image.effects.push_back(std::move(effect));
@@ -487,7 +506,8 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
     if (general.contains("orthogonalprojection") && general["orthogonalprojection"].is_object()) {
         const json& ortho = general["orthogonalprojection"];
         out.general.ortho = {number(ortho, "width", 1920), number(ortho, "height", 1080)};
-        if (ortho.value("auto", false)) out.warnings.push_back("auto projection: using 1920x1080");
+        if (boolean(ortho, "auto", false))
+            out.warnings.push_back("auto projection: using 1920x1080");
     } else {
         out.general.perspective = true;
         out.warnings.push_back("no orthogonalprojection: a 3D scene, drawn flat");
@@ -514,7 +534,7 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
             out.images.push_back(std::move(image));
         } else if (object.contains("particle") && object["particle"].is_string()) {
             ParticleObject particle;
-            particle.id = object.value("id", next_id);
+            particle.id = integer(object, "id", next_id);
             particle.name = str(object, "name");
             particle.file = object["particle"].get<std::string>();
             if (object.contains("parent") && object["parent"].is_number()) {
@@ -539,7 +559,7 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
             }
         } else if (object.contains("text")) {
             TextObject text;
-            text.id = object.value("id", next_id);
+            text.id = integer(object, "id", next_id);
             text.name = str(object, "name");
             text.text = parse_bound(object["text"]);
             text.font = str(object, "font");
@@ -578,7 +598,7 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
         } else if (object.contains("sound") && object["sound"].is_array()) {
             SoundObject sound;
             sound.name = str(object, "name");
-            sound.id = object.value("id", next_id);
+            sound.id = integer(object, "id", next_id);
             for (const auto& f : object["sound"]) {
                 if (f.is_string()) sound.files.push_back(f.get<std::string>());
             }
@@ -599,7 +619,7 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
         } else {
             // A transform node: nothing drawn, but children hang from it.
             GroupObject group;
-            group.id = object.value("id", next_id);
+            group.id = integer(object, "id", next_id);
             group.name = str(object, "name");
             if (object.contains("parent") && object["parent"].is_number()) {
                 group.parent = object["parent"].get<int>();

@@ -557,3 +557,20 @@ defining its own `log10` beside the dialect's macro. Each got its rule in the tr
 (src/wallpaper/scene/shader.cpp, `hlsl_conversions`): the types of globals, parameters and
 locals are known from their declarations, so an identifier wider than the slot it goes
 into gets the swizzle that HLSL's truncation implies.
+
+### Hardening from the review issues
+
+The read-only review of fe2c279 had filed sixteen issues (#51 to #66); this batch closes
+them. A request with a field of the wrong type, a worker that throws, a scene.json with a
+string id, a condition with a thousand parentheses, a shader naming g_Texture999999 or a
+.tex with a mip larger than its data all used to be able to end or mislead the daemon; each
+now fails only the request or the file. A screenshot answers at once when none can be
+taken, and is answered when the output pauses or goes away; a suboptimal present makes the
+swapchain anew with the next draw and the loop gets a wakeup for it; the pointer redraws a
+parallax scene at rest; events Mesa read during a frame are drawn in the same pass; the
+toplevel manager stays until the compositor's "finished"; a set is not rolled back when one
+of its outputs is unplugged; props requests are checked whole before anything is applied,
+sliders are clamped, combos checked, and a colour given as #rrggbb survives the state file;
+the state file is synced before its rename and kept per display for a nested compositor;
+the socket's directory is only made private when glint made it, two daemons no longer
+unlink each other, and a client that never reads is dropped at four megabytes of backlog.

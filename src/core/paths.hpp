@@ -11,5 +11,7 @@ std::filesystem::path cache_dir();    // $XDG_CACHE_HOME/glint
 
 // $GLINT_SOCKET, else $XDG_RUNTIME_DIR/glint/$WAYLAND_DISPLAY.sock
 std::filesystem::path socket_path();
+// The Wayland display's name ("wayland-1"), the last component when it is a path.
+std::string display_name();
 
 }  // namespace glint::paths

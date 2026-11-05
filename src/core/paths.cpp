@@ -36,14 +36,17 @@ std::filesystem::path cache_dir() {
     return env_or("XDG_CACHE_HOME", home() / ".cache") / "glint";
 }
 
-std::filesystem::path socket_path() {
-    const char* override_path = std::getenv(std::string(ipc::socket_env).c_str());
-    if (override_path != nullptr && override_path[0] != '\0') return override_path;
+std::string display_name() {
     const char* display = std::getenv("WAYLAND_DISPLAY");
     std::string name = display != nullptr && display[0] != '\0' ? display : "wayland-0";
     // WAYLAND_DISPLAY may be an absolute path; keep only the last component.
-    name = std::filesystem::path(name).filename().string();
-    return runtime_dir() / ipc::socket_dir / (name + ".sock");
+    return std::filesystem::path(name).filename().string();
+}
+
+std::filesystem::path socket_path() {
+    const char* override_path = std::getenv(std::string(ipc::socket_env).c_str());
+    if (override_path != nullptr && override_path[0] != '\0') return override_path;
+    return runtime_dir() / ipc::socket_dir / (display_name() + ".sock");
 }
 
 }  // namespace glint::paths

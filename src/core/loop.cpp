@@ -1,6 +1,8 @@
 #include "core/loop.hpp"
 
 #include <errno.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 
 #include <algorithm>
 
@@ -68,6 +70,20 @@ bool Loop::run() {
         }
     }
     return true;
+}
+
+void Loop::wake() {
+    if (wake_fd_ < 0) {
+        wake_fd_ = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (wake_fd_ < 0) return;
+        int fd = wake_fd_;
+        add(fd, POLLIN, [fd](short) {
+            std::uint64_t count = 0;
+            [[maybe_unused]] auto n = ::read(fd, &count, sizeof(count));
+        });
+    }
+    std::uint64_t one = 1;
+    [[maybe_unused]] auto n = ::write(wake_fd_, &one, sizeof(one));
 }
 
 }  // namespace glint

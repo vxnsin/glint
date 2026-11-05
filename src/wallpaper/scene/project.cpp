@@ -162,9 +162,11 @@ private:
 
     Value unary() {
         if (take("!")) {
+            if (++depth_ > max_depth) return fail();
             Value v;
             v.type = Value::Type::boolean;
             v.b = !truthy(unary());
+            --depth_;
             return v;
         }
         return primary();
@@ -175,8 +177,10 @@ private:
         if (pos_ >= text_.size()) return fail();
         char c = text_[pos_];
         if (c == '(') {
+            if (++depth_ > max_depth) return fail();
             ++pos_;
             Value v = expression();
+            --depth_;
             if (!take(")")) return fail();
             return v;
         }
@@ -228,6 +232,8 @@ private:
         return {};
     }
 
+    static constexpr int max_depth = 64;  // nesting of ( and !: deeper is refused
+    int depth_ = 0;
     std::string_view text_;
     const Values& values_;
     std::size_t pos_ = 0;

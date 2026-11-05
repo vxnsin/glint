@@ -44,7 +44,7 @@ UniqueFd connect_daemon() {
 }
 
 bool send_line(int fd, const json& message) {
-    std::string line = message.dump() + "\n";
+    std::string line = message.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
     std::size_t done = 0;
     while (done < line.size()) {
         ssize_t n = ::write(fd, line.data() + done, line.size() - done);
