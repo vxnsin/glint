@@ -336,10 +336,33 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
                     t.size = {static_cast<float>(fbo.width), static_cast<float>(fbo.height)};
                     t.fixed = true;
                 }
+                t.persistent = fbo.unique;
                 plan.targets.push_back(t);
             }
             for (std::size_t p = 0; p < effect.passes.size(); ++p) {
                 const EffectPass& pass = effect.passes[p];
+                if (pass.command == "copy") {
+                    // One fbo into another (or the layer): glint's copy pass.
+                    auto resolve = [&](const std::string& name) -> int {
+                        if (name.empty() || name == "previous") return current;
+                        auto it = fbos.find(name);
+                        return it != fbos.end() ? it->second : -1;
+                    };
+                    int from = resolve(pass.source), to = resolve(pass.target);
+                    if (from < 0 || to < 0) {
+                        plan.warnings.push_back(effect.file + ": copy between unknown fbos");
+                        continue;
+                    }
+                    PlanDraw between;
+                    between.object = object;
+                    between.effect = e;
+                    between.target = to;
+                    between.clear = true;
+                    between.geometry = Geometry::clip;
+                    between.textures[0] = {PlanTexture::Kind::target, {}, from};
+                    plan.draws.push_back(std::move(between));
+                    continue;
+                }
                 if (!pass.command.empty()) {
                     plan.warnings.push_back(effect.file + ": command " + pass.command +
                                             " not done yet");

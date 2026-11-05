@@ -157,6 +157,7 @@ void parse_effect(const Vfs& vfs, const json& entry, Effect& effect,
             f.width = static_cast<std::uint32_t>(std::max(0.0f, number(fbo, "width", 0)));
             f.height = static_cast<std::uint32_t>(std::max(0.0f, number(fbo, "height", 0)));
             f.repeat = str(fbo, "uvs") == "repeat";
+            f.unique = boolean(fbo, "unique", false);
             effect.fbos.push_back(std::move(f));
         }
     }

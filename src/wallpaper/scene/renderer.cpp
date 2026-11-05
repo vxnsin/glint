@@ -319,6 +319,7 @@ void SceneRenderer::release() {
     destroy_image(framebuffer_);
     for (auto& t : images_) destroy_image(*t);
     images_.clear();
+    fresh_.clear();
     targets_.clear();
     draws_.clear();
     // Buffers may be read by frames in flight.
@@ -567,7 +568,10 @@ void SceneRenderer::build(VkExtent2D extent) {
     std::vector<Holder> holders;
     for (const Want& want : wants) {
         Image* found = nullptr;
+        bool persistent = plan_.targets[want.target].persistent;
         for (Holder& held : holders) {
+            // An accumulation keeps its image to itself, across the frame and beyond it.
+            if (persistent || plan_.targets[held.target].persistent) continue;
             if (held.image->extent.width == want.extent.width &&
                 held.image->extent.height == want.extent.height &&
                 last[held.target] < first[want.target]) {
@@ -580,6 +584,8 @@ void SceneRenderer::build(VkExtent2D extent) {
             images_.push_back(std::make_unique<Image>(make_image(want.extent, target_format)));
             found = images_.back().get();
             holders.push_back({found, want.target});
+            // What an accumulation reads before it was ever written: nothing, not garbage.
+            if (persistent) fresh_.push_back(found);
         }
         targets_[want.target] = {found, want.repeat};
         log::debug("scene: target {} ({}) {}x{}, draws {} to {}, image {}", want.target,
@@ -801,6 +807,14 @@ void SceneRenderer::build(VkExtent2D extent) {
             } else if (t.kind == PlanTexture::Kind::framebuffer) {
                 draw.copy_view = framebuffer_.view;
                 draw.framebuffer = true;
+                draw.copy_sampler = assets_->sampler(true, false);
+            } else if (t.kind == PlanTexture::Kind::target && t.target >= 0 &&
+                       static_cast<std::size_t>(t.target) < targets_.size() &&
+                       targets_[static_cast<std::size_t>(t.target)].image != nullptr) {
+                // An effect's copy command: one fbo into another.
+                Image* source = targets_[static_cast<std::size_t>(t.target)].image;
+                draw.copy_view = source->view;
+                draw.sampled[0] = source;
                 draw.copy_sampler = assets_->sampler(true, false);
             } else {
                 const SceneTexture& white = assets_->texture("");
@@ -1347,6 +1361,28 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
         }
         skinned_vertices_[frame_].flush(0, VK_WHOLE_SIZE);
     }
+
+    // Accumulation targets made since the last frame start out black.
+    for (Image* image : fresh_) {
+        transition(cmd, *image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingAttachmentInfo color{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = image->view,
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        };
+        VkRenderingInfo info{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = {{0, 0}, image->extent},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color,
+        };
+        vkCmdBeginRendering(cmd, &info);
+        vkCmdEndRendering(cmd);
+    }
+    fresh_.clear();
 
     // The scene target starts as the clear colour.
     transition(cmd, scene_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);

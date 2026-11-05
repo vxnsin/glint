@@ -574,3 +574,11 @@ sliders are clamped, combos checked, and a colour given as #rrggbb survives the 
 the state file is synced before its rename and kept per display for a nested compositor;
 the socket's directory is only made private when glint made it, two daemons no longer
 unlink each other, and a client that never reads is dropped at four megabytes of backlog.
+
+### Motion blur
+
+Four items carry a motion blur effect: an accumulation pass reads the previous frame's
+result from an fbo marked `unique`, writes the new one, and a `copy` command carries it back
+for the next frame. The copy is glint's own copy pass between two targets, and a unique
+fbo keeps its image across frames (cleared once when it is made) instead of sharing the
+pool. The effect was refused with a warning before; now it runs.

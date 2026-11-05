@@ -33,7 +33,8 @@ struct PlanTarget {
     Vec2 size{0, 0};  // canvas units, scaled to the output later; pixels when fixed
     bool fixed = false;
     bool repeat = false;
-    std::string name;  // fbo name, or "layer a"/"layer b"
+    std::string name;         // fbo name, or "layer a"/"layer b"
+    bool persistent = false;  // its own image, kept across frames (an fbo marked unique)
 };
 
 enum class Geometry {

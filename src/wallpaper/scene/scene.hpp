@@ -117,6 +117,7 @@ struct EffectFbo {
     std::uint32_t width = 0, height = 0;  // a fixed size instead, when set
     std::string format;
     bool repeat = false;  // "uvs": "repeat"
+    bool unique = false;  // keeps its contents from frame to frame (an accumulation)
 };
 
 // One effect on one image object: the effect file plus the object's overrides per pass.

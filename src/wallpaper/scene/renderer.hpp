@@ -174,6 +174,7 @@ private:
     // The plan's targets, sharing images: a target that is finished with for the frame
     // hands its image to the next one of the same size.
     std::vector<std::unique_ptr<Image>> images_;
+    std::vector<Image*> fresh_;  // accumulation images not yet cleared
     struct TargetUse {
         Image* image = nullptr;
         bool repeat = false;  // sampled wrapping, like the picture it holds
