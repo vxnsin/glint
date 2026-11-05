@@ -202,9 +202,31 @@ Daemon-wide values, persisted:
 
 ```
 -> {"op": "settings", "set": {"workshop": "/path/to/431960", "assets": "/path/to/assets",
-    "fps": 60, "idle_after": 300, "battery_fps": 30}}
+    "fps": 60, "idle_after": 300, "battery_fps": 30, "battery_pause": false,
+    "free_after": 600, "fullscreen_pause": true,
+    "rules": [{"app_id": "mpv", "action": "ignore"},
+              {"app_id": "discord", "action": "mute"},
+              {"app_id": "steam_app_*", "fullscreen": true, "action": "stop"},
+              {"title": "*YouTube*", "maximized": true, "action": "pause"}]}}
 -> {"op": "settings"}                        // read them all
 ```
+
+The power values: `idle_after` pauses every output with reason `idle` after that many
+seconds without input and resumes with the next input; `battery_fps` caps the frame rate
+and `battery_pause` pauses while UPower reports `OnBattery`; `free_after` makes an output
+that has been covered for that many seconds drop its wallpaper's memory (decoders,
+textures, render targets) and rebuild it from the caches when uncovered. 0 switches each
+one off.
+
+`rules` decide what the windows on an output do to it, on top of the built-in rule that a
+fullscreen window with focus pauses its output (`fullscreen_pause` turns that off). A rule
+matches on `app_id` (the X11 class for Xwayland windows) and `title`, both globs with `*`
+and `?` matched without regard to case, and on the states `fullscreen`, `maximized` and
+`activated` when given. The first matching rule decides for a window: `pause` stops the
+frames, `mute` the sounds, `stop` pauses and frees the memory as `free_after` does, and
+`ignore` exempts the window from every rule, the built-in one included. An output gets
+what all of its windows ask for together; minimized windows never count. The logic is in
+`src/policy`, the toplevel feed and UPower in the daemon (M6).
 
 ### inspect
 

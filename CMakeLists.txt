@@ -42,6 +42,8 @@ set(GLINT_WARNINGS
 )
 target_compile_options(glint PRIVATE ${GLINT_WARNINGS})
 
+enable_testing()
+
 # The audio spectrum (FFT and the 64 bands for scenes) needs only the standard library,
 # so it and its tests build everywhere, the hello preset included.
 add_library(glint_audio STATIC
@@ -51,11 +53,23 @@ add_library(glint_audio STATIC
 target_include_directories(glint_audio PUBLIC src)
 target_compile_options(glint_audio PRIVATE ${GLINT_WARNINGS})
 
-enable_testing()
 add_executable(glint-spectrum-tests tests/spectrum.cpp)
 target_link_libraries(glint-spectrum-tests PRIVATE glint_audio)
 target_compile_options(glint-spectrum-tests PRIVATE ${GLINT_WARNINGS})
 add_test(NAME spectrum COMMAND glint-spectrum-tests)
+
+# Window rules and the power policy are plain logic and build everywhere, with their tests.
+add_library(glint_policy STATIC
+    src/policy/power.cpp
+    src/policy/rules.cpp
+)
+target_include_directories(glint_policy PUBLIC src)
+target_compile_options(glint_policy PRIVATE ${GLINT_WARNINGS})
+
+add_executable(glint-policy-tests tests/policy.cpp)
+target_link_libraries(glint-policy-tests PRIVATE glint_policy)
+target_compile_options(glint-policy-tests PRIVATE ${GLINT_WARNINGS})
+add_test(NAME policy COMMAND glint-policy-tests)
 
 if(GLINT_PLATFORM)
     include(cmake/Dependencies.cmake)
