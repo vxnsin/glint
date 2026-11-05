@@ -34,6 +34,18 @@ struct SceneTexture {
     std::uint32_t img_width = 1, img_height = 1;  // the picture inside
     bool clamp = false;
     bool nearest = false;
+    // A sprite sheet: frames in a grid, their size as a share of the stored texture.
+    std::uint32_t frames = 0;
+    float frame_width = 1, frame_height = 1;
+    int format = 0;  // the shaders' FORMAT_ code: 0 RGBA8, 4 DXT5, 6 DXT3, 7 DXT1, 8 RG88, 9 R8
+
+    PlanTextureInfo plan_info() const { return {frames, format}; }
+};
+
+// How a pipeline reads its vertices.
+enum class VertexLayout {
+    image,     // position (3), texcoord (2)
+    particle,  // ParticleVertex: the genericparticle layout with THICKFORMAT
 };
 
 struct SceneProgram {
@@ -72,7 +84,8 @@ public:
     // A puppet's rest mesh by .mdl path, null when it did not read.
     const Mesh* mesh(const std::string& path) const;
     // The pipeline for a program, blending mode and target format; made on first use.
-    VkPipeline pipeline(SceneProgram& program, const std::string& blending, VkFormat format);
+    VkPipeline pipeline(SceneProgram& program, const std::string& blending, VkFormat format,
+                        VertexLayout layout = VertexLayout::image);
     VkPipelineLayout layout() const { return layout_; }
     VkDescriptorSetLayout set_layout() const { return set_layout_; }
     VkSampler sampler(bool clamp, bool nearest) const;

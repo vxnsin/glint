@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <sstream>
 
+#include "wallpaper/scene/particles.hpp"
 #include "wallpaper/scene/vfs.hpp"
 
 namespace glint::scene {
@@ -431,9 +432,28 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
             ImageObject image;
             parse_image(vfs, object, image, out.warnings);
             if (image.id == 0) image.id = next_id;  // version 1 scenes have no ids
+            out.order.push_back({ObjectRef::Kind::image, static_cast<int>(out.images.size())});
             out.images.push_back(std::move(image));
-        } else if (object.contains("particle")) {
-            ++out.skipped["particle"];
+        } else if (object.contains("particle") && object["particle"].is_string()) {
+            ParticleObject particle;
+            particle.id = object.value("id", next_id);
+            particle.name = str(object, "name");
+            particle.file = object["particle"].get<std::string>();
+            particle.origin = parse_bound(object.value("origin", json("0 0 0")));
+            particle.scale = parse_bound(object.value("scale", json("1 1 1")));
+            particle.angles = parse_bound(object.value("angles", json("0 0 0")));
+            particle.visible =
+                object.contains("visible") ? parse_bound(object["visible"]) : Bound{true};
+            particle.parallax_depth = parse_vec2(object.value("parallaxDepth", json()), {1, 1});
+            if (object.contains("instanceoverride") && object["instanceoverride"].is_object()) {
+                particle.instance_override = object["instanceoverride"];
+            }
+            particle.desc = parse_particle(vfs, particle.file, out.warnings);
+            if (particle.desc) {
+                out.order.push_back(
+                    {ObjectRef::Kind::particle, static_cast<int>(out.particles.size())});
+                out.particles.push_back(std::move(particle));
+            }
         } else if (object.contains("text")) {
             ++out.skipped["text"];
         } else if (object.contains("sound") && object["sound"].is_array()) {

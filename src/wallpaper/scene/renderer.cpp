@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <sstream>
 
 #include "core/log.hpp"
@@ -214,10 +215,16 @@ void SceneRenderer::release() {
     auto vertices = std::make_shared<gpu::Buffer>(std::move(vertices_));
     auto indices = std::make_shared<gpu::Buffer>(std::move(indices_));
     auto uniforms = std::make_shared<gpu::Buffer>(std::move(uniforms_));
-    gpu_.defer([vertices, indices, uniforms]() mutable {
+    auto pv0 = std::make_shared<gpu::Buffer>(std::move(particle_vertices_[0]));
+    auto pv1 = std::make_shared<gpu::Buffer>(std::move(particle_vertices_[1]));
+    auto pi = std::make_shared<gpu::Buffer>(std::move(particle_indices_));
+    gpu_.defer([vertices, indices, uniforms, pv0, pv1, pi]() mutable {
         vertices.reset();
         indices.reset();
         uniforms.reset();
+        pv0.reset();
+        pv1.reset();
+        pi.reset();
     });
     extent_ = {0, 0};
 }
@@ -269,11 +276,16 @@ void SceneRenderer::build(VkExtent2D extent) {
     float vw = static_cast<float>(extent.width) / canvas_scale_;
     float vh = static_cast<float>(extent.height) / canvas_scale_;
     float left = (w - vw) * 0.5f, bottom = (h - vh) * 0.5f;
+    canvas_left_ = left;
+    canvas_bottom_ = bottom;
+    canvas_width_ = vw;
+    canvas_height_ = vh;
     // Depth covers what scenes use: objects sit at z = -100 and similar, WE's farz is 10000.
     projection_ = math::Mat4::ortho(left, left + vw, bottom, bottom + vh, -10000, 10000);
 
     auto size_of = [this](const std::string& name) { return assets_->picture_size(name); };
-    plan_ = build_plan(scene, values_, size_of);
+    auto info_of = [this](const std::string& name) { return assets_->texture(name).plan_info(); };
+    plan_ = build_plan(scene, values_, size_of, false, info_of);
     for (const auto& w2 : plan_.warnings) log::warn("scene: {}", w2);
 
     scene_ = make_image(extent, target_format);
@@ -320,9 +332,8 @@ void SceneRenderer::build(VkExtent2D extent) {
         }
         wants.push_back({i, e, repeat});
     }
-    std::ranges::stable_sort(wants, [&](const Want& x, const Want& y) {
-        return first[x.target] < first[y.target];
-    });
+    std::ranges::stable_sort(
+        wants, [&](const Want& x, const Want& y) { return first[x.target] < first[y.target]; });
     targets_.assign(plan_.targets.size(), {});
     struct Holder {  // an image and the target using it
         Image* image;
@@ -333,7 +344,8 @@ void SceneRenderer::build(VkExtent2D extent) {
         Image* found = nullptr;
         for (Holder& held : holders) {
             if (held.image->extent.width == want.extent.width &&
-                held.image->extent.height == want.extent.height && last[held.target] < first[want.target]) {
+                held.image->extent.height == want.extent.height &&
+                last[held.target] < first[want.target]) {
                 found = held.image;
                 held.target = want.target;
                 break;
@@ -347,8 +359,48 @@ void SceneRenderer::build(VkExtent2D extent) {
         targets_[want.target] = {found, want.repeat};
         log::debug("scene: target {} ({}) {}x{}, draws {} to {}, image {}", want.target,
                    plan_.targets[want.target].name, want.extent.width, want.extent.height,
-                   first[want.target], last[want.target],
-                   static_cast<const void*>(found));
+                   first[want.target], last[want.target], static_cast<const void*>(found));
+    }
+
+    // Particle systems keep running across rebuilds (a property change must not restart
+    // the snow); they are made once per object and seeded by it.
+    if (systems_.size() != scene.particles.size()) {
+        systems_.clear();
+        for (std::size_t i = 0; i < scene.particles.size(); ++i) {
+            const ParticleObject& object = scene.particles[i];
+            ParticleOverride over;
+            const nlohmann::json& o = object.instance_override;
+            auto f = [&](const char* key, float fallback) {
+                return o.is_object() && o.contains(key) && o[key].is_number() ? o[key].get<float>()
+                                                                              : fallback;
+            };
+            over.rate = f("rate", 1);
+            over.count = f("count", 1);
+            over.size = f("size", 1);
+            over.speed = f("speed", 1);
+            over.lifetime = f("lifetime", 1);
+            over.alpha = f("alpha", 1);
+            over.brightness = f("brightness", 1);
+            if (o.is_object() && o.contains("colorn")) {
+                over.color = parse_vec3(o["colorn"], {1, 1, 1});
+            } else if (o.is_object() && o.contains("color")) {
+                Vec3 c = parse_vec3(o["color"], {255, 255, 255});
+                over.color = {c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f};
+            }
+            auto seed = static_cast<std::uint32_t>(object.id * 2654435761u) ^
+                        static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(this));
+            systems_.push_back(std::make_unique<ParticleSystem>(object.desc, over, seed));
+        }
+    }
+    particle_models_.clear();
+    for (const ParticleObject& object : scene.particles) {
+        Vec3 origin = parse_vec3(object.origin.resolve(values_), {0, 0, 0});
+        Vec3 scale = parse_vec3(object.scale.resolve(values_), {1, 1, 1});
+        Vec3 angles = parse_vec3(object.angles.resolve(values_), {0, 0, 0});
+        particle_models_.push_back(
+            math::Mat4::translate(origin[0], origin[1], origin[2]) *
+            math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
+            math::Mat4::rotate_x(angles[0]) * math::Mat4::scale(scale[0], scale[1], scale[2]));
     }
 
     models_.clear();
@@ -378,6 +430,7 @@ void SceneRenderer::build(VkExtent2D extent) {
     std::vector<std::uint16_t> indices;
     VkDeviceSize alignment = 256;
     VkDeviceSize uniform_bytes = 0;
+    std::uint32_t particle_vertices = 0;
     for (const PlanDraw& p : plan_.draws) {
         Draw draw;
         draw.plan = &p;
@@ -385,6 +438,62 @@ void SceneRenderer::build(VkExtent2D extent) {
         draw.first_vertex = static_cast<std::uint32_t>(vertices.size() / 5);
         draw.first_index = static_cast<std::uint32_t>(indices.size());
         float u1 = 1, v1 = 1;
+        if (p.particle >= 0) {
+            // The system or one of its children, depth first, as the plan numbered them.
+            ParticleSystem* system = systems_[static_cast<std::size_t>(p.particle)].get();
+            if (p.child >= 0) {
+                // -1 is the root; child k is the k-th system in depth-first order after it.
+                int remaining = p.child;
+                std::function<ParticleSystem*(ParticleSystem&)> walk =
+                    [&](ParticleSystem& root) -> ParticleSystem* {
+                    for (auto& child : root.children()) {
+                        if (remaining == 0) return child.get();
+                        --remaining;
+                        if (ParticleSystem* found = walk(*child)) return found;
+                    }
+                    return nullptr;
+                };
+                system = walk(*system);
+            }
+            if (system == nullptr) continue;
+            draw.particles = system;
+            draw.particle_offset = particle_vertices;
+            particle_vertices += system->capacity() * 4;
+            const ParticleDesc& desc = system->desc();
+            draw.extra["g_OrientationRight"] = {1, 0, 0};
+            draw.extra["g_OrientationUp"] = {0, 1, 0};
+            draw.extra["g_OrientationForward"] = {0, 0, 1};
+            draw.extra["g_ViewRight"] = {1, 0, 0};
+            draw.extra["g_ViewUp"] = {0, 1, 0};
+            draw.extra["g_EyePosition"] = {0, 0, 100000};
+            float trail_length = 0.05f, trail_max = 1e6f, trail_min = 0;
+            for (const ParticleModule& r : desc.renderers) {
+                if (r.name == "spritetrail" || r.name == "ropetrail" || r.name == "rope") {
+                    auto get = [&](const char* key, float fallback) {
+                        return r.json.contains(key) && r.json[key].is_number()
+                                   ? r.json[key].get<float>()
+                                   : fallback;
+                    };
+                    trail_length = get("length", trail_length);
+                    trail_max = get("maxlength", trail_max);
+                    trail_min = get("minlength", trail_min);
+                }
+            }
+            draw.extra["g_RenderVar0"] = {trail_length, trail_max, trail_min, 0};
+            float fw = 1, fh = 1, frames = 1, ratio = 1;
+            if (p.textures[0].kind == PlanTexture::Kind::file) {
+                const SceneTexture& t = assets_->texture(p.textures[0].file);
+                ratio = static_cast<float>(t.tex_height) / static_cast<float>(t.tex_width);
+                if (t.frames > 1) {
+                    fw = t.frame_width;
+                    fh = t.frame_height;
+                    frames = static_cast<float>(t.frames);
+                    ratio = (fh * static_cast<float>(t.tex_height)) /
+                            (fw * static_cast<float>(t.tex_width));
+                }
+            }
+            draw.extra["g_RenderVar1"] = {fw, fh, frames, ratio};
+        }
         if (p.crop && p.textures[0].kind == PlanTexture::Kind::file) {
             const SceneTexture& t = assets_->texture(p.textures[0].file);
             u1 = static_cast<float>(t.img_width) / static_cast<float>(t.tex_width);
@@ -398,11 +507,15 @@ void SceneRenderer::build(VkExtent2D extent) {
             indices.insert(indices.end(), std::begin(i), std::end(i));
             draw.index_count = 6;
         };
-        const ImageObject& object = scene.images[static_cast<std::size_t>(p.object)];
+        static const ImageObject no_object;
+        const ImageObject& object =
+            p.object >= 0 ? scene.images[static_cast<std::size_t>(p.object)] : no_object;
         const Mesh* mesh = p.geometry == Geometry::object && object.puppet
                                ? assets_->mesh(object.puppet_path)
                                : nullptr;
-        if (mesh != nullptr && !p.request.name.empty()) {
+        if (p.particle >= 0) {
+            // The quads come from the simulation each frame.
+        } else if (mesh != nullptr && !p.request.name.empty()) {
             // The rest mesh: its positions are already relative to the object's origin. Its
             // uvs index the picture; drawn from a layer they are scaled to the layer's crop.
             float su = 1, sv = 1;
@@ -455,7 +568,9 @@ void SceneRenderer::build(VkExtent2D extent) {
 
         draw.program = assets_->program(p.request);
         if (draw.program == nullptr) continue;  // the shader did not compile: skipped
-        draw.pipeline = assets_->pipeline(*draw.program, p.blending, target_format);
+        draw.pipeline =
+            assets_->pipeline(*draw.program, p.blending, target_format,
+                              p.particle >= 0 ? VertexLayout::particle : VertexLayout::image);
         if (draw.pipeline == VK_NULL_HANDLE) continue;
         for (std::size_t i = 0; i < max_texture_slots; ++i) {
             const PlanTexture& t = p.textures[i];
@@ -505,6 +620,28 @@ void SceneRenderer::build(VkExtent2D extent) {
         std::memcpy(indices_.mapped(), indices.data(), indices.size() * 2);
         indices_.flush(0, VK_WHOLE_SIZE);
     }
+    // The particle quads: a slot per frame in flight, and u32 indices for every quad.
+    particle_capacity_ = particle_vertices / 4;
+    for (gpu::Buffer& b : particle_vertices_) b = gpu::Buffer();
+    particle_indices_ = gpu::Buffer();
+    if (particle_capacity_ > 0) {
+        VkDeviceSize bytes = static_cast<VkDeviceSize>(particle_vertices) * sizeof(ParticleVertex);
+        for (gpu::Buffer& b : particle_vertices_) {
+            b = gpu::Buffer(gpu_.allocator(), bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, true);
+        }
+        std::vector<std::uint32_t> quads;
+        quads.reserve(static_cast<std::size_t>(particle_capacity_) * 6);
+        for (std::uint32_t q = 0; q < particle_capacity_; ++q) {
+            std::uint32_t b = q * 4;
+            quads.insert(quads.end(), {b, b + 1, b + 2, b + 2, b + 1, b + 3});
+        }
+        particle_indices_ =
+            gpu::Buffer(gpu_.allocator(), quads.size() * 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, true);
+        if (particle_indices_) {
+            std::memcpy(particle_indices_.mapped(), quads.data(), quads.size() * 4);
+            particle_indices_.flush(0, VK_WHOLE_SIZE);
+        }
+    }
     uniform_slot_ = std::max<VkDeviceSize>(uniform_bytes, alignment);
     uniforms_ =
         gpu::Buffer(gpu_.allocator(), uniform_slot_ * 2, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, true);
@@ -520,13 +657,19 @@ void SceneRenderer::fill_block(Draw& draw) {
     std::vector<std::byte>& block = draw.block;
 
     bool object = p.geometry == Geometry::object;
-    math::Mat4 model = object ? models_[static_cast<std::size_t>(p.object)] : math::Mat4{};
+    math::Mat4 model = !object           ? math::Mat4{}
+                       : p.particle >= 0 ? particle_models_[static_cast<std::size_t>(p.particle)]
+                                         : models_[static_cast<std::size_t>(p.object)];
     math::Mat4 view_projection = object ? projection_ : math::Mat4{};
     math::Mat4 mvp = view_projection * model;
 
     VkExtent2D size = draw.target != nullptr ? draw.target->extent : extent_;
-    const ImageObject& image = scene.images[static_cast<std::size_t>(p.object)];
-    bool material = p.effect < 0;
+    static const ImageObject no_object;
+    const ImageObject& image =
+        p.object >= 0 ? scene.images[static_cast<std::size_t>(p.object)] : no_object;
+    bool material = p.effect < 0 && p.particle < 0;
+    bool moving = p.object >= 0 && (parallax_ || moving_[static_cast<std::size_t>(p.object)]);
+    if (p.particle >= 0) moving = parallax_;
     Vec3 color = parse_vec3(image.color.resolve(values_), {1, 1, 1});
     float alpha = image.alpha.resolve_float(values_, 1);
     float brightness = image.brightness.resolve_float(values_, 1);
@@ -558,22 +701,20 @@ void SceneRenderer::fill_block(Draw& draw) {
 
         const std::string& n = u.name;
         auto vec = [&](std::initializer_list<float> f) { write(block, u, std::vector<float>(f)); };
-        if (n == "g_ModelViewProjectionMatrix") {
+        if (auto extra = draw.extra.find(n); extra != draw.extra.end()) {
+            write(block, u, extra->second);
+        } else if (n == "g_ModelViewProjectionMatrix") {
             write_matrix(block, u.offset, mvp);
-            if (object && (parallax_ || moving_[static_cast<std::size_t>(p.object)]))
-                draw.dynamics.push_back({Dynamic::What::mvp, u.offset});
+            if (object && moving) draw.dynamics.push_back({Dynamic::What::mvp, u.offset});
         } else if (n == "g_ModelViewProjectionMatrixInverse") {
             write_matrix(block, u.offset, mvp.inverse());
-            if (object && (parallax_ || moving_[static_cast<std::size_t>(p.object)]))
-                draw.dynamics.push_back({Dynamic::What::mvp_inverse, u.offset});
+            if (object && moving) draw.dynamics.push_back({Dynamic::What::mvp_inverse, u.offset});
         } else if (n == "g_ModelMatrix") {
             write_matrix(block, u.offset, model);
-            if (object && (parallax_ || moving_[static_cast<std::size_t>(p.object)]))
-                draw.dynamics.push_back({Dynamic::What::model, u.offset});
+            if (object && moving) draw.dynamics.push_back({Dynamic::What::model, u.offset});
         } else if (n == "g_ModelMatrixInverse") {
             write_matrix(block, u.offset, model.inverse());
-            if (object && (parallax_ || moving_[static_cast<std::size_t>(p.object)]))
-                draw.dynamics.push_back({Dynamic::What::model_inverse, u.offset});
+            if (object && moving) draw.dynamics.push_back({Dynamic::What::model_inverse, u.offset});
         } else if (n == "g_ViewProjectionMatrix") {
             write_matrix(block, u.offset, view_projection);
         } else if (n == "g_EffectTextureProjectionMatrix" ||
@@ -668,6 +809,17 @@ void SceneRenderer::fill_block(Draw& draw) {
     }
 }
 
+math::Mat4 SceneRenderer::particle_model(int particle, const FrameInputs& inputs) const {
+    const ParticleObject& object = assets_->scene().particles[static_cast<std::size_t>(particle)];
+    const Vec2& canvas = assets_->scene().general.ortho;
+    float dx = -(inputs.parallax[0] - 0.5f) * parallax_amount_ * object.parallax_depth[0] *
+               canvas[0] * 0.2f;
+    float dy = (inputs.parallax[1] - 0.5f) * parallax_amount_ * object.parallax_depth[1] *
+               canvas[1] * 0.2f;
+    if (!parallax_) dx = dy = 0;
+    return math::Mat4::translate(dx, dy, 0) * particle_models_[static_cast<std::size_t>(particle)];
+}
+
 math::Mat4 SceneRenderer::parallax_model(int object, const FrameInputs& inputs) const {
     const ImageObject& image = assets_->scene().images[static_cast<std::size_t>(object)];
     const Vec2& canvas = assets_->scene().general.ortho;
@@ -720,7 +872,8 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
                 }
             };
             if (!moved && d.what >= Dynamic::What::mvp && d.what <= Dynamic::What::model_inverse) {
-                model = parallax_model(draw.plan->object, inputs);
+                model = draw.plan->particle >= 0 ? particle_model(draw.plan->particle, inputs)
+                                                 : parallax_model(draw.plan->object, inputs);
                 mvp = projection_ * model;
                 moved = true;
             }
@@ -774,6 +927,34 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
                     draw.block.size());
     }
     uniforms_.flush(slot_base, uniform_slot_);
+
+    // The particles: each root system steps once (its children with it), then every draw
+    // writes its quads into this frame's slot.
+    if (particle_capacity_ > 0 && particle_vertices_[frame_]) {
+        const SceneDesc& scene = assets_->scene();
+        for (std::size_t i = 0; i < systems_.size(); ++i) {
+            ParticleEnv env;
+            env.delta = inputs.delta;
+            env.time = inputs.time;
+            Vec3 origin = parse_vec3(scene.particles[i].origin.resolve(values_), {0, 0, 0});
+            env.pointer = {canvas_left_ + inputs.pointer[0] * canvas_width_ - origin[0],
+                           canvas_bottom_ + (1 - inputs.pointer[1]) * canvas_height_ - origin[1],
+                           0};
+            systems_[i]->step(env);
+        }
+        auto* base = reinterpret_cast<ParticleVertex*>(particle_vertices_[frame_].mapped());
+        for (Draw& draw : draws_) {
+            if (draw.particles == nullptr) continue;
+            float ratio = 1;
+            if (auto it = draw.extra.find("g_RenderVar1"); it != draw.extra.end()) {
+                ratio = it->second[3];
+            }
+            std::uint32_t count = draw.particles->write(base + draw.particle_offset,
+                                                        draw.particles->capacity(), ratio);
+            draw.index_count = count * 6;
+        }
+        particle_vertices_[frame_].flush(0, VK_WHOLE_SIZE);
+    }
 
     // The scene target starts as the clear colour.
     transition(cmd, scene_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -855,11 +1036,21 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
             continue;
         }
 
+        if (draw.particles != nullptr && draw.index_count == 0) {
+            vkCmdEndRendering(cmd);
+            continue;
+        }
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, draw.pipeline);
-        VkBuffer buffers[] = {vertices_.get(), zeros_.get()};
+        bool particle = draw.particles != nullptr;
+        VkBuffer buffers[] = {particle ? particle_vertices_[frame_].get() : vertices_.get(),
+                              zeros_.get()};
         VkDeviceSize offsets[] = {0, 0};
         vkCmdBindVertexBuffers(cmd, 0, 2, buffers, offsets);
-        vkCmdBindIndexBuffer(cmd, indices_.get(), 0, VK_INDEX_TYPE_UINT16);
+        if (particle) {
+            vkCmdBindIndexBuffer(cmd, particle_indices_.get(), 0, VK_INDEX_TYPE_UINT32);
+        } else {
+            vkCmdBindIndexBuffer(cmd, indices_.get(), 0, VK_INDEX_TYPE_UINT16);
+        }
 
         VkDescriptorBufferInfo block{uniforms_.get(), slot_base + draw.block_offset,
                                      draw.block.size()};
@@ -891,8 +1082,13 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
         }
         vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, assets_->layout(), 0,
                                   static_cast<std::uint32_t>(writes.size()), writes.data());
-        vkCmdDrawIndexed(cmd, draw.index_count, 1, draw.first_index,
-                         static_cast<std::int32_t>(draw.first_vertex), 0);
+        if (particle) {
+            vkCmdDrawIndexed(cmd, draw.index_count, 1, 0,
+                             static_cast<std::int32_t>(draw.particle_offset), 0);
+        } else {
+            vkCmdDrawIndexed(cmd, draw.index_count, 1, draw.first_index,
+                             static_cast<std::int32_t>(draw.first_vertex), 0);
+        }
         vkCmdEndRendering(cmd);
     }
     transition(cmd, scene_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

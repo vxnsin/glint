@@ -116,6 +116,15 @@ std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item
         }
     }
     for (const std::string& name : names) self->read_texture(name);
+    // Now that the textures are read, the plan knows which particle draws need the sprite
+    // sheet variant of their shader.
+    auto info_of = [self](const std::string& name) -> PlanTextureInfo {
+        for (const PendingTexture& p : self->pending_) {
+            if (p.name == name) return p.info.plan_info();
+        }
+        return {};
+    };
+    all = build_plan(self->scene_, values, no_size, true, info_of);
 
     // Puppet meshes, drawn in their rest pose until bones arrive in M5.
     for (const ImageObject& image : self->scene_.images) {
@@ -185,8 +194,6 @@ void SceneAssets::read_texture(const std::string& name) {
     }
     if (tex.images.empty() || tex.images[0].empty()) return;
     if (tex.video) warnings_.push_back("texture " + name + ": video textures come with M4");
-    if (tex.sprite_sheet())
-        warnings_.push_back("texture " + name + ": sprite sheet, first frame only");
 
     PendingTexture pending;
     pending.name = name;
@@ -196,6 +203,24 @@ void SceneAssets::read_texture(const std::string& name) {
     pending.info.img_height = tex.img_height;
     pending.info.clamp = (tex.flags & 6u) != 0;
     pending.info.nearest = tex.no_interpolation();
+    switch (tex.format) {  // the shaders' FORMAT_ codes
+        case 1:
+        case 2: pending.info.format = 6; break;
+        case 4: pending.info.format = 4; break;
+        case 7: pending.info.format = 7; break;
+        case 8: pending.info.format = 8; break;
+        case 9: pending.info.format = 9; break;
+        default: pending.info.format = 0; break;
+    }
+    if (tex.sprite_sheet() && !tex.frames.empty()) {
+        // The frames as a grid, which is how the particle shader steps through them.
+        const TexFrame& first = tex.frames[0];
+        pending.info.frames = static_cast<std::uint32_t>(tex.frames.size());
+        pending.info.frame_width =
+            first.width > 0 ? first.width / static_cast<float>(tex.tex_width) : 1.0f;
+        pending.info.frame_height =
+            first.height > 0 ? first.height / static_cast<float>(tex.tex_height) : 1.0f;
+    }
     const auto& mips = tex.images[0];
 
     if (tex.embedded()) {
@@ -213,6 +238,7 @@ void SceneAssets::read_texture(const std::string& name) {
             return;
         }
         pending.format = VK_FORMAT_R8G8B8A8_UNORM;
+        pending.info.format = 0;
         pending.span = decoded.pixels;
         pending.levels.push_back({0, {decoded.width, decoded.height}});
         pending.generate = true;
@@ -410,8 +436,9 @@ std::uint64_t SceneAssets::memory() const {
 }
 
 VkPipeline SceneAssets::pipeline(SceneProgram& program, const std::string& blending,
-                                 VkFormat format) {
-    std::string key = blending + "|" + std::to_string(static_cast<int>(format));
+                                 VkFormat format, VertexLayout layout) {
+    std::string key = blending + "|" + std::to_string(static_cast<int>(format)) + "|" +
+                      std::to_string(static_cast<int>(layout));
     if (auto it = program.pipelines.find(key); it != program.pipelines.end()) return it->second;
 
     VkPipelineShaderStageCreateInfo stages[] = {
@@ -426,17 +453,28 @@ VkPipeline SceneAssets::pipeline(SceneProgram& program, const std::string& blend
     };
     // One interleaved vertex stream: position (3 floats) and texcoord (2 floats). Inputs the
     // shader declares beyond those read a stream of zeros.
+    bool particle = layout == VertexLayout::particle;
     VkVertexInputBindingDescription bindings[] = {
-        {0, 5 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX},
+        {0, static_cast<std::uint32_t>((particle ? 17 : 5) * sizeof(float)),
+         VK_VERTEX_INPUT_RATE_VERTEX},
         {1, 0, VK_VERTEX_INPUT_RATE_VERTEX},
     };
     std::vector<VkVertexInputAttributeDescription> attributes;
     bool zeros = false;
+    auto f = [](std::size_t floats) { return static_cast<std::uint32_t>(floats * sizeof(float)); };
     for (const auto& [name, location] : program.shader.attributes) {
         if (name == "a_Position") {
             attributes.push_back({location, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});
-        } else if (name == "a_TexCoord") {
-            attributes.push_back({location, 0, VK_FORMAT_R32G32_SFLOAT, 3 * sizeof(float)});
+        } else if (!particle && name == "a_TexCoord") {
+            attributes.push_back({location, 0, VK_FORMAT_R32G32_SFLOAT, f(3)});
+        } else if (particle && name == "a_TexCoordVec4") {
+            attributes.push_back({location, 0, VK_FORMAT_R32G32B32A32_SFLOAT, f(3)});
+        } else if (particle && name == "a_Color") {
+            attributes.push_back({location, 0, VK_FORMAT_R32G32B32A32_SFLOAT, f(7)});
+        } else if (particle && name == "a_TexCoordC2") {
+            attributes.push_back({location, 0, VK_FORMAT_R32G32_SFLOAT, f(11)});
+        } else if (particle && name == "a_TexCoordVec4C1") {
+            attributes.push_back({location, 0, VK_FORMAT_R32G32B32A32_SFLOAT, f(13)});
         } else {
             attributes.push_back({location, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0});
             zeros = true;

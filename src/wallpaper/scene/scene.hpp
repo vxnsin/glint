@@ -147,6 +147,20 @@ struct ImageObject {
     std::vector<Effect> effects;
 };
 
+struct ParticleDesc;
+
+// A particle object: a system (particles/x.json) placed on the canvas.
+struct ParticleObject {
+    int id = 0;
+    std::string name;
+    std::string file;
+    Bound origin, scale, angles;
+    Bound visible;
+    Vec2 parallax_depth{1, 1};
+    nlohmann::json instance_override;    // rate, count, size, speed, lifetime, alpha, color...
+    std::shared_ptr<ParticleDesc> desc;  // null when the file did not read
+};
+
 struct SoundObject {
     int id = 0;
     std::vector<std::string> files;
@@ -169,11 +183,19 @@ struct SceneGeneral {
     bool perspective = false;  // no orthogonalprojection: a 3D scene
 };
 
+// The objects in drawing order, across kinds.
+struct ObjectRef {
+    enum class Kind { image, particle } kind;
+    int index;  // into images or particles
+};
+
 struct SceneDesc {
     SceneGeneral general;
-    std::vector<ImageObject> images;  // in drawing order
+    std::vector<ImageObject> images;  // in drawing order among images
+    std::vector<ParticleObject> particles;
+    std::vector<ObjectRef> order;  // images and particles as scene.json lists them
     std::vector<SoundObject> sounds;
-    // Objects of kinds a later milestone draws: particle, text, sound, light, model.
+    // Objects of kinds a later milestone draws: text, light, model.
     std::map<std::string, int> skipped;
     std::vector<std::string> warnings;
 };

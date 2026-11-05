@@ -1,7 +1,10 @@
 #include "wallpaper/scene/plan.hpp"
 
+#include <cstdlib>
 #include <regex>
 #include <set>
+
+#include "wallpaper/scene/particles.hpp"
 
 namespace glint::scene {
 
@@ -25,11 +28,17 @@ PlanTexture texture_of(const std::optional<std::string>& name, Plan& plan) {
     return t;
 }
 
-void bind_mask(PlanDraw& draw) {
+void bind_mask(PlanDraw& draw, const TextureInfoFn& texture_info) {
     draw.request.bound_textures = 0;
     for (std::size_t i = 0; i < draw.textures.size(); ++i) {
         if (draw.textures[i].kind != PlanTexture::Kind::none) {
             draw.request.bound_textures |= 1u << i;
+        }
+        // The shaders switch on TEXnFORMAT for two-channel and one-channel textures
+        // (luminance with alpha, alpha only); RGBA8 is 0, which an unset macro is too.
+        if (texture_info && draw.textures[i].kind == PlanTexture::Kind::file) {
+            int format = texture_info(draw.textures[i].file).format;
+            if (format != 0) draw.request.combos["TEX" + std::to_string(i) + "FORMAT"] = format;
         }
     }
 }
@@ -58,7 +67,7 @@ std::string request_key(const ShaderRequest& request) {
 }
 
 Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize& texture_size,
-                bool everything) {
+                bool everything, const TextureInfoFn& texture_info) {
     Plan plan;
 
     // Composites first: an object some texture list names as _rt_imageLayerComposite_<id>_a
@@ -132,19 +141,58 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
                 draw.crop = draw.textures[0].kind == PlanTexture::Kind::file;
                 draw.constants = pass.constants;
                 draw.user = pass.user_constants;
-                bind_mask(draw);
+                bind_mask(draw, texture_info);
                 plan.draws.push_back(std::move(draw));
                 first = false;
             }
         }
     }
 
-    for (std::size_t index = 0; index < scene.images.size(); ++index) {
+    // A particle system and each of its children: one draw with the genericparticle shader
+    // (or whatever the material names), the quads written every frame by the simulation.
+    auto particle_draws = [&](int index) {
+        const ParticleObject& object = scene.particles[static_cast<std::size_t>(index)];
+        if (!everything && !object.visible.resolve_bool(values, true)) return;
+        int child = -1;
+        auto add = [&](const ParticleDesc& desc, auto& self) -> void {
+            int which = child++;
+            if (!desc.material.passes.empty()) {
+                const MaterialPass& pass = desc.material.passes[0];
+                PlanDraw draw;
+                draw.particle = index;
+                draw.child = which;
+                draw.request = {pass.shader.empty() ? "genericparticle" : pass.shader, pass.combos,
+                                0};
+                draw.request.combos["THICKFORMAT"] = 1;
+                if (desc.sprite_trail() || desc.rope()) draw.request.combos["TRAILRENDERER"] = 1;
+                draw.blending = pass.blending.empty() ? "additive" : pass.blending;
+                draw.geometry = Geometry::object;
+                draw.target = -1;
+                for (std::size_t i = 0; i < pass.textures.size() && i < max_texture_slots; ++i) {
+                    draw.textures[i] = texture_of(pass.textures[i], plan);
+                }
+                if (texture_info && draw.textures[0].kind == PlanTexture::Kind::file &&
+                    texture_info(draw.textures[0].file).frames > 1) {
+                    draw.request.combos["SPRITESHEET"] = 1;
+                }
+                draw.constants = pass.constants;
+                draw.user = pass.user_constants;
+                bind_mask(draw, texture_info);
+                plan.draws.push_back(std::move(draw));
+            } else {
+                plan.warnings.push_back(desc.file + ": no material");
+            }
+            for (const ParticleDesc::Child& c : desc.children) self(*c.desc, self);
+        };
+        add(*object.desc, add);
+    };
+
+    auto image_draws = [&](std::size_t index) {
         const ImageObject& image = scene.images[index];
-        if (!everything && !image.visible.resolve_bool(values, true)) continue;
+        if (!everything && !image.visible.resolve_bool(values, true)) return;
         if (image.material.passes.empty()) {
             plan.warnings.push_back(image.name + ": no material");
-            continue;
+            return;
         }
         int object = static_cast<int>(index);
         Geometry geometry = image.fullscreen ? Geometry::clip : Geometry::object;
@@ -175,14 +223,14 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
                 }
                 draw.constants = pass.constants;
                 draw.user = pass.user_constants;
-                bind_mask(draw);
+                bind_mask(draw, texture_info);
                 plan.draws.push_back(std::move(draw));
             }
         };
 
         if (effects.empty()) {
             material_draws(std::nullopt);
-            continue;
+            return;
         }
 
         // A layer: two ping-pong targets of the object's size.
@@ -279,13 +327,25 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
                     }
                     draw.constants = mp.constants;
                     draw.user = mp.user_constants;
-                    bind_mask(draw);
+                    bind_mask(draw, texture_info);
                     plan.draws.push_back(std::move(draw));
                 }
                 if (pass.target.empty()) current = target;
             }
         }
         material_draws(current);
+    };
+
+    if (scene.order.empty()) {
+        for (std::size_t index = 0; index < scene.images.size(); ++index) image_draws(index);
+    } else {
+        for (const ObjectRef& ref : scene.order) {
+            if (ref.kind == ObjectRef::Kind::image) {
+                image_draws(static_cast<std::size_t>(ref.index));
+            } else {
+                particle_draws(ref.index);
+            }
+        }
     }
     return plan;
 }

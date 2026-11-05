@@ -7,6 +7,7 @@
 #include "gpu/buffer.hpp"
 #include "gpu/vulkan.hpp"
 #include "wallpaper/scene/assets.hpp"
+#include "wallpaper/scene/particles.hpp"
 #include "wallpaper/scene/plan.hpp"
 
 VK_DEFINE_HANDLE(VmaAllocation)
@@ -104,6 +105,11 @@ private:
         VkImageView copy_view = VK_NULL_HANDLE;
         VkSampler copy_sampler = VK_NULL_HANDLE;
         bool framebuffer = false;  // samples the scene so far
+        // A particle draw: its system, where its quads start in the particle vertex buffer,
+        // and uniforms only it sets (g_RenderVar0/1, the orientation).
+        ParticleSystem* particles = nullptr;
+        std::uint32_t particle_offset = 0;
+        std::map<std::string, std::vector<float>> extra;
     };
 
     void build(VkExtent2D extent);
@@ -112,6 +118,7 @@ private:
     void destroy_image(Image& image);
     void fill_block(Draw& draw);
     math::Mat4 parallax_model(int object, const FrameInputs& inputs) const;
+    math::Mat4 particle_model(int particle, const FrameInputs& inputs) const;
     math::Mat4 model_matrix(int object, std::vector<int>& visiting, double time) const;
     void transition(VkCommandBuffer cmd, Image& image, VkImageLayout layout);
 
@@ -145,7 +152,15 @@ private:
     float clear_[4] = {0, 0, 0, 1};
     bool clear_enabled_ = true;
     std::vector<math::Mat4> models_;  // per object, without parallax, at time 0
-    std::vector<bool> moving_;        // per object: a timeline moves its transform
+    std::vector<math::Mat4> particle_models_;
+    // Particle systems, one per particle object (children inside), and the buffers their
+    // quads are written to each frame: two slots like the uniforms, u32 indices.
+    std::vector<std::unique_ptr<ParticleSystem>> systems_;
+    std::array<gpu::Buffer, 2> particle_vertices_;
+    gpu::Buffer particle_indices_;
+    std::uint32_t particle_capacity_ = 0;  // particles over all systems
+    float canvas_left_ = 0, canvas_bottom_ = 0, canvas_width_ = 1, canvas_height_ = 1;
+    std::vector<bool> moving_;  // per object: a timeline moves its transform
     bool parallax_ = false;
     bool uses_audio_ = false;
     bool uses_pointer_ = false;

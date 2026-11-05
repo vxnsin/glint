@@ -42,7 +42,9 @@ enum class Geometry {
 };
 
 struct PlanDraw {
-    int object = -1;
+    int object = -1;        // index into SceneDesc::images, -1 for a particle draw
+    int particle = -1;      // index into SceneDesc::particles: one draw per system and child
+    int child = -1;         // -1: the system itself; else the index of the child, depth first
     int effect = -1;        // index into the object's effects, -1 otherwise
     ShaderRequest request;  // empty name: glint's own copy pass
     std::string blending = "normal";
@@ -68,6 +70,13 @@ struct Plan {
 
 // The picture size of a texture by its material name, when known.
 using TextureSize = std::function<std::optional<Vec2>(const std::string& name)>;
+// What the plan needs to know about a texture file beyond its size: the sprite-sheet frame
+// count (0 when it is not one) and the FORMAT_ code the shaders switch on (0 for RGBA8).
+struct PlanTextureInfo {
+    std::uint32_t frames = 0;
+    int format = 0;
+};
+using TextureInfoFn = std::function<PlanTextureInfo(const std::string& name)>;
 
 // Object size: "size", else the model's, else the picture's; the canvas when fullscreen.
 Vec2 object_size(const ImageObject& image, const SceneGeneral& general, const Values& values,
@@ -75,7 +84,7 @@ Vec2 object_size(const ImageObject& image, const SceneGeneral& general, const Va
 
 // everything: plan hidden objects and effects too (to compile every shader at load).
 Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize& texture_size,
-                bool everything = false);
+                bool everything = false, const TextureInfoFn& texture_info = {});
 
 // A stable key for a shader request, for caches.
 std::string request_key(const ShaderRequest& request);

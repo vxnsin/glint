@@ -112,6 +112,7 @@ if(GLINT_PLATFORM)
     # The Wallpaper Engine readers, shared by the daemon, we-inspect and the tests.
     add_library(glint_scene STATIC
         src/wallpaper/scene/mdl.cpp
+        src/wallpaper/scene/particles.cpp
         src/wallpaper/scene/plan.cpp
         src/wallpaper/scene/project.cpp
         src/wallpaper/scene/scene.cpp
