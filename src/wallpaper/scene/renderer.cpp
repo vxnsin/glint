@@ -244,6 +244,10 @@ math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting, d
                        math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
                        math::Mat4::rotate_x(angles[0]) *
                        math::Mat4::scale(scale[0], scale[1], scale[2]);
+    if (image.text >= 0) {
+        // A text block sits around the origin by its alignment, not centred on it.
+        local = local * math::Mat4::translate(image.text_offset[0], image.text_offset[1], 0);
+    }
     if (image.parent < 0) return local;
     if (std::ranges::find(visiting, object) != visiting.end()) return local;  // a cycle
     for (std::size_t i = 0; i < scene.images.size(); ++i) {

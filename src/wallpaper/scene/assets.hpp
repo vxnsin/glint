@@ -13,6 +13,7 @@
 #include "wallpaper/scene/project.hpp"
 #include "wallpaper/scene/scene.hpp"
 #include "wallpaper/scene/shader.hpp"
+#include "wallpaper/scene/text.hpp"
 #include "wallpaper/scene/vfs.hpp"
 
 namespace glint {
@@ -108,6 +109,9 @@ private:
         SceneTexture info;
     };
     void read_texture(const std::string& name);
+    // Rasterises a text object into the pending texture `_text_<id>`.
+    void read_text(const TextObject& text, const Values& values);
+    TextRenderer text_;
 
     gpu::Context& gpu_;
     gpu::StagingRing& staging_;

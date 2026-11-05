@@ -117,6 +117,7 @@ std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item
         }
     }
     for (const std::string& name : names) self->read_texture(name);
+    for (const TextObject& text : self->scene_.texts) self->read_text(text, values);
     // Now that the textures are read, the plan knows which particle draws need the sprite
     // sheet variant of their shader.
     auto info_of = [self](const std::string& name) -> PlanTextureInfo {
@@ -189,8 +190,53 @@ std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item
     return self;
 }
 
+void SceneAssets::read_text(const TextObject& text, const Values& values) {
+    TextSpec spec;
+    nlohmann::json value = text.text.resolve(values);
+    spec.text = value.is_string() ? value.get<std::string>() : value.is_null() ? "" : value.dump();
+    spec.font = text.font;
+    spec.pointsize = text.pointsize;
+    spec.horizontal_align = text.horizontal_align;
+    spec.vertical_align = text.vertical_align;
+    spec.padding = text.padding;
+    spec.spacing = text.spacing;
+    spec.max_width = text.max_width;
+    spec.max_rows = text.max_rows;
+    spec.limit_rows = text.limit_rows;
+    spec.limit_width = text.limit_width;
+    spec.ellipsis = text.ellipsis;
+    spec.block_align = text.block_align;
+    spec.background = text.background;
+    spec.opaque_background = text.opaque_background;
+    // White glyphs: the object's color, alpha and brightness tint them like a picture. Twice
+    // the canvas resolution keeps the edges clean where the canvas is shown enlarged.
+    spec.pixels_per_unit = 2;
+    TextBitmap bitmap = text_.render(spec, vfs_, warnings_);
+    if (bitmap.width == 0 || bitmap.height == 0) return;
+    for (ImageObject& image : scene_.images) {
+        if (image.id != text.id || image.text < 0) continue;
+        image.model_size = bitmap.size;
+        image.text_offset = bitmap.center;
+    }
+    PendingTexture pending;
+    pending.name = "_text_" + std::to_string(text.id);
+    pending.format = VK_FORMAT_R8G8B8A8_UNORM;
+    pending.info.tex_width = pending.info.img_width = bitmap.width;
+    pending.info.tex_height = pending.info.img_height = bitmap.height;
+    pending.info.clamp = true;
+    pending.generate = true;
+    pending.span = staging_.allocate(bitmap.rgba.size());
+    if (pending.span.data == nullptr) {
+        warnings_.push_back("text " + text.name + ": out of staging memory");
+        return;
+    }
+    std::memcpy(pending.span.data, bitmap.rgba.data(), bitmap.rgba.size());
+    pending.levels.push_back({0, {bitmap.width, bitmap.height}});
+    pending_.push_back(std::move(pending));
+}
+
 void SceneAssets::read_texture(const std::string& name) {
-    if (name.starts_with("_rt_")) return;  // a render target, not a file
+    if (name.starts_with("_rt_") || name.starts_with("_text_")) return;  // not files
     std::string path = texture_path(name);
     auto file = vfs_.read(path);
     if (!file) {

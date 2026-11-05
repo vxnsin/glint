@@ -5,6 +5,7 @@
 //   we-inspect <file.tex>        texture header, mips, sprite frames
 //   we-inspect <item> <path>     one file through the item's file system (.tex or text)
 //   we-inspect <item> --shaders  compile every pass of the scene
+//   we-inspect <item> --text     rasterise every text object to text-<id>.pam in the cwd
 
 #include <cstdio>
 #include <cstdlib>
@@ -17,6 +18,7 @@
 #include "wallpaper/scene/scene.hpp"
 #include "wallpaper/scene/shader.hpp"
 #include "wallpaper/scene/tex.hpp"
+#include "wallpaper/scene/text.hpp"
 #include "wallpaper/scene/vfs.hpp"
 
 namespace {
@@ -155,7 +157,48 @@ int compile_all(const Vfs& vfs, const SceneDesc& scene, bool verbose) {
     return failed == 0 ? 0 : 1;
 }
 
-int dump_item(const std::filesystem::path& folder, bool shaders) {
+// Every text object of the scene as a PAM (P7 RGBA) file in the current folder.
+int dump_texts(const Vfs& vfs, const SceneDesc& scene, const Values& values) {
+    TextRenderer renderer;
+    std::vector<std::string> warnings;
+    for (const TextObject& text : scene.texts) {
+        TextSpec spec;
+        nlohmann::json value = text.text.resolve(values);
+        spec.text = value.is_string() ? value.get<std::string>() : value.dump();
+        spec.font = text.font;
+        spec.pointsize = text.pointsize;
+        spec.horizontal_align = text.horizontal_align;
+        spec.vertical_align = text.vertical_align;
+        spec.padding = text.padding;
+        spec.spacing = text.spacing;
+        spec.max_width = text.max_width;
+        spec.max_rows = text.max_rows;
+        spec.limit_rows = text.limit_rows;
+        spec.limit_width = text.limit_width;
+        spec.ellipsis = text.ellipsis;
+        spec.block_align = text.block_align;
+        spec.background = text.background;
+        spec.opaque_background = text.opaque_background;
+        TextBitmap bitmap = renderer.render(spec, vfs, warnings);
+        std::string name = "text-" + std::to_string(text.id) + ".pam";
+        std::printf("  text %d %s: \"%s\" in %s at %.0f pt, block %.0fx%.0f at %.0f,%.0f -> %s\n",
+                    text.id, text.name.c_str(), spec.text.c_str(), text.font.c_str(),
+                    text.pointsize, bitmap.size[0], bitmap.size[1], bitmap.center[0],
+                    bitmap.center[1], name.c_str());
+        if (bitmap.width == 0) continue;
+        FILE* out = std::fopen(name.c_str(), "wb");
+        if (out == nullptr) continue;
+        std::fprintf(out,
+                     "P7\nWIDTH %u\nHEIGHT %u\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n",
+                     bitmap.width, bitmap.height);
+        std::fwrite(bitmap.rgba.data(), 1, bitmap.rgba.size(), out);
+        std::fclose(out);
+    }
+    for (const auto& warning : warnings) std::printf("  warning: %s\n", warning.c_str());
+    return 0;
+}
+
+int dump_item(const std::filesystem::path& folder, bool shaders, bool texts = false) {
     Vfs vfs(folder, default_assets());
     if (std::string error = vfs.open_package(); !error.empty()) {
         std::fprintf(stderr, "scene.pkg: %s\n", error.c_str());
@@ -234,6 +277,7 @@ int dump_item(const std::filesystem::path& folder, bool shaders) {
     }
     for (const auto& warning : scene.warnings) std::printf("  warning: %s\n", warning.c_str());
     if (shaders) return compile_all(vfs, scene, true);
+    if (texts) return dump_texts(vfs, scene, values);
     return 0;
 }
 
@@ -247,6 +291,7 @@ int main(int argc, char** argv) {
     std::filesystem::path target = argv[1];
     std::error_code ec;
     if (argc == 3 && std::string_view(argv[2]) == "--shaders") return dump_item(target, true);
+    if (argc == 3 && std::string_view(argv[2]) == "--text") return dump_item(target, false, true);
     if (argc == 3) {
         Vfs vfs(target, default_assets());
         vfs.open_package();

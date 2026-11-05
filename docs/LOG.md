@@ -495,3 +495,15 @@ is as authored. The torn, stretched look came from summing bone rotations down t
 with joints following the parent but each bone keeping its own rotation the strands sway
 gently and stay whole. The remaining uncertainty is the exact sway, which a 192-pixel
 preview cannot settle.
+
+### Text objects
+
+Clocks, dates and song titles are text objects. glint sets them with FreeType and HarfBuzz
+and draws the block like a picture (docs/FORMATS.md, 12). The layout rules come from the
+open-wallpaper-engine-mac project, which read them out of the engine: the em is the point
+size at 300 dpi, advances are whole units, scene.json's `size` is ignored and the block
+(bounds plus padding) hangs off the origin by the alignments. The corpus confirms it: the
+date block of the Roxy scene comes out 590x160 against the 590x159 the editor stored. Fonts
+come from the item (Workshop fonts ship in the package), the assets or fontconfig for the
+`systemfont_` names. Scripted texts show their stored value for now; the clock reads 12:34
+until SceneScript runs.

@@ -180,7 +180,8 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
         }
     }
     image.model_path = str(object, "image");
-    auto model = read_json(vfs, image.model_path, warnings);
+    std::optional<json> model;
+    if (!image.model_path.empty()) model = read_json(vfs, image.model_path, warnings);
     if (model) {
         image.autosize = boolean(*model, "autosize", false);
         image.fullscreen = boolean(*model, "fullscreen", false);
@@ -471,7 +472,43 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
                 out.particles.push_back(std::move(particle));
             }
         } else if (object.contains("text")) {
-            ++out.skipped["text"];
+            TextObject text;
+            text.id = object.value("id", next_id);
+            text.name = str(object, "name");
+            text.text = parse_bound(object["text"]);
+            text.font = str(object, "font");
+            text.pointsize = number(object, "pointsize", 32);
+            text.horizontal_align = str(object, "horizontalalign", "center");
+            text.vertical_align = str(object, "verticalalign", "center");
+            text.anchor = str(object, "anchor");
+            // One number pads both axes (SceneScript's padding), "x y" each its own.
+            float pad = number(object, "padding", 32);
+            text.padding = parse_vec2(object.value("padding", json()), {pad, pad});
+            text.spacing = parse_vec2(object.value("spacing", json()), {0, 0});
+            text.max_width = number(object, "maxwidth", 500);
+            text.max_rows = static_cast<int>(number(object, "maxrows", 1));
+            text.limit_rows = boolean(object, "limitrows", false);
+            text.limit_width = boolean(object, "limitwidth", false);
+            text.ellipsis = boolean(object, "limituseellipsis", false);
+            text.block_align = boolean(object, "blockalign", false);
+            text.background = parse_vec3(object.value("backgroundcolor", json("0 0 0")), {0, 0, 0});
+            text.opaque_background = boolean(object, "opaquebackground", false);
+            // Drawn as a picture whose texture is the rasterised text; the shared fields
+            // (placement, color, effects) parse as for any image.
+            ImageObject image;
+            parse_image(vfs, object, image, out.warnings);
+            image.id = text.id;
+            image.size = Bound{};  // scene.json's size plays no part: the block is the text's
+            image.text = static_cast<int>(out.texts.size());
+            image.material = Material{};
+            MaterialPass pass;
+            pass.shader = "genericimage2";
+            pass.blending = "translucent";
+            pass.textures.push_back("_text_" + std::to_string(text.id));
+            image.material.passes.push_back(std::move(pass));
+            out.texts.push_back(std::move(text));
+            out.order.push_back({ObjectRef::Kind::image, static_cast<int>(out.images.size())});
+            out.images.push_back(std::move(image));
         } else if (object.contains("sound") && object["sound"].is_array()) {
             SoundObject sound;
             sound.id = object.value("id", next_id);

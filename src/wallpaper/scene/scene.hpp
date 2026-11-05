@@ -149,6 +149,8 @@ struct ImageObject {
     bool autosize = false;
     bool fullscreen = false;
     bool passthrough = false;
+    int text = -1;            // index into SceneDesc::texts when this is a text object
+    Vec2 text_offset{0, 0};   // the text block's centre from the origin, set at load
     bool puppet = false;      // drawn as its mesh, posed by its animation layers
     std::string puppet_path;  // the .mdl
     std::vector<AnimationLayer> animation_layers;
@@ -156,6 +158,25 @@ struct ImageObject {
 
     Material material;
     std::vector<Effect> effects;
+};
+
+// A text object: the string, set in a font, laid out in a box. Drawn through a synthesized
+// ImageObject whose texture is the text rasterised in white (`_text_<id>`); the object's
+// color and brightness tint it like any picture.
+struct TextObject {
+    int id = 0;
+    std::string name;
+    Bound text;  // the string; a script or property may drive it
+    std::string font;
+    float pointsize = 32;
+    std::string horizontal_align = "center", vertical_align = "center", anchor;
+    Vec2 padding{32, 32};
+    Vec2 spacing{0, 0};  // letter, line
+    float max_width = 500;
+    int max_rows = 1;
+    bool limit_rows = false, limit_width = false, ellipsis = false, block_align = false;
+    Vec3 background{0, 0, 0};
+    bool opaque_background = false;
 };
 
 struct ParticleDesc;
@@ -216,10 +237,11 @@ struct SceneDesc {
     SceneGeneral general;
     std::vector<ImageObject> images;  // in drawing order among images
     std::vector<ParticleObject> particles;
+    std::vector<TextObject> texts;
     std::vector<GroupObject> groups;
     std::vector<ObjectRef> order;  // images and particles as scene.json lists them
     std::vector<SoundObject> sounds;
-    // Objects of kinds a later milestone draws: text, light, model, camera.
+    // Objects of kinds a later milestone draws: light, model, camera.
     std::map<std::string, int> skipped;
     std::vector<std::string> warnings;
 };

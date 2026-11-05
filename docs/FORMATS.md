@@ -125,7 +125,7 @@ Top level: `general`, `camera`, `objects`, `version`.
 - `sound`: `sound[]` (paths), `volume`, `playbackmode` (`loop`, `random`, `once`),
   `mintime`, `maxtime`, `startsilent` (M3)
 - `light`: `color`, `intensity`, `radius`, `light` type (M5)
-- `text`: `text`, `font`, `pointsize`, `anchor`, `color`, `opacity` (M5)
+- `text`: `text`, `font`, `pointsize`, `padding`, alignments, limits (section 12)
 - `model`: a `.mdl` (M5, last)
 
 Value sources: any field may be a plain value or `{"value": ..., "user": "propname"}` (bound
@@ -338,7 +338,50 @@ from the object (cursor-following ones from `g_PointerPosition`).
 `init`/`update(value)`/`destroy`, cursor events `cursorEnter/Leave/Click`). One QuickJS
 context per scene on its own thread; values exchanged per frame.
 
-## 12. Video and web items (M4, M6)
+## 12. Text objects (M5)
+
+A `text` object in scene.json: `text` (a plain string, a bound property or a script value),
+`font`, `pointsize`, `color`, `alpha`, `brightness`, `padding`, `spacing`, `horizontalalign`,
+`verticalalign`, `anchor`, `limitwidth`/`maxwidth`, `limitrows`/`maxrows`,
+`limituseellipsis`, `blockalign`, `opaquebackground`/`backgroundcolor`, the usual placement
+fields (`origin`, `scale`, `angles`, `parent`, `visible`, `parallaxDepth`), effects, and the
+font effects `outline`, `blur`, `dropshadow` with their sizes and colours. Defaults when a
+field is missing: point size 32, padding 32 on both axes, max width 500, max rows 1, both
+alignments `center`.
+
+How Wallpaper Engine lays the text out, as the open-wallpaper-engine-mac project read it out
+of the engine (its `TextLayout.swift` cites the addresses) and as the stored block sizes in
+the corpus confirm:
+
+- The face is set to `pointsize` points at 300 dpi, so the em is `pointsize * 300 / 72`
+  canvas units; each glyph's advance is floored to a whole unit, `spacing.x` is added to
+  every advance and `spacing.y` to the line height. A line's width is its glyphs' pixel
+  boxes joined with the pen's start.
+- Text wraps only with `limitwidth` (at `maxwidth`), `limitrows` keeps the first `maxrows`
+  lines, ending in an ellipsis with `limituseellipsis`; `blockalign` justifies the lines the
+  wrap broke. Nothing is shrunk to fit or clipped.
+- scene.json's `size` plays no part. The lines sit around the origin by the alignments:
+  vertically the block from the first ascender to the last baseline is centred on it, or the
+  first ascender sits on it (`top`), or the last descender (`bottom`); horizontally the
+  block is centred on it, or starts (`left`) or ends (`right`) there.
+- The drawn block is the lines' bounds plus `padding` on each side (at most 512), centred on
+  those bounds, not on the origin. The stored `size` of the corpus items matches it: the date
+  of 3780525249 ("H A M S T E R", 19 pt, padding 32) is 590x159 in the file and 590x160 here.
+- Glyphs are rasterised white; `color`, `alpha` and `brightness` tint them as for a picture.
+  `opaquebackground` fills the whole block with `backgroundcolor` under them.
+- `font` names a file in the item, the assets or another Workshop item
+  (`fonts/workshop/<id>/x.otf`, shipped inside the package), or `systemfont_<name>` from a
+  table of eight: arial, calibri, cambria, comicsans, consolas, sansserif (Microsoft Sans
+  Serif), segoe (Segoe UI), verdana; any other name is Arial.
+
+glint rasterises with FreeType, shaped by HarfBuzz (with a system fallback face for
+characters the item's font lacks), at twice the canvas resolution, into the texture
+`_text_<id>` drawn by a synthesized image object with `genericimage2`; the block's offset
+from the origin goes into the model matrix. `we-inspect <item> --text` writes every text
+object's block as a PAM file. Open: the font effects, rasterising at the shown density, and
+text driven by scripts or media (shown as the stored value until SceneScript lands).
+
+## 13. Video and web items (M4, M6)
 
 - `type: video`: `file` is an mp4/webm; decode with FFmpeg, no special format.
 - `type: web`: `file` is the html; `general.properties` reach the page through

@@ -10,9 +10,9 @@
   Built for <a href="https://github.com/facet-shell">facet</a>, usable from any shell.
 </p>
 
-**Status: milestone M2.** The daemon puts still pictures and Wallpaper Engine scenes (image
-layers, effects, live settings) on every output with Vulkan and is driven over the socket;
-particles, text, sound and video come in the next milestones. Open work is tracked in the [issues](https://github.com/vxnsin/glint/issues).
+**Status: milestone M5 in progress.** The daemon puts still pictures and Wallpaper Engine
+scenes (image layers, effects, particles, puppets, text, live settings) on every output with
+Vulkan and is driven over the socket; SceneScript, media, sound and video come next. Open work is tracked in the [issues](https://github.com/vxnsin/glint/issues).
 
 ## What it does
 
