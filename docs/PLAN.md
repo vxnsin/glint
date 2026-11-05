@@ -367,7 +367,8 @@ M3, interaction and audio: cursor from `wl_pointer` and Hyprland's socket,
 `g_PointerPositionLast`, `g_PointerState`, mouse-delay effects, per-layer parallax; sound
 objects over PipeWire with per-output volume; capture, FFT and `g_AudioSpectrum*`;
 timelines and animated properties. Plus the interactive CLI menus, since they need scenes
-and properties to be useful.
+and properties to be useful. Built on 2026-11-05 except the menus and per-output volume;
+`docs/LOG.md` has what was checked and how.
 
 M4, video: FFmpeg on a worker, pacing to the video's rate under the output's cap, loop,
 speed, pause, audio over the M3 path, then VA-API with dma-buf import, measured against

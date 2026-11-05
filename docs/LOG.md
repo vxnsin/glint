@@ -282,3 +282,52 @@ before (Frieren off by one step in one channel: its water moves between the two 
   would need a recompile, which is not done (none in the corpus).
 - The parallax follows the pointer with the scene's delay; its strength is glint's guess
   (FORMATS.md has no number for it) and has not been compared with Wallpaper Engine.
+
+## M3, interaction, sound and audio (2026-11-05)
+
+### Audio-reactive scenes
+
+The capture is a PipeWire stream on the monitor of the default output, analysed into 64 bands
+per channel (src/audio/spectrum.cpp) and handed to `g_AudioSpectrum16/32/64Left/Right`. Fed
+through a null sink (`GLINT_AUDIO_TARGET`) with a 110 Hz tone and with pink noise, the
+Astronaut's jellyfish glows with the sound and settles in silence; `glint status` showed a
+peak of 0.048 for the tone at an eighth of full scale and 0.036 for the noise. How far
+Wallpaper Engine scales the bands is not documented, and the levels have not been compared
+with it on music yet.
+
+The stream exists only while a shown, running wallpaper wants the spectrum: with Roxy or Jane
+Doe on screen `status` reports no capture and glint has no PipeWire node; a paused output
+stops it.
+
+### Cursor
+
+On Hyprland glint reads `cursorpos` from the request socket once per drawn frame while a
+wallpaper wants the cursor, so it follows the pointer over windows. Moving the cursor across
+DP-2 with Hyprland's Lua dispatcher (`hl.dsp.cursor.move`) moved the Astronaut's layers about
+190 output pixels against it, from the brightness centroid of screenshots taken at the left
+edge, the middle and the right edge. A scene that follows the cursor draws every frame.
+
+### Sound objects
+
+Frieren's music played into a null sink at volume 0.5 and was recorded from its monitor
+(peak 0.13 a few seconds in); silent while the output was paused, playing again on resume.
+Ten seconds paused with the music loaded: no context switches on any of the daemon's 13
+threads (the stream is inactive and the decoder waits without a timeout). Scenes are silent
+unless `volume` is set, so a login does not start music.
+
+### Timelines
+
+Effect constants, an object's alpha, origin, angles and scale follow their timelines (cubic
+bezier keyframes; single, loop and mirror). On Floating Ducks (3377132665) the fish, ducks and
+their legs move. The same scene showed two renderer faults that are fixed: a scrolling
+picture's layer clamped its edge into long bars (layers now wrap like their picture), and
+`_rt_imageLayerComposite_<id>_a` read as white (it is now the object drawn into a target of
+its own, which brings the scene's water back).
+
+### Left out
+
+- `g_PointerState` (buttons) is 0; clicks need pointer input on the surface, which glint keeps
+  off on Hyprland.
+- Per-output volume over the `audio` op; the volume is the `set` option.
+- Sound objects that start silent wait for SceneScript (M5).
+- The interactive CLI menus (#49) are not built yet.
