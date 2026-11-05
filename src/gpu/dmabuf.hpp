@@ -32,6 +32,7 @@ public:
 
     VkImage image() const { return image_; }
     VkImageView view() const { return view_; }
+    VkDeviceSize size() const { return size_; }  // of the buffer object it lies in
 
 private:
     explicit DmabufImage(Context& context) : context_(context) {}
@@ -40,6 +41,7 @@ private:
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkImageView view_ = VK_NULL_HANDLE;
+    VkDeviceSize size_ = 0;
 };
 
 }  // namespace glint::gpu

@@ -102,6 +102,7 @@ if(GLINT_PLATFORM)
         src/wallpaper/scene/renderer.cpp
         src/wallpaper/scene/scene_wallpaper.cpp
         src/wallpaper/video/decoder.cpp
+        src/wallpaper/video/source.cpp
         src/wallpaper/video/video.cpp
         src/wayland/display.cpp
     )

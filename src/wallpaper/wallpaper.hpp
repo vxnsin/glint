@@ -38,6 +38,10 @@ class Blit;
 class VideoPass;
 }  // namespace gpu
 
+namespace video {
+class Sources;
+}
+
 enum class Kind { image, video, scene, web };
 std::string_view kind_name(Kind kind);
 
@@ -71,6 +75,7 @@ struct Services {
     scene::SceneCache& scenes;
     gpu::Blit& blit;
     gpu::VideoPass& video;
+    video::Sources& videos;
 };
 
 struct OutputInfo {

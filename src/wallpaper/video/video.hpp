@@ -1,24 +1,15 @@
 #pragma once
 
-#include <array>
 #include <memory>
-#include <unordered_map>
 
-#include "audio/player.hpp"
-#include "gpu/buffer.hpp"
-#include "gpu/dmabuf.hpp"
-#include "gpu/vulkan.hpp"
-#include "wallpaper/video/decoder.hpp"
+#include "wallpaper/video/source.hpp"
 #include "wallpaper/wallpaper.hpp"
-
-VK_DEFINE_HANDLE(VmaAllocation)
 
 namespace glint::video {
 
-// A video wallpaper: frames decoded on the decoder's thread, the frame due at the wallpaper's
-// clock uploaded as three planes, or with VA-API imported as dma-bufs without a copy, drawn
-// like a picture. Loops; speed and pause; the sound
-// track plays only when a volume is set.
+// A video wallpaper on one output: a Source shared with the other outputs that show the same
+// file, drawn with this output's scaling. Loops; speed and pause; the sound track plays only
+// when a volume is set.
 class Video final : public Wallpaper {
 public:
     Video(std::filesystem::path path, const Options& options, Services& services);
@@ -29,56 +20,23 @@ public:
     const Options& options() const override { return options_; }
 
     void load(std::function<void(std::string error)> done) override;
-    bool ready() const override {
-        return decoder_ != nullptr && (prime_ || planes_[0].image != VK_NULL_HANDLE);
-    }
+    bool ready() const override { return loaded_ && source_->ready(); }
     void prepare(const Frame& frame, VkCommandBuffer cmd, VkExtent2D extent) override;
     bool render(const Frame& frame, const gpu::Target& target, float opacity) override;
     bool wants_frames() const override { return !paused_; }
     void pause() override;
     void resume() override;
-    std::uint64_t memory() const override;
+    std::uint64_t memory() const override { return source_->memory(); }
 
-    const Info* info() const { return decoder_ ? &decoder_->info() : nullptr; }
+    const Info* info() const { return source_->info(); }
 
 private:
-    struct Plane {
-        VkImage image = VK_NULL_HANDLE;
-        VmaAllocation allocation = VK_NULL_HANDLE;
-        VkImageView view = VK_NULL_HANDLE;
-        std::uint32_t width = 0, height = 0;
-        VkDeviceSize memory = 0;
-        bool sampled = false;  // in SHADER_READ_ONLY layout
-    };
-    void make_planes(std::uint32_t width, std::uint32_t height);
-    void upload(const Picture& picture, VkCommandBuffer cmd);
-    void show(Picture& picture, VkCommandBuffer cmd);  // a dma-buf frame
-    void start_sound();
-
     std::filesystem::path path_;
     Options options_;
-    Services& services_;
-    std::unique_ptr<Decoder> decoder_;
-    std::array<Plane, 3> planes_{};
-    std::array<gpu::Buffer, 2> staging_;
-    std::uint32_t slot_ = 0;
-    std::optional<Picture> first_;  // taken on the worker, uploaded with the first frame
-
-    // dma-buf frames: the decoder's surfaces imported once each, by buffer.
-    struct Imported {
-        std::unique_ptr<gpu::DmabufImage> y, uv;
-    };
-    bool prime_ = false;
-    std::unordered_map<std::uint64_t, Imported> imports_;
-    const Imported* shown_ = nullptr;
-    std::shared_ptr<void> shown_hold_;  // keeps the decoder off the surface on screen
+    std::shared_ptr<Source> source_;
+    bool loaded_ = false;
     bool paused_ = false;
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
-
-    // The file mapped for the sound track.
-    const std::byte* mapped_ = nullptr;
-    std::size_t mapped_size_ = 0;
-    std::unique_ptr<audio::Player> player_;
 };
 
 }  // namespace glint::video

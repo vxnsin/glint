@@ -97,6 +97,7 @@ std::unique_ptr<DmabufImage> DmabufImage::import(Context& context, const DmabufP
         self->memory_ = VK_NULL_HANDLE;
         return nullptr;
     }
+    self->size_ = size;
     if (VkResult r = vkBindImageMemory(device, self->image_, self->memory_, 0); r != VK_SUCCESS) {
         error = failed("vkBindImageMemory (dma-buf)", r);
         return nullptr;

@@ -26,6 +26,7 @@
 #include "ipc/server.hpp"
 #include "wallpaper/image/textures.hpp"
 #include "wallpaper/scene/scene_wallpaper.hpp"
+#include "wallpaper/video/source.hpp"
 #include "wallpaper/wallpaper.hpp"
 #include "wayland/display.hpp"
 
@@ -152,6 +153,7 @@ private:
     std::unique_ptr<gpu::Blit> blit_;
     std::unique_ptr<gpu::VideoPass> video_;
     std::unique_ptr<scene::SceneCache> scenes_;
+    std::unique_ptr<video::Sources> videos_;
     std::unique_ptr<Services> services_;
     std::vector<std::unique_ptr<Screen>> screens_;
 
