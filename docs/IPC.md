@@ -194,9 +194,12 @@ anyway: it presents no frames. `GLINT_TRACK_TOPLEVELS=1` turns the tracking on a
 -> {"op": "cursor", "output": "DP-1", "x": 1200.5, "y": 300.0, "buttons": 1}
 ```
 
-Only needed on compositors where glint cannot see the pointer itself (it reads Hyprland's
-socket and `wl_pointer` on its own). The shell can also send `{"op": "cursor", "source":
-"client"}` to take over.
+Only needed on compositors where glint cannot see the pointer itself. On Hyprland glint asks
+the request socket for `cursorpos` once per drawn frame while a wallpaper wants the cursor,
+so the cursor counts over windows too; elsewhere it uses `wl_pointer` on the layer surface,
+which only sees the pointer over the bare desktop. A scene wants the cursor when its camera
+parallax is on or a shader reads `g_PointerPosition`, and then draws every frame. The
+`source` field is planned, not built.
 
 ### settings
 

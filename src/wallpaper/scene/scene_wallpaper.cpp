@@ -116,6 +116,10 @@ void Scene::prepare(const Frame& frame, VkCommandBuffer cmd, VkExtent2D extent) 
     inputs.daytime = std::fmod((last_time_ + frame.time) / 86400.0, 1.0);
     inputs.pointer[0] = pointer_[0];
     inputs.pointer[1] = pointer_[1];
+    inputs.pointer_last[0] = pointer_last_[0];
+    inputs.pointer_last[1] = pointer_last_[1];
+    pointer_last_[0] = pointer_[0];
+    pointer_last_[1] = pointer_[1];
     // The camera parallax follows the pointer with the scene's delay.
     const SceneGeneral& general = assets_->scene().general;
     float follow = general.parallax_delay > 0
@@ -143,8 +147,9 @@ bool Scene::render(const Frame&, const gpu::Target& target, float opacity) {
 bool Scene::wants_frames() const {
     if (!assets_) return false;
     if (assets_->animated()) return true;
-    // A still scene draws again only while the parallax is still moving.
-    return wants_cursor() && (parallax_[0] != pointer_[0] || parallax_[1] != pointer_[1]);
+    // A scene that follows the cursor keeps drawing, as Wallpaper Engine does: the pointer is
+    // read with every frame.
+    return wants_cursor();
 }
 
 bool Scene::wants_audio() const {
@@ -163,7 +168,12 @@ void Scene::audio_spectrum(const float* left, const float* right) {
 }
 
 bool Scene::wants_cursor() const {
-    return assets_ && assets_->scene().general.camera_parallax;
+    if (!assets_ || !renderer_) return false;
+    if (assets_->scene().general.camera_parallax) {
+        // The project may switch the parallax off through a bound property.
+        return true;
+    }
+    return renderer_->uses_pointer();
 }
 
 void Scene::cursor(const Cursor& cursor) {

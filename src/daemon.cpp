@@ -295,9 +295,21 @@ void Daemon::render(Screen& entry) {
     Frame current_frame{seconds(entry.current_origin_ns), delta, entry.frames};
     Frame incoming_frame{seconds(entry.incoming_origin_ns), delta, entry.frames};
 
-    // A wallpaper that wants the cursor gets pointer input on its surface.
-    output.set_pointer_input(entry.current ? entry.current->wants_cursor()
-                                           : (fading && entry.incoming->wants_cursor()));
+    // A wallpaper that wants the cursor gets it: on Hyprland from its socket, wherever the
+    // pointer is; elsewhere from pointer input on the surface, which only sees the pointer
+    // while no window is over it.
+    bool cursor =
+        entry.current ? entry.current->wants_cursor() : (fading && entry.incoming->wants_cursor());
+    output.set_pointer_input(cursor && !hyprland_.available());
+    if (cursor && hyprland_.available()) {
+        if (auto at = hyprland_.position()) {
+            double px = (at->first - output.x()) * output.scale();
+            double py = (at->second - output.y()) * output.scale();
+            Cursor c{px, py, 0};
+            if (entry.current && entry.current->wants_cursor()) entry.current->cursor(c);
+            if (fading && entry.incoming->wants_cursor()) entry.incoming->cursor(c);
+        }
+    }
 
     if (capture_.running()) {
         audio::Levels levels = capture_.levels();
@@ -838,8 +850,16 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
         props(request, std::move(reply));
     } else if (op == "inspect") {
         reply.error("inspect comes with milestone M6");
-    } else if (op == "audio" || op == "cursor") {
-        reply.error(op + " comes with milestone M3");
+    } else if (op == "cursor") {
+        // For compositors where glint cannot see the pointer: the shell sends it.
+        Screen* entry = screen(output);
+        if (entry == nullptr) return reply.error("cursor needs an output");
+        Cursor c{request.value("x", 0.0), request.value("y", 0.0), request.value("buttons", 0u)};
+        if (entry->current) entry->current->cursor(c);
+        entry->dirty = true;
+        reply.ok();
+    } else if (op == "audio") {
+        reply.error("audio comes with sound objects later in M3");
     } else if (op == "settings") {
         reply.error("settings come with milestone M6");
     } else {

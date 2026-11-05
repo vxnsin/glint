@@ -74,6 +74,7 @@ private:
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
     VkExtent2D extent_{1, 1};
     float pointer_[2] = {0.5f, 0.5f};
+    float pointer_last_[2] = {0.5f, 0.5f};
     float parallax_[2] = {0.5f, 0.5f};
     double last_time_ = 0;
     std::array<float, 64> audio_left_{}, audio_right_{};

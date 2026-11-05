@@ -20,10 +20,11 @@ namespace glint::scene {
 
 // What changes from frame to frame.
 struct FrameInputs {
-    double time = 0;                    // seconds since the scene started, pauses excluded
-    double delta = 0;                   // seconds since the last frame
-    double daytime = 0;                 // 0 to 1 over the local day
-    float pointer[2] = {0.5f, 0.5f};    // 0 to 1 over the output, y down
+    double time = 0;                  // seconds since the scene started, pauses excluded
+    double delta = 0;                 // seconds since the last frame
+    double daytime = 0;               // 0 to 1 over the local day
+    float pointer[2] = {0.5f, 0.5f};  // 0 to 1 over the output, y down
+    float pointer_last[2] = {0.5f, 0.5f};
     float parallax[2] = {0.5f, 0.5f};   // smoothed pointer for the camera parallax
     const float* audio_left = nullptr;  // 64 bands each, or null for silence
     const float* audio_right = nullptr;
@@ -50,6 +51,7 @@ public:
     std::uint64_t memory() const;
     std::size_t draw_count() const { return draws_.size(); }
     bool uses_audio() const { return uses_audio_; }
+    bool uses_pointer() const { return uses_pointer_; }
     const std::vector<std::string>& warnings() const { return plan_.warnings; }
 
 private:
@@ -140,6 +142,7 @@ private:
     std::vector<bool> moving_;        // per object: a timeline moves its transform
     bool parallax_ = false;
     bool uses_audio_ = false;
+    bool uses_pointer_ = false;
     float parallax_amount_ = 0;
 };
 

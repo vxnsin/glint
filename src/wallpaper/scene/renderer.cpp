@@ -533,6 +533,7 @@ void SceneRenderer::fill_block(Draw& draw) {
             draw.dynamics.push_back({Dynamic::What::frametime, u.offset});
         } else if (n == "g_PointerPosition") {
             draw.dynamics.push_back({Dynamic::What::pointer, u.offset});
+            uses_pointer_ = true;
         } else if (n == "g_PointerPositionLast") {
             draw.dynamics.push_back({Dynamic::What::pointer_last, u.offset});
         } else if (n.starts_with("g_AudioSpectrum")) {
@@ -670,9 +671,9 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
                 case Dynamic::What::time: put({static_cast<float>(inputs.time)}); break;
                 case Dynamic::What::daytime: put({static_cast<float>(inputs.daytime)}); break;
                 case Dynamic::What::frametime: put({static_cast<float>(inputs.delta)}); break;
-                case Dynamic::What::pointer:
+                case Dynamic::What::pointer: put({inputs.pointer[0], inputs.pointer[1]}); break;
                 case Dynamic::What::pointer_last:
-                    put({inputs.pointer[0], inputs.pointer[1]});
+                    put({inputs.pointer_last[0], inputs.pointer_last[1]});
                     break;
                 case Dynamic::What::parallax: put({inputs.parallax[0], inputs.parallax[1]}); break;
                 case Dynamic::What::mvp: write_matrix(draw.block, d.offset, mvp); break;
