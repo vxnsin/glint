@@ -411,7 +411,33 @@ struct ScriptHost::Impl {
         return true;
     }
 
+    // play, pause, stop, playing for a sound object.
+    JSValue sound_op(int kind, int index, std::string_view op) {
+        if (kind != kind_sound || index < 0 ||
+            static_cast<std::size_t>(index) >= host.sounds_.size()) {
+            return op == "playing" ? JS_FALSE : JS_UNDEFINED;
+        }
+        SoundState& st = host.sounds_[static_cast<std::size_t>(index)];
+        if (op == "playing") return JS_NewBool(ctx, st.playing);
+        if (op == "play") {
+            st.playing = true;
+        } else if (op == "pause") {
+            st.playing = false;
+        } else if (op == "stop") {
+            st.playing = false;
+            ++st.restarts;
+        }
+        ++st.version;
+        return JS_UNDEFINED;
+    }
+
     bool field_set(int kind, int index, std::string_view name, json value) {
+        if (kind == kind_sound && name == "volume" && index >= 0 &&
+            static_cast<std::size_t>(index) < host.sounds_.size() && value.is_number()) {
+            SoundState& st = host.sounds_[static_cast<std::size_t>(index)];
+            st.volume = value.get<float>();
+            ++st.version;
+        }
         const Bound* b = field_bound(kind, index, name);
         if (b == nullptr) {
             // Plain fields of the host's own scene copy.
@@ -1011,6 +1037,12 @@ JSValue native_destroy_layer(JSContext* ctx, JSValueConst, int argc, JSValueCons
     return JS_NewBool(ctx, impl_of(ctx).destroy_layer(int_of(ctx, argv[0]), int_of(ctx, argv[1])));
 }
 
+JSValue native_sound(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 3) return JS_UNDEFINED;
+    std::string op = string_of(ctx, argv[2]);
+    return impl_of(ctx).sound_op(int_of(ctx, argv[0]), int_of(ctx, argv[1]), op);
+}
+
 JSValue native_store(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 3) return JS_UNDEFINED;
     ScriptHost::Impl& impl = impl_of(ctx);
@@ -1057,6 +1089,10 @@ ScriptHost::ScriptHost(const SceneDesc& source, const Project& project, std::str
     scene_.images.reserve(scene_.images.size() + made_layers_max);
     const SceneDesc& scene = scene_;
     cells_.assign(static_cast<std::size_t>(std::max(scene.bound_count, 0)), {});
+    sounds_.resize(scene.sounds.size());
+    for (std::size_t i = 0; i < scene.sounds.size(); ++i) {
+        sounds_[i].playing = !scene.sounds[i].start_silent;
+    }
 
     // The scripts: every bound field with one, on layers, effects and texts.
     auto add = [&](const Bound& b, int kind, int index, int effect, int text, std::string field,
@@ -1166,6 +1202,7 @@ ScriptHost::ScriptHost(const SceneDesc& source, const Project& project, std::str
         {"transform", native_transform, 2},
         {"scriptProperties", native_script_properties, 1},
         {"store", native_store, 3},
+        {"sound", native_sound, 3},
         {"createLayer", native_create_layer, 2},
         {"sortLayer", native_sort_layer, 3},
         {"destroyLayer", native_destroy_layer, 2},

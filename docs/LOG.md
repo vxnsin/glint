@@ -582,3 +582,11 @@ result from an fbo marked `unique`, writes the new one, and a `copy` command car
 for the next frame. The copy is glint's own copy pass between two targets, and a unique
 fbo keeps its image across frames (cleared once when it is made) instead of sharing the
 pool. The effect was refused with a warning before; now it runs.
+
+### Sound objects under scripts
+
+The music players in the corpus keep their songs as sound objects that start silent and
+are started, held and stopped by scripts (`getLayer(name).play()`). The player's tracks
+now take that: a held track keeps its ring and stays silent, a stopped one is taken back
+to its first file by the decoder, and the scene applies what the scripts changed once per
+frame, by version.

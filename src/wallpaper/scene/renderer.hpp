@@ -60,6 +60,10 @@ public:
     bool uses_pointer() const { return uses_pointer_ || (scripts_ && scripts_->uses_pointer()); }
     // Scripts run every frame: the scene never rests.
     bool scripted() const { return scripts_ != nullptr && !scripts_->empty(); }
+    // The sound objects as scripts left them; null without scripts.
+    const std::vector<SoundState>* script_sounds() const {
+        return scripts_ ? &scripts_->sounds() : nullptr;
+    }
     // The playing media: for the thumbnail slot and the media events.
     bool uses_media() const { return uses_media_; }
     void set_media(const MediaState& state);

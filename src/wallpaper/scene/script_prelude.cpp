@@ -369,10 +369,10 @@ class Layer {
     getAttachmentAngles(a) { return new Vec3(); }
     getBoneCount() { return __native.get(this.__kind, this.__index, 'boneCount') || 0; }
     getBoneIndex(n) { return -1; }
-    play() { }
-    pause() { }
-    stop() { }
-    isPlaying() { return false; }
+    play() { __native.sound(this.__kind, this.__index, 'play'); }
+    pause() { __native.sound(this.__kind, this.__index, 'pause'); }
+    stop() { __native.sound(this.__kind, this.__index, 'stop'); }
+    isPlaying() { return !!__native.sound(this.__kind, this.__index, 'playing'); }
     emitParticles(n) { }
     get instance() { return this; }
 }

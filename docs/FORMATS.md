@@ -390,6 +390,11 @@ runs clean; `createAnimationLayer` and `setParent` are still refused. Scripts on
 instance overrides (`rate`, `size`, `colorn`...) apply to the running system without
 restarting it; only `count` needs a new one.
 
+Sound objects are layers too: `thisScene.getLayer('song').play()`, `pause()`, `stop()`
+(back to the first file), `isPlaying()` and `volume` reach the player; a sound with
+`startsilent` waits for its script. Two outputs showing one scene share one player, so
+the output that owns the sound is the one whose scripts drive it.
+
 Layers scripts make: `thisScene.createLayer('models/bar.json')` or a configuration object
 (`name`, `origin`, `angles`, `scale`, `alignment`, `parent`...; without a model it is a
 transform layer). A script from a Workshop asset names its files as the asset did and the

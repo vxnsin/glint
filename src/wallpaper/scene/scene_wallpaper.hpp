@@ -92,6 +92,10 @@ private:
     std::vector<File> sound_files_;  // what the player reads from, kept alive
     std::unique_ptr<audio::Player> player_;
     bool audio_ = false;
+    std::vector<int> sound_tracks_;              // by sound index: its track, or -1
+    std::vector<std::uint64_t> sound_applied_;   // the script state version applied
+    std::vector<std::uint64_t> sound_restarts_;  // restarts already done
+    void apply_script_sounds();
 };
 
 }  // namespace glint::scene

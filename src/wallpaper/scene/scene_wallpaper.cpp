@@ -148,12 +148,15 @@ void Scene::start_sound() {
     if (volume <= 0 || assets_->sound_owner != nullptr) return;
     const Values& values = renderer_->values();
     std::vector<audio::TrackSpec> tracks;
-    for (const SoundObject& sound : assets_->scene().sounds) {
-        // Silent at start means a script starts it (M5).
-        if (sound.start_silent || !sound.visible.resolve_bool(values, true)) continue;
+    sound_tracks_.assign(assets_->scene().sounds.size(), -1);
+    for (std::size_t si = 0; si < assets_->scene().sounds.size(); ++si) {
+        const SoundObject& sound = assets_->scene().sounds[si];
+        if (!sound.visible.resolve_bool(values, true)) continue;
         audio::TrackSpec spec;
         spec.mode = sound.mode;
         spec.volume = sound.volume.resolve_float(values, 1);
+        // Silent at start: a script starts it.
+        spec.playing = !sound.start_silent;
         spec.min_pause = sound.min_time;
         spec.max_pause = sound.max_time;
         std::size_t first = sound_files_.size();
@@ -169,7 +172,10 @@ void Scene::start_sound() {
         for (std::size_t i = first; i < sound_files_.size(); ++i) {
             spec.files.push_back(sound_files_[i].bytes());
         }
-        if (!spec.files.empty()) tracks.push_back(std::move(spec));
+        if (!spec.files.empty()) {
+            sound_tracks_[si] = static_cast<int>(tracks.size());
+            tracks.push_back(std::move(spec));
+        }
     }
     if (tracks.empty()) return;
     player_ = std::make_unique<audio::Player>();
@@ -249,6 +255,27 @@ void Scene::prepare(const Frame& frame, VkCommandBuffer cmd, VkExtent2D extent) 
     }
     inputs.buttons = buttons_;
     renderer_->record(cmd, extent, inputs);
+    apply_script_sounds();
+}
+
+// What scripts did to the sound objects since the last frame, onto the player.
+void Scene::apply_script_sounds() {
+    if (!player_ || !renderer_) return;
+    const std::vector<SoundState>* states = renderer_->script_sounds();
+    if (states == nullptr) return;
+    sound_applied_.resize(states->size(), 0);
+    sound_restarts_.resize(states->size(), 0);
+    for (std::size_t i = 0; i < states->size() && i < sound_tracks_.size(); ++i) {
+        const SoundState& st = (*states)[i];
+        if (st.version == sound_applied_[i] || sound_tracks_[i] < 0) continue;
+        auto track = static_cast<std::size_t>(sound_tracks_[i]);
+        if (st.restarts != sound_restarts_[i]) {
+            player_->restart_track(track);
+            sound_restarts_[i] = st.restarts;
+        }
+        player_->set_track(track, st.playing, st.volume);
+        sound_applied_[i] = st.version;
+    }
 }
 
 bool Scene::render(const Frame&, const gpu::Target& target, float opacity) {

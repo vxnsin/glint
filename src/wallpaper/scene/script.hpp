@@ -33,6 +33,15 @@ struct ScriptFrame {
     const float* audio_right = nullptr;
 };
 
+// A sound object under a script: whether it plays, its volume, and how often it was
+// taken back to its start.
+struct SoundState {
+    bool playing = true;
+    float volume = 1;
+    std::uint64_t restarts = 0;
+    std::uint64_t version = 0;
+};
+
 // Playback state of a puppet's animation layer under a script.
 struct AnimationLayerState {
     bool playing = true;
@@ -84,6 +93,9 @@ public:
     bool uses_pointer() const { return uses_pointer_; }
     bool uses_audio() const { return uses_audio_; }
 
+    // The sound objects as scripts left them, by sound index.
+    const std::vector<SoundState>& sounds() const { return sounds_; }
+
     // The puppet animation layers as scripts left them: by image index; null when untouched.
     const std::vector<AnimationLayer>* animation_layers(int image) const;
     // The time an animation layer plays at, from the scene time (play/pause/rate).
@@ -102,6 +114,7 @@ private:
     std::vector<std::string> warnings_;
     std::function<Vec2(int)> size_of_;
     std::uint64_t structure_ = 1;
+    std::vector<SoundState> sounds_;
     std::set<int> changed_texts_;
     bool uses_pointer_ = false;
     bool uses_audio_ = false;

@@ -73,6 +73,9 @@ struct Player::Track {
     std::atomic<std::size_t> head = 0;  // frames written
     std::atomic<std::size_t> tail = 0;  // frames read
     bool finished = false;              // single: played once
+    std::atomic<bool> playing = true;   // a held track keeps its ring and stays silent
+    std::atomic<float> gain = 1;
+    std::atomic<bool> restart = false;  // the decoder takes it back to its first file
 
     // Decoder state for the file being played.
     std::size_t file = 0;
@@ -154,6 +157,8 @@ std::string Player::start(std::vector<TrackSpec> tracks, float volume) {
     stopping_.store(false);
     for (auto& spec : tracks) {
         auto track = std::make_unique<Track>();
+        track->playing.store(spec.playing);
+        track->gain.store(spec.volume);
         track->spec = std::move(spec);
         tracks_.push_back(std::move(track));
     }
@@ -203,6 +208,19 @@ void Player::stop() {
     tracks_.clear();
 }
 
+void Player::set_track(std::size_t index, bool playing, float volume) {
+    if (index >= tracks_.size()) return;
+    tracks_[index]->playing.store(playing);
+    tracks_[index]->gain.store(volume);
+    wake_.notify_all();
+}
+
+void Player::restart_track(std::size_t index) {
+    if (index >= tracks_.size()) return;
+    tracks_[index]->restart.store(true);
+    wake_.notify_all();
+}
+
 void Player::set_paused(bool paused) {
     if (paused_.exchange(paused) == paused || loop_ == nullptr) return;
     wake_.notify_all();
@@ -230,6 +248,13 @@ void Player::decode() {
         bool busy = false;
         for (auto& owned : tracks_) {
             Track& t = *owned;
+            if (t.restart.exchange(false)) {
+                // Stopped by a script: from the first file again, the ring emptied.
+                t.close();
+                t.finished = !t.open(0);
+                t.silence = 0;
+                t.tail.store(t.head.load());
+            }
             if (t.finished) continue;
             // Fill while there is room for a decoded frame's worth.
             while (t.space() > 8192 && !stopping_.load()) {
@@ -310,10 +335,11 @@ void Player::process() {
     float master = paused_.load() ? 0.0f : volume_.load();
     for (auto& owned : tracks_) {
         Track& t = *owned;
+        if (!t.playing.load()) continue;  // held: silent, where it was
         std::size_t tail = t.tail.load();
         std::size_t available = t.head.load() - tail;
         std::size_t n = std::min<std::size_t>(available, frames);
-        float gain = master * t.spec.volume;
+        float gain = master * t.gain.load();
         for (std::size_t i = 0; i < n; ++i) {
             std::size_t at = ((tail + i) % ring_frames) * channels;
             dst[i * 2] += t.ring[at] * gain;

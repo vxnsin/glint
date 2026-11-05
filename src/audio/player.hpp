@@ -23,6 +23,7 @@ struct TrackSpec {
     std::string mode = "loop";                      // loop, random, single
     float volume = 1;
     float min_pause = 1, max_pause = 5;  // random: seconds of silence between plays
+    bool playing = true;                 // false: waits for a script to start it
 };
 
 class Player {
@@ -37,6 +38,9 @@ public:
     bool running() const { return loop_ != nullptr; }
 
     void set_volume(float volume) { volume_.store(volume); }
+    // One track under a script: playing or holding, its own volume, or back to its start.
+    void set_track(std::size_t index, bool playing, float volume);
+    void restart_track(std::size_t index);
     // Paused, the stream is inactive: PipeWire stops calling it, nothing wakes.
     void set_paused(bool paused);
 
