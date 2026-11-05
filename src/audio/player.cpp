@@ -303,7 +303,7 @@ void Player::process() {
         pw_stream_queue_buffer(stream_, b);
         return;
     }
-    std::uint32_t frames = buf->datas[0].maxsize / (sizeof(float) * channels);
+    auto frames = static_cast<std::uint32_t>(buf->datas[0].maxsize / (sizeof(float) * channels));
     if (b->requested > 0)
         frames = std::min<std::uint32_t>(frames, static_cast<std::uint32_t>(b->requested));
     std::fill_n(dst, frames * channels, 0.0f);
