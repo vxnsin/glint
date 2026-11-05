@@ -175,6 +175,7 @@ private:
     std::unique_ptr<ipc::Server> server_;
     audio::Capture capture_;
     std::unique_ptr<media::Mpris> mpris_;  // runs while a shown scene wants media
+    bool mpris_failed_ = false;            // the bus was not there; not tried again
     input::HyprlandCursor hyprland_;       // runs only while a shown, running scene wants audio
     bool force_toplevels_ = false;         // GLINT_TRACK_TOPLEVELS=1
 

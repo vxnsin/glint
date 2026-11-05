@@ -215,11 +215,13 @@ void Daemon::before_poll() {
             media = true;
         }
     }
-    if (media && !mpris_) {
+    if (media && !mpris_ && !mpris_failed_) {
         mpris_ = std::make_unique<media::Mpris>(loop_, *workers_, *gpu_, *staging_);
         if (std::string error = mpris_->start(); !error.empty()) {
-            log::warn("media: {}", error);
+            // No session bus, say: said once, not tried again every frame.
+            log::warn("media: {} (media integration off)", error);
             mpris_.reset();
+            mpris_failed_ = true;
         } else {
             log::info("media client started");
             mpris_->set_listener([this] {
