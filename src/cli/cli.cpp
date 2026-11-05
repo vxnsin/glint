@@ -194,7 +194,7 @@ int run(int argc, char** argv) {
             if (eq == std::string_view::npos) return usage_error("options are key=value");
             std::string key(args[i].substr(0, eq));
             std::string value(args[i].substr(eq + 1));
-            if (key == "volume") {
+            if (key == "volume" || key == "speed") {
                 try {
                     options[key] = std::stod(value);
                 } catch (...) {

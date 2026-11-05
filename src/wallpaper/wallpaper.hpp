@@ -35,7 +35,8 @@ class SceneCache;
 
 namespace gpu {
 class Blit;
-}
+class VideoPass;
+}  // namespace gpu
 
 enum class Kind { image, video, scene, web };
 std::string_view kind_name(Kind kind);
@@ -48,8 +49,10 @@ struct Options {
     std::string transition = "fade";  // "fade" or "none"
     int duration_ms = 300;
     nlohmann::json properties;  // scene: values to start with, by property name
-    float volume = 0;           // scene sound, 0 to 1; silent unless asked for
+    float volume = 0;           // scene and video sound, 0 to 1; silent unless asked for
     bool mute = false;
+    float speed = 1;             // video
+    std::string hwdec = "auto";  // video: auto, vaapi, no
 };
 
 // Parses "fill", "fit", ...; false if unknown.
@@ -67,6 +70,7 @@ struct Services {
     image::Textures& textures;
     scene::SceneCache& scenes;
     gpu::Blit& blit;
+    gpu::VideoPass& video;
 };
 
 struct OutputInfo {

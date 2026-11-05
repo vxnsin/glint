@@ -21,6 +21,7 @@
 #include "gpu/pictures.hpp"
 #include "gpu/staging.hpp"
 #include "gpu/surface.hpp"
+#include "gpu/video_pass.hpp"
 #include "input/hyprland.hpp"
 #include "ipc/server.hpp"
 #include "wallpaper/image/textures.hpp"
@@ -149,6 +150,7 @@ private:
     std::unique_ptr<Workers> workers_;
     std::unique_ptr<image::Textures> textures_;
     std::unique_ptr<gpu::Blit> blit_;
+    std::unique_ptr<gpu::VideoPass> video_;
     std::unique_ptr<scene::SceneCache> scenes_;
     std::unique_ptr<Services> services_;
     std::vector<std::unique_ptr<Screen>> screens_;

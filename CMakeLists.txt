@@ -90,6 +90,7 @@ if(GLINT_PLATFORM)
         src/gpu/staging.cpp
         src/gpu/surface.cpp
         src/gpu/texture.cpp
+        src/gpu/video_pass.cpp
         src/gpu/volk.cpp
         src/ipc/server.cpp
         src/wallpaper/wallpaper.cpp
@@ -99,6 +100,8 @@ if(GLINT_PLATFORM)
         src/wallpaper/scene/assets.cpp
         src/wallpaper/scene/renderer.cpp
         src/wallpaper/scene/scene_wallpaper.cpp
+        src/wallpaper/video/decoder.cpp
+        src/wallpaper/video/video.cpp
         src/wayland/display.cpp
     )
     target_link_libraries(glint PRIVATE glint::platform glint_scene glint_audio)

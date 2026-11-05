@@ -70,6 +70,7 @@ Daemon::~Daemon() {
     scenes_.reset();
     services_.reset();
     blit_.reset();
+    video_.reset();
     pictures_.reset();
     if (gpu_) gpu_->drain();
     staging_.reset();
@@ -120,9 +121,10 @@ int Daemon::run() {
     workers_ = std::make_unique<Workers>(loop_, 2);
     textures_ = std::make_unique<image::Textures>(*gpu_, *staging_, *workers_);
     blit_ = std::make_unique<gpu::Blit>(*gpu_);
+    video_ = std::make_unique<gpu::VideoPass>(*gpu_);
     scenes_ = std::make_unique<scene::SceneCache>(*gpu_, *staging_, *workers_);
     services_ = std::make_unique<Services>(
-        Services{*gpu_, *pictures_, *staging_, *workers_, *textures_, *scenes_, *blit_});
+        Services{*gpu_, *pictures_, *staging_, *workers_, *textures_, *scenes_, *blit_, *video_});
 
     server_ = std::make_unique<ipc::Server>(
         loop_, [this](const nlohmann::json& request, ipc::Server::Reply reply) {

@@ -44,6 +44,8 @@ nlohmann::json options_json(const Options& options) {
         {"duration", options.duration_ms},
     };
     if (options.volume > 0) json["volume"] = options.volume;
+    if (options.speed != 1) json["speed"] = options.speed;
+    if (options.hwdec != "auto") json["hwdec"] = options.hwdec;
     if (options.mute) json["mute"] = true;
     if (options.properties.is_object() && !options.properties.empty()) {
         json["properties"] = options.properties;
@@ -90,6 +92,18 @@ std::string parse_options(const nlohmann::json& json, Options& options) {
             } else {
                 return "mute is on or off";
             }
+        } else if (key == "speed") {
+            if (!value.is_number() || value.get<double>() <= 0 || value.get<double>() > 16) {
+                return "speed is a number above 0, up to 16";
+            }
+            options.speed = value.get<float>();
+        } else if (key == "hwdec") {
+            if (!value.is_string() || (value != "auto" && value != "vaapi" && value != "no")) {
+                return "hwdec is auto, vaapi or no";
+            }
+            options.hwdec = value.get<std::string>();
+        } else if (key == "loop") {
+            // Videos loop; accepted for the protocol.
         } else if (key == "fps") {
             // Accepted for every kind; a still picture has no use for it.
             if (!value.is_number()) return "fps is a number";

@@ -1,0 +1,237 @@
+#include "wallpaper/video/video.hpp"
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <vk_mem_alloc.h>
+
+#include <cstring>
+
+#include "core/log.hpp"
+#include "core/worker.hpp"
+#include "gpu/context.hpp"
+#include "gpu/surface.hpp"
+#include "gpu/video_pass.hpp"
+
+namespace glint::video {
+
+namespace {
+
+void barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier2 b{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .oldLayout = from,
+        .newLayout = to,
+        .image = image,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &b,
+    };
+    vkCmdPipelineBarrier2(cmd, &dependency);
+}
+
+}  // namespace
+
+Video::Video(std::filesystem::path path, const Options& options, Services& services)
+    : path_(std::move(path)), options_(options), services_(services) {}
+
+Video::~Video() {
+    player_.reset();
+    decoder_.reset();
+    gpu::Context& gpu = services_.gpu;
+    for (Plane& p : planes_) {
+        if (p.image == VK_NULL_HANDLE) continue;
+        gpu.defer([&gpu, i = p.image, a = p.allocation, v = p.view] {
+            vkDestroyImageView(gpu.device(), v, nullptr);
+            vmaDestroyImage(gpu.allocator(), i, a);
+        });
+    }
+    for (gpu::Buffer& b : staging_) {
+        auto held = std::make_shared<gpu::Buffer>(std::move(b));
+        gpu.defer([held]() mutable { held.reset(); });
+    }
+    if (mapped_ != nullptr) ::munmap(const_cast<std::byte*>(mapped_), mapped_size_);
+}
+
+void Video::load(std::function<void(std::string error)> done) {
+    std::weak_ptr<bool> alive = alive_;
+    struct Result {
+        std::unique_ptr<Decoder> decoder;
+        std::optional<Picture> first;
+        std::string error;
+    };
+    auto result = std::make_shared<Result>();
+    Result* raw = result.get();
+    std::filesystem::path path = path_;
+    std::string hwdec = options_.hwdec;
+    services_.workers.post(
+        [raw, path, hwdec] {
+            raw->decoder = Decoder::open(path, hwdec, raw->error);
+            if (!raw->decoder) return;
+            if (!raw->decoder->wait_first()) {
+                raw->error = "no frame in the video";
+                raw->decoder.reset();
+                return;
+            }
+            raw->first = raw->decoder->take(1e300);
+        },
+        [this, alive, result, done = std::move(done)] {
+            if (alive.expired()) return;
+            if (!result->decoder || !result->first) {
+                done(result->error.empty() ? "cannot play the video" : result->error);
+                return;
+            }
+            decoder_ = std::move(result->decoder);
+            first_ = std::move(result->first);
+            const Info& info = decoder_->info();
+            make_planes(first_->width, first_->height);
+            log::info("video {}: {}x{} {} at {:.2f} fps, {}", path_.filename().string(), info.width,
+                      info.height, info.codec, info.fps, info.hardware ? "VA-API" : "software");
+            start_sound();
+            done({});
+        });
+}
+
+void Video::make_planes(std::uint32_t width, std::uint32_t height) {
+    std::uint32_t sizes[3][2] = {
+        {width, height}, {(width + 1) / 2, (height + 1) / 2}, {(width + 1) / 2, (height + 1) / 2}};
+    gpu::Context& gpu = services_.gpu;
+    VkDeviceSize bytes = 0;
+    for (int i = 0; i < 3; ++i) {
+        Plane& p = planes_[static_cast<std::size_t>(i)];
+        p.width = sizes[i][0];
+        p.height = sizes[i][1];
+        bytes += static_cast<VkDeviceSize>(p.width) * p.height;
+        VkImageCreateInfo info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_R8_UNORM,
+            .extent = {p.width, p.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        VmaAllocationCreateInfo alloc{.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                      .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VmaAllocationInfo result{};
+        if (vmaCreateImage(gpu.allocator(), &info, &alloc, &p.image, &p.allocation, &result) !=
+            VK_SUCCESS) {
+            p.image = VK_NULL_HANDLE;
+            return;
+        }
+        p.memory = result.size;
+        VkImageViewCreateInfo view{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = p.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R8_UNORM,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        vkCreateImageView(gpu.device(), &view, nullptr, &p.view);
+    }
+    // Two staging buffers: one is being written while the GPU may still copy from the other.
+    for (gpu::Buffer& b : staging_) {
+        b = gpu::Buffer(gpu.allocator(), bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    }
+}
+
+void Video::upload(const Picture& picture, VkCommandBuffer cmd) {
+    if (picture.width != planes_[0].width || picture.height != planes_[0].height) return;
+    gpu::Buffer& buffer = staging_[slot_];
+    slot_ ^= 1u;
+    if (!buffer) return;
+    const std::vector<std::uint8_t>* data[] = {&picture.y, &picture.u, &picture.v};
+    VkDeviceSize offset = 0;
+    for (std::size_t i = 0; i < 3; ++i) {
+        Plane& p = planes_[i];
+        std::memcpy(buffer.mapped() + offset, data[i]->data(), data[i]->size());
+        barrier(cmd, p.image,
+                p.sampled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkBufferImageCopy copy{
+            .bufferOffset = offset,
+            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .imageExtent = {p.width, p.height, 1},
+        };
+        vkCmdCopyBufferToImage(cmd, buffer.get(), p.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                               &copy);
+        barrier(cmd, p.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        p.sampled = true;
+        offset += data[i]->size();
+    }
+    buffer.flush(0, VK_WHOLE_SIZE);
+}
+
+void Video::prepare(const Frame& frame, VkCommandBuffer cmd, VkExtent2D) {
+    if (!decoder_) return;
+    if (first_) {
+        upload(*first_, cmd);
+        first_.reset();
+    }
+    double time = frame.time * static_cast<double>(options_.speed);
+    if (auto picture = decoder_->take(time)) upload(*picture, cmd);
+}
+
+bool Video::render(const Frame&, const gpu::Target& target, float opacity) {
+    if (!planes_[0].sampled) return false;
+    const Info& info = decoder_->info();
+    gpu::VideoPass::Frame f{planes_[0].view,   planes_[1].view, planes_[2].view, planes_[0].width,
+                            planes_[0].height, info.bt709,      info.full_range};
+    services_.video.draw(target, f, options_.scaling, options_.linear, opacity);
+    return true;
+}
+
+void Video::pause() {
+    paused_ = true;
+    if (decoder_) decoder_->set_paused(true);
+    if (player_) player_->set_paused(true);
+}
+
+void Video::resume() {
+    paused_ = false;
+    if (decoder_) decoder_->set_paused(false);
+    if (player_) player_->set_paused(false);
+}
+
+std::uint64_t Video::memory() const {
+    std::uint64_t total = 0;
+    for (const Plane& p : planes_) total += p.memory;
+    return total;
+}
+
+void Video::start_sound() {
+    float volume = options_.mute ? 0.0f : options_.volume;
+    if (volume <= 0) return;  // no stream, no decoding of the sound track
+    int fd = ::open(path_.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    struct stat st{};
+    ::fstat(fd, &st);
+    void* map =
+        ::mmap(nullptr, static_cast<std::size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
+    ::close(fd);
+    if (map == MAP_FAILED) return;
+    mapped_ = static_cast<const std::byte*>(map);
+    mapped_size_ = static_cast<std::size_t>(st.st_size);
+    audio::TrackSpec track;
+    track.files.push_back({mapped_, mapped_size_});
+    player_ = std::make_unique<audio::Player>();
+    if (std::string error = player_->start({track}, volume); !error.empty()) {
+        log::warn("video sound: {}", error);
+        player_.reset();
+    }
+}
+
+}  // namespace glint::video

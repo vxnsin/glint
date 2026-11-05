@@ -10,6 +10,11 @@
 
 #include "wallpaper/image/image.hpp"
 #include "wallpaper/scene/scene_wallpaper.hpp"
+#include "wallpaper/video/video.hpp"
+
+extern "C" {
+#include <libavformat/avformat.h>
+}
 
 namespace glint {
 
@@ -72,6 +77,21 @@ bool parse_color(std::string_view text, float linear[3]) {
     return true;
 }
 
+// A file is a video when FFmpeg finds a video stream that is not a still picture format.
+bool is_video(const std::filesystem::path& path) {
+    AVFormatContext* format = nullptr;
+    if (avformat_open_input(&format, path.c_str(), nullptr, nullptr) < 0) return false;
+    std::string name = format->iformat != nullptr ? format->iformat->name : "";
+    bool still = name.find("image2") != std::string::npos || name.ends_with("_pipe");
+    bool video = false;
+    if (!still && avformat_find_stream_info(format, nullptr) >= 0) {
+        int stream = av_find_best_stream(format, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+        video = stream >= 0 && format->duration > AV_TIME_BASE / 2;
+    }
+    avformat_close_input(&format);
+    return video;
+}
+
 std::string check_path(const std::filesystem::path& path) {
     std::error_code ec;
     auto status = std::filesystem::status(path, ec);
@@ -86,7 +106,13 @@ std::string check_path(const std::filesystem::path& path) {
         std::string type = json.is_object() ? json.value("type", "") : "";
         std::ranges::transform(type, type.begin(), [](unsigned char c) { return std::tolower(c); });
         if (type == "scene") return {};
-        if (type == "video") return "Wallpaper Engine videos come with milestone M4";
+        if (type == "video") {
+            std::string file = json.value("file", "");
+            if (file.empty() || !std::filesystem::exists(path / file, ec)) {
+                return "the video item has no video file";
+            }
+            return {};
+        }
         if (type == "web") return "web wallpapers come with milestone M6";
         return "a Wallpaper Engine " + (type.empty() ? std::string("item") : type) +
                " glint does not show";
@@ -101,9 +127,16 @@ std::unique_ptr<Wallpaper> make_wallpaper(const std::filesystem::path& path, con
     if (!error.empty()) return nullptr;
     std::error_code ec;
     if (std::filesystem::is_directory(path, ec)) {
+        std::ifstream in(path / "project.json");
+        auto json = nlohmann::json::parse(in, nullptr, false);
+        std::string type = json.is_object() ? json.value("type", "") : "";
+        std::ranges::transform(type, type.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (type == "video") {
+            return std::make_unique<video::Video>(path / json.value("file", ""), options, services);
+        }
         return std::make_unique<scene::Scene>(path, options, services);
     }
-    // Videos (M4) are recognised by the decoder later; for now every file is a picture.
+    if (is_video(path)) return std::make_unique<video::Video>(path, options, services);
     return std::make_unique<image::Image>(path, options, services);
 }
 

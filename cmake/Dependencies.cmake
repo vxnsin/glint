@@ -80,7 +80,7 @@ endif()
 set(GLINT_SHADER_DIR ${CMAKE_BINARY_DIR}/generated/shaders)
 file(MAKE_DIRECTORY ${GLINT_SHADER_DIR})
 set(GLINT_SHADER_HEADERS)
-foreach(shader fullscreen.vert picture.frag texture.frag)
+foreach(shader fullscreen.vert picture.frag texture.frag video.frag)
     string(REPLACE "." "_" symbol ${shader})
     set(header ${GLINT_SHADER_DIR}/${shader}.h)
     add_custom_command(
