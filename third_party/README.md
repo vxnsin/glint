@@ -7,5 +7,3 @@ pieces here: single files with no Arch package, each in its own folder with its 
   GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator at commit
   0f1a757da579831283413295cc7f3b47eb521c77. Not in the Arch repositories, only in the AUR.
   The implementation is compiled once in `src/gpu/vma.cpp`.
-
-Candidate for M4: a small FFT.
