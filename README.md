@@ -11,8 +11,8 @@
 </p>
 
 **Status: milestone M5 in progress.** The daemon puts still pictures and Wallpaper Engine
-scenes (image layers, effects, particles, puppets, text, live settings) on every output with
-Vulkan and is driven over the socket; SceneScript, media, sound and video come next. Open work is tracked in the [issues](https://github.com/vxnsin/glint/issues).
+scenes (image layers, effects, particles, puppets, text, SceneScript, live settings) on every
+output with Vulkan and is driven over the socket; media, sound and video come next. Open work is tracked in the [issues](https://github.com/vxnsin/glint/issues).
 
 ## What it does
 

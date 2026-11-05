@@ -1,6 +1,8 @@
 #pragma once
 
+#include <map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "core/math.hpp"
@@ -9,6 +11,7 @@
 #include "wallpaper/scene/assets.hpp"
 #include "wallpaper/scene/particles.hpp"
 #include "wallpaper/scene/plan.hpp"
+#include "wallpaper/scene/script.hpp"
 
 VK_DEFINE_HANDLE(VmaAllocation)
 
@@ -29,6 +32,7 @@ struct FrameInputs {
     float parallax[2] = {0.5f, 0.5f};   // smoothed pointer for the camera parallax
     const float* audio_left = nullptr;  // 64 bands each, or null for silence
     const float* audio_right = nullptr;
+    std::uint32_t buttons = 0;  // pointer buttons held: bit 0 left
 };
 
 // One scene on one output: the render targets sized to it, the flat list of draws, the
@@ -51,8 +55,11 @@ public:
 
     std::uint64_t memory() const;
     std::size_t draw_count() const { return draws_.size(); }
-    bool uses_audio() const { return uses_audio_; }
-    bool uses_pointer() const { return uses_pointer_; }
+    bool uses_audio() const { return uses_audio_ || (scripts_ && scripts_->uses_audio()); }
+    bool uses_pointer() const { return uses_pointer_ || (scripts_ && scripts_->uses_pointer()); }
+    // Scripts run every frame: the scene never rests.
+    bool scripted() const { return scripts_ != nullptr && !scripts_->empty(); }
+    std::size_t script_count() const { return scripts_ ? scripts_->count() : 0; }
     const std::vector<std::string>& warnings() const { return plan_.warnings; }
 
 private:
@@ -77,14 +84,18 @@ private:
             model,
             model_inverse,  // object transforms under parallax
             audio,          // g_AudioSpectrum{16,32,64}{Left,Right}: bands and side below
-            timeline,       // a material constant with a timeline: bound and uniform below
-            alpha,          // the object's alpha with a timeline
+            timeline,       // a material constant with a timeline or script: bound below
+            alpha,          // the object's alpha, live
+            color4,         // g_Color4: color * brightness and alpha, live
+            color,          // g_Color
+            brightness,     // g_Brightness
         } what;
         std::uint32_t offset;
         int bands = 0;
         bool right = false;
         const Bound* bound = nullptr;
         const ShaderUniform* uniform = nullptr;
+        const ImageObject* image = nullptr;
     };
     struct Draw {
         const PlanDraw* plan = nullptr;
@@ -133,6 +144,12 @@ private:
     void pose_of(const ImageObject& object, const Mesh& mesh, double time,
                  std::vector<math::Mat4>& locals) const;
     void transition(VkCommandBuffer cmd, Image& image, VkImageLayout layout);
+    // A texture by name: a text this output set anew, else the shared one.
+    const SceneTexture& texture_of(const std::string& name) const;
+    std::optional<Vec2> picture_size_of(const std::string& name) const;
+    // Sets a text object anew with the string its script wrote.
+    void update_text(int id, double time);
+    ScriptFrame script_frame(const FrameInputs& inputs) const;
 
     gpu::Context& gpu_;
     gpu::Blit& blit_;
@@ -175,7 +192,18 @@ private:
     std::array<gpu::Buffer, 2> skinned_vertices_;
     std::uint32_t skinned_capacity_ = 0;  // vertices over all posed puppets
     float canvas_left_ = 0, canvas_bottom_ = 0, canvas_width_ = 1, canvas_height_ = 1;
-    std::vector<bool> moving_;  // per object: a timeline moves its transform
+    std::vector<bool> moving_;  // per object: a timeline or script moves its transform
+    std::vector<bool> particle_moving_;
+    // SceneScript: the scripts of this scene on this output, started with the first frame.
+    std::unique_ptr<ScriptHost> scripts_;
+    bool scripts_started_ = false;
+    std::uint64_t built_structure_ = 0;
+    std::uint32_t last_buttons_ = 0;
+    struct TextOverride {
+        SceneTexture texture;
+        Vec2 center{0, 0};
+    };
+    std::map<int, TextOverride> texts_;  // by object id
     bool parallax_ = false;
     bool uses_audio_ = false;
     bool uses_pointer_ = false;

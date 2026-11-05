@@ -185,6 +185,7 @@ void Scene::prepare(const Frame& frame, VkCommandBuffer cmd, VkExtent2D extent) 
         inputs.audio_left = audio_left_.data();
         inputs.audio_right = audio_right_.data();
     }
+    inputs.buttons = buttons_;
     renderer_->record(cmd, extent, inputs);
 }
 
@@ -197,6 +198,7 @@ bool Scene::render(const Frame&, const gpu::Target& target, float opacity) {
 bool Scene::wants_frames() const {
     if (!assets_) return false;
     if (assets_->animated()) return true;
+    if (renderer_ && renderer_->scripted()) return true;
     // A scene that follows the cursor keeps drawing, as Wallpaper Engine does: the pointer is
     // read with every frame.
     return wants_cursor();
@@ -229,6 +231,7 @@ bool Scene::wants_cursor() const {
 void Scene::cursor(const Cursor& cursor) {
     pointer_[0] = std::clamp(static_cast<float>(cursor.x / extent_.width), 0.0f, 1.0f);
     pointer_[1] = std::clamp(static_cast<float>(cursor.y / extent_.height), 0.0f, 1.0f);
+    buttons_ = cursor.buttons;
 }
 
 std::uint64_t Scene::memory() const {

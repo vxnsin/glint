@@ -28,10 +28,14 @@ endif()
 
 configure_file(src/core/version.hpp.in ${CMAKE_BINARY_DIR}/generated/core/version.hpp @ONLY)
 
+# Logging, used by the daemon, the readers and the tools alike.
+add_library(glint_core STATIC src/core/log.cpp)
+target_include_directories(glint_core PUBLIC src)
+
 add_executable(glint
     src/main.cpp
-    src/core/log.cpp
 )
+target_link_libraries(glint PRIVATE glint_core)
 
 target_include_directories(glint PRIVATE src ${CMAKE_BINARY_DIR}/generated)
 
@@ -80,7 +84,6 @@ if(GLINT_PLATFORM)
         src/input/hyprland.cpp
         src/cli/cli.cpp
         src/core/loop.cpp
-        src/core/paths.cpp
         src/core/state.cpp
         src/core/worker.cpp
         src/gpu/blit.cpp
@@ -111,18 +114,21 @@ if(GLINT_PLATFORM)
 
     # The Wallpaper Engine readers, shared by the daemon, we-inspect and the tests.
     add_library(glint_scene STATIC
+        src/core/paths.cpp
         src/wallpaper/scene/mdl.cpp
         src/wallpaper/scene/particles.cpp
         src/wallpaper/scene/plan.cpp
         src/wallpaper/scene/project.cpp
         src/wallpaper/scene/scene.cpp
+        src/wallpaper/scene/script.cpp
+        src/wallpaper/scene/script_prelude.cpp
         src/wallpaper/scene/shader.cpp
         src/wallpaper/scene/tex.cpp
         src/wallpaper/scene/text.cpp
         src/wallpaper/scene/vfs.cpp
     )
     target_include_directories(glint_scene PUBLIC src)
-    target_link_libraries(glint_scene PUBLIC nlohmann_json::nlohmann_json PkgConfig::LZ4
+    target_link_libraries(glint_scene PUBLIC glint_core nlohmann_json::nlohmann_json PkgConfig::LZ4 qjs
         PkgConfig::TEXT glslang::glslang glslang::glslang-default-resource-limits)
     target_compile_options(glint_scene PRIVATE ${GLINT_WARNINGS})
     if(GLINT_SANITIZE)

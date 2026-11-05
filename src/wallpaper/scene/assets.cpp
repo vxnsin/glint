@@ -190,10 +190,10 @@ std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item
     return self;
 }
 
-void SceneAssets::read_text(const TextObject& text, const Values& values) {
+bool SceneAssets::rasterize_text(const TextObject& text, const std::string& value,
+                                 PendingTexture& pending, Vec2& center) {
     TextSpec spec;
-    nlohmann::json value = text.text.resolve(values);
-    spec.text = value.is_string() ? value.get<std::string>() : value.is_null() ? "" : value.dump();
+    spec.text = value;
     spec.font = text.font;
     spec.pointsize = text.pointsize;
     spec.horizontal_align = text.horizontal_align;
@@ -212,27 +212,50 @@ void SceneAssets::read_text(const TextObject& text, const Values& values) {
     // the canvas resolution keeps the edges clean where the canvas is shown enlarged.
     spec.pixels_per_unit = 2;
     TextBitmap bitmap = text_.render(spec, vfs_, warnings_);
-    if (bitmap.width == 0 || bitmap.height == 0) return;
-    for (ImageObject& image : scene_.images) {
-        if (image.id != text.id || image.text < 0) continue;
-        image.model_size = bitmap.size;
-        image.text_offset = bitmap.center;
-    }
-    PendingTexture pending;
+    if (bitmap.width == 0 || bitmap.height == 0) return false;
+    center = bitmap.center;
     pending.name = "_text_" + std::to_string(text.id);
     pending.format = VK_FORMAT_R8G8B8A8_UNORM;
     pending.info.tex_width = pending.info.img_width = bitmap.width;
     pending.info.tex_height = pending.info.img_height = bitmap.height;
     pending.info.clamp = true;
+    pending.info.units = 1 / spec.pixels_per_unit;
     pending.generate = true;
     pending.span = staging_.allocate(bitmap.rgba.size());
     if (pending.span.data == nullptr) {
         warnings_.push_back("text " + text.name + ": out of staging memory");
-        return;
+        return false;
     }
     std::memcpy(pending.span.data, bitmap.rgba.data(), bitmap.rgba.size());
     pending.levels.push_back({0, {bitmap.width, bitmap.height}});
+    return true;
+}
+
+void SceneAssets::read_text(const TextObject& text, const Values& values) {
+    nlohmann::json value = text.text.resolve(values);
+    std::string str = value.is_string() ? value.get<std::string>()
+                      : value.is_null() ? ""
+                                        : value.dump();
+    PendingTexture pending;
+    Vec2 center{0, 0};
+    if (!rasterize_text(text, str, pending, center)) return;
+    for (ImageObject& image : scene_.images) {
+        if (image.id != text.id || image.text < 0) continue;
+        image.text_offset = center;
+    }
     pending_.push_back(std::move(pending));
+}
+
+bool SceneAssets::make_text(const TextObject& text, const std::string& value, SceneTexture& out,
+                            Vec2& center) {
+    PendingTexture p;
+    if (!rasterize_text(text, value, p, center)) return false;
+    std::vector<gpu::Texture::Level> levels;
+    for (const auto& [offset, size] : p.levels) levels.push_back({offset, size.first, size.second});
+    p.info.texture = gpu::Texture::upload(gpu_, staging_, p.span, p.format, levels, p.generate);
+    if (!p.info.texture) return false;
+    out = p.info;
+    return true;
 }
 
 void SceneAssets::read_texture(const std::string& name) {
@@ -458,13 +481,13 @@ const SceneTexture& SceneAssets::texture(const std::string& name) const {
 
 std::optional<Vec2> SceneAssets::picture_size(const std::string& name) const {
     if (auto it = textures_.find(name); it != textures_.end()) {
-        return Vec2{static_cast<float>(it->second.img_width),
-                    static_cast<float>(it->second.img_height)};
+        return Vec2{static_cast<float>(it->second.img_width) * it->second.units,
+                    static_cast<float>(it->second.img_height) * it->second.units};
     }
     for (const auto& p : pending_) {
         if (p.name == name) {
-            return Vec2{static_cast<float>(p.info.img_width),
-                        static_cast<float>(p.info.img_height)};
+            return Vec2{static_cast<float>(p.info.img_width) * p.info.units,
+                        static_cast<float>(p.info.img_height) * p.info.units};
         }
     }
     return std::nullopt;

@@ -6,6 +6,7 @@
 //   we-inspect <item> <path>     one file through the item's file system (.tex or text)
 //   we-inspect <item> --shaders  compile every pass of the scene
 //   we-inspect <item> --text     rasterise every text object to text-<id>.pam in the cwd
+//   we-inspect <item> --scripts  run the scene's scripts for a few frames, no GPU
 
 #include <cstdio>
 #include <cstdlib>
@@ -16,6 +17,7 @@
 #include "wallpaper/scene/mdl.hpp"
 #include "wallpaper/scene/project.hpp"
 #include "wallpaper/scene/scene.hpp"
+#include "wallpaper/scene/script.hpp"
 #include "wallpaper/scene/shader.hpp"
 #include "wallpaper/scene/tex.hpp"
 #include "wallpaper/scene/text.hpp"
@@ -198,7 +200,64 @@ int dump_texts(const Vfs& vfs, const SceneDesc& scene, const Values& values) {
     return 0;
 }
 
-int dump_item(const std::filesystem::path& folder, bool shaders, bool texts = false) {
+// The scripts for a few frames: what they wrote, and what went wrong.
+int run_scripts(const SceneDesc& scene, const Project& project, Values values) {
+    ScriptHost host(scene, project, project.title, "");
+    std::printf("scripts: %zu\n", host.count());
+    if (host.empty()) return 0;
+    values.cells = &host.cells();
+    ScriptFrame frame;
+    frame.canvas[0] = scene.general.ortho[0];
+    frame.canvas[1] = scene.general.ortho[1];
+    frame.pointer_world[0] = frame.canvas[0] / 2;
+    frame.pointer_world[1] = frame.canvas[1] / 2;
+    frame.delta = 1.0 / 60;
+    host.start(values, frame);
+    for (int i = 0; i < 120; ++i) {
+        frame.time += frame.delta;
+        host.frame(values, frame);
+        host.cursor(values, frame, i == 30, i == 40);
+    }
+    auto show = [&](const std::string& owner, const char* field, const Bound& b) {
+        const ScriptCell* cell = values.cell(b.key);
+        if (cell == nullptr || !cell->set) return;
+        std::printf("  %s.%s = %s\n", owner.c_str(), field, cell->value.dump().c_str());
+    };
+    for (const ImageObject& im : scene.images) {
+        std::string owner = im.name.empty() ? std::to_string(im.id) : im.name;
+        show(owner, "origin", im.origin);
+        show(owner, "scale", im.scale);
+        show(owner, "angles", im.angles);
+        show(owner, "visible", im.visible);
+        show(owner, "alpha", im.alpha);
+        show(owner, "color", im.color);
+        show(owner, "brightness", im.brightness);
+        if (im.text >= 0) show(owner, "text", scene.texts[static_cast<std::size_t>(im.text)].text);
+        for (const Effect& e : im.effects) {
+            show(owner + "/" + e.file, "visible", e.visible);
+            for (const auto& o : e.overrides) {
+                for (const auto& [n, b] : o.constants) show(owner + "/" + e.file, n.c_str(), b);
+            }
+        }
+    }
+    for (const ParticleObject& p : scene.particles) {
+        std::string owner = p.name.empty() ? std::to_string(p.id) : p.name;
+        show(owner, "origin", p.origin);
+        show(owner, "scale", p.scale);
+        show(owner, "visible", p.visible);
+    }
+    for (const GroupObject& g : scene.groups) {
+        std::string owner = g.name.empty() ? std::to_string(g.id) : g.name;
+        show(owner, "origin", g.origin);
+        show(owner, "scale", g.scale);
+        show(owner, "visible", g.visible);
+    }
+    for (const auto& w : host.warnings()) std::printf("  warning: %s\n", w.c_str());
+    return 0;
+}
+
+int dump_item(const std::filesystem::path& folder, bool shaders, bool texts = false,
+              bool scripts = false) {
     Vfs vfs(folder, default_assets());
     if (std::string error = vfs.open_package(); !error.empty()) {
         std::fprintf(stderr, "scene.pkg: %s\n", error.c_str());
@@ -278,6 +337,7 @@ int dump_item(const std::filesystem::path& folder, bool shaders, bool texts = fa
     for (const auto& warning : scene.warnings) std::printf("  warning: %s\n", warning.c_str());
     if (shaders) return compile_all(vfs, scene, true);
     if (texts) return dump_texts(vfs, scene, values);
+    if (scripts) return run_scripts(scene, project, values);
     return 0;
 }
 
@@ -292,6 +352,9 @@ int main(int argc, char** argv) {
     std::error_code ec;
     if (argc == 3 && std::string_view(argv[2]) == "--shaders") return dump_item(target, true);
     if (argc == 3 && std::string_view(argv[2]) == "--text") return dump_item(target, false, true);
+    if (argc == 3 && std::string_view(argv[2]) == "--scripts") {
+        return dump_item(target, false, false, true);
+    }
     if (argc == 3) {
         Vfs vfs(target, default_assets());
         vfs.open_package();

@@ -38,7 +38,8 @@ struct SceneTexture {
     // A sprite sheet: frames in a grid, their size as a share of the stored texture.
     std::uint32_t frames = 0;
     float frame_width = 1, frame_height = 1;
-    int format = 0;  // the shaders' FORMAT_ code: 0 RGBA8, 4 DXT5, 6 DXT3, 7 DXT1, 8 RG88, 9 R8
+    int format = 0;   // the shaders' FORMAT_ code: 0 RGBA8, 4 DXT5, 6 DXT3, 7 DXT1, 8 RG88, 9 R8
+    float units = 1;  // canvas units per texel: text is rasterised finer than the canvas
 
     PlanTextureInfo plan_info() const { return {frames, format}; }
 };
@@ -80,6 +81,10 @@ public:
     // White when a file is missing; transparent black for a render target (_rt_...) glint
     // does not make, so a missing layer adds nothing instead of covering the scene.
     const SceneTexture& texture(const std::string& name) const;
+    // A text object set anew (a script changed its string): the texture, uploaded now, and
+    // the block's centre from the origin. False when nothing could be drawn.
+    bool make_text(const TextObject& text, const std::string& value, SceneTexture& out,
+                   Vec2& center);
     std::optional<Vec2> picture_size(const std::string& name) const;
     SceneProgram* program(const ShaderRequest& request);
     // A puppet's rest mesh by .mdl path, null when it did not read.
@@ -111,6 +116,8 @@ private:
     void read_texture(const std::string& name);
     // Rasterises a text object into the pending texture `_text_<id>`.
     void read_text(const TextObject& text, const Values& values);
+    bool rasterize_text(const TextObject& text, const std::string& value, PendingTexture& out,
+                        Vec2& center);
     TextRenderer text_;
 
     gpu::Context& gpu_;

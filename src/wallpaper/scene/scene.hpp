@@ -53,10 +53,15 @@ struct Bound {
     nlohmann::json value;
     std::string user;                      // property name, empty if not bound
     std::string condition;                 // with a condition: true when the property equals it
-    bool script = false;                   // a SceneScript value (M5); the static value is used
+    bool script = false;                   // a SceneScript drives it: source below
     std::shared_ptr<Animation> animation;  // a timeline; the static value when null
+    std::string script_source;             // the SceneScript module
+    nlohmann::json script_properties;      // the values the editor stored for its properties
+    int key = -1;  // index of its ScriptCell; -1 for a field no script can write
 
     bool animated() const { return animation != nullptr; }
+    // Moves on its own: a timeline, or a script that may write it every frame.
+    bool live() const { return animation != nullptr || script; }
     // The value at a time: the timeline if there is one, else resolve(values).
     nlohmann::json at(const Values& values, double seconds) const;
 
@@ -196,6 +201,7 @@ struct ParticleObject {
 
 struct SoundObject {
     int id = 0;
+    std::string name;
     std::vector<std::string> files;
     std::string mode = "loop";  // loop, random, single
     Bound volume;
@@ -234,6 +240,7 @@ struct ObjectRef {
 };
 
 struct SceneDesc {
+    int bound_count = 0;  // keys handed out to bound fields: the size of a cell vector
     SceneGeneral general;
     std::vector<ImageObject> images;  // in drawing order among images
     std::vector<ParticleObject> particles;

@@ -333,10 +333,52 @@ from the object (cursor-following ones from `g_PointerPosition`).
 
 ## 11. SceneScript (M5)
 
-`script` value sources and `scripts/*.js` in the item: ES5-ish JavaScript with an API
-(`engine`, `thisLayer`, `thisObject`, `input.cursorWorldPosition`, `shared`, `localStorage`,
-`init`/`update(value)`/`destroy`, cursor events `cursorEnter/Leave/Click`). One QuickJS
-context per scene on its own thread; values exchanged per frame.
+Any bound field may carry a script: `{"value": v, "script": "<source>", "scriptproperties":
+{...}}`. The source is an ES module (the editor's template starts with `'use strict'` and
+`export let __workshopId`). What it exports is called by name (the official
+`lib.sceneScript.d.ts`, version 2.8, lists them): `init(value)` once, `update(value)` every
+frame, both returning the field's new value (or nothing to leave it), `destroy()`,
+`resizeScreen(size)`, `applyUserProperties(changed)` (once at start with every value, then
+with what changed), `cursorEnter/Leave/Move/Down/Up/Click(event)`, `animationEvent`, and the
+media events `mediaStatusChanged`, `mediaPlaybackChanged`, `mediaPropertiesChanged`,
+`mediaThumbnailChanged`, `mediaTimelineChanged`.
+
+What a script sees: `thisLayer` (the layer the field belongs to: `origin`, `angles` in
+degrees, `scale`, `parallaxDepth`, `visible`, `alpha`, `color`, `name`, `size`, the text
+fields, `getParent()`, `getChildren()`, `getAnimation(name?)`, `getEffect()`,
+`getAnimationLayer()`, `getTextureAnimation()`...), `thisObject` (the layer, or the effect
+the field is on; `getAnimation()` without a name is the field's own timeline), `thisScene`
+(`getLayer(name|index|id)`, `enumerateLayers()`, ...), `engine` (`frametime`, `runtime`,
+`timeOfDay`, `canvasSize`, `screenResolution`, `userProperties` with colours as Vec3,
+`registerAudioBuffers(16|32|64)` giving `left`/`right`/`average` Float32Arrays,
+`setTimeout`/`setInterval` returning a canceller, `openUserShortcut`), `input`
+(`cursorWorldPosition` in canvas units y up, `cursorScreenPosition`, `cursorLeftDown`),
+`shared` (an empty object all scripts share), `localStorage` (`get`/`set`/`delete`, per
+screen or global), `console`, the classes `Vec2`, `Vec3`, `Vec4`, `Mat4`, the modules
+`WEMath`, `WEVector`, `WEColor`, and `createScriptProperties()` whose builder
+(`addSlider`, `addCheckbox`, `addCombo`, `addText`, `addColor`, `addTask`, `finish`) yields
+the script's own settings: the builder's defaults under the object's `scriptproperties`,
+whose entries may themselves be bound to project properties (`{"user": ..., "value": ...}`,
+nested, with conditions).
+
+Values cross as the scene stores them: vectors are "x y z" strings, so a `Vec3` goes out as
+`toString()` and a number returned for a vector fills every component. A field's current
+value is what the script last returned, else the timeline's or the property's.
+
+glint (src/wallpaper/scene/script.cpp, the JavaScript side in script_prelude.cpp): one
+quickjs-ng runtime and context per scene and output, every script its own module with a
+line in front that binds `thisLayer`, `thisObject` and `createScriptProperties`. The
+scripts run on the render thread before the frame's draws, and write into `ScriptCell`s
+that `Bound::at()` and `resolve()` read through `Values::cells`, so the shared scene
+description is never changed and two outputs showing one scene keep their own values.
+Fields a script wrote are "live" like timelines: transforms recompute every frame, colours
+and alphas patch their uniforms, a changed `visible` rebuilds the plan, a changed text is
+set anew. A script that throws is logged once and left alone; a call that runs past 250 ms
+is interrupted. `we-inspect <item> --scripts` runs a scene's scripts for two seconds
+without a GPU and prints what they wrote. The corpus (1266 scripts in 36 items) loads and
+runs clean except `thisScene.createLayer` (audio visualisers that spawn their bars: open),
+scripts on particle instance overrides (`rate`, `count`, `size`; they load but are not
+applied yet), and the media events, which wait for the MPRIS integration.
 
 ## 12. Text objects (M5)
 

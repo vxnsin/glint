@@ -217,8 +217,12 @@ Vec2 parse_vec2(const json& j, Vec2 fallback) {
     return fallback;
 }
 
+// Keys for the bound fields of the scene being loaded (one load per thread at a time).
+thread_local int bound_keys = 0;
+
 Bound parse_bound(const json& j) {
     Bound b;
+    b.key = bound_keys++;
     if (!j.is_object()) {
         b.value = j;
         return b;
@@ -236,7 +240,11 @@ Bound parse_bound(const json& j) {
             }
         }
     }
-    b.script = j.contains("script");
+    if (j.contains("script") && j["script"].is_string()) {
+        b.script = true;
+        b.script_source = j["script"].get<std::string>();
+        b.script_properties = j.value("scriptproperties", json::object());
+    }
     if (j.contains("animation") && j["animation"].is_object()) {
         const json& a = j["animation"];
         auto animation = std::make_shared<Animation>();
@@ -339,7 +347,19 @@ std::vector<float> Animation::at(double seconds) const {
 }
 
 json Bound::at(const Values& values, double seconds) const {
+    const ScriptCell* cell = values.cell(key);
+    if (cell != nullptr && cell->set) return cell->value;
     if (!animation) return resolve(values);
+    if (cell != nullptr) {
+        // A script controls the timeline: paused or stopped it holds a frame, playing it
+        // runs from where it was started at its rate.
+        if (!cell->playing && cell->held_set) {
+            seconds = cell->held / animation->fps;
+        } else {
+            seconds = (seconds - cell->start) * cell->rate;
+            if (cell->held_set) seconds += cell->held / animation->fps;
+        }
+    }
     std::vector<float> v = animation->at(seconds);
     if (v.size() == 1) return v[0];
     std::string text;
@@ -351,6 +371,7 @@ json Bound::at(const Values& values, double seconds) const {
 }
 
 json Bound::resolve(const Values& values) const {
+    if (const ScriptCell* cell = values.cell(key); cell != nullptr && cell->set) return cell->value;
     if (user.empty()) return value;
     auto it = values.find(user);
     if (it == values.end()) return value;
@@ -414,6 +435,7 @@ bool parse_material(const Vfs& vfs, std::string_view path, Material& out,
 }
 
 std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
+    bound_keys = 0;
     auto file_data = vfs.read(file);
     if (!file_data) return std::string(file) + " not found";
     json scene = json::parse(file_data->text(), nullptr, false);
@@ -511,6 +533,7 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
             out.images.push_back(std::move(image));
         } else if (object.contains("sound") && object["sound"].is_array()) {
             SoundObject sound;
+            sound.name = str(object, "name");
             sound.id = object.value("id", next_id);
             for (const auto& f : object["sound"]) {
                 if (f.is_string()) sound.files.push_back(f.get<std::string>());
@@ -547,6 +570,7 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
         }
         ++next_id;
     }
+    out.bound_count = bound_keys;
     return {};
 }
 

@@ -41,7 +41,32 @@ struct Project {
 std::string parse_project(std::string_view text, Project& out, std::string_view language = "en-us");
 
 // The value table conditions and bindings read: name -> current value.
-using Values = std::map<std::string, nlohmann::json, std::less<>>;
+// A value a script wrote over a bound field (SceneScript, docs/FORMATS.md 11), and the
+// playback state of the field's timeline. One per bound field and per output; the scene
+// description itself is shared between outputs and stays as parsed.
+struct ScriptCell {
+    nlohmann::json value;
+    bool set = false;
+    // The timeline's IAnimation state: playing at a rate from a start time, or holding a
+    // frame while paused or stopped.
+    bool playing = true;
+    double rate = 1;
+    double start = 0;  // the scene time the timeline was (re)started at
+    double held = 0;   // the frame it holds while not playing
+    bool held_set = false;
+};
+
+// The property values by name, and the cells scripts write per output (null when none).
+struct Values : std::map<std::string, nlohmann::json, std::less<>> {
+    using map::map;
+    const std::vector<ScriptCell>* cells = nullptr;
+    const ScriptCell* cell(int key) const {
+        if (cells == nullptr || key < 0 || static_cast<std::size_t>(key) >= cells->size()) {
+            return nullptr;
+        }
+        return &(*cells)[static_cast<std::size_t>(key)];
+    }
+};
 Values default_values(const Project& project);
 
 // Evaluates a property condition such as "season.value == 'winter' && snow.value".

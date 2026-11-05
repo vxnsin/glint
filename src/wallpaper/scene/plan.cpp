@@ -48,6 +48,10 @@ void bind_mask(PlanDraw& draw, const TextureInfoFn& texture_info) {
 Vec2 object_size(const ImageObject& image, const SceneGeneral& general, const Values& values,
                  const TextureSize& texture_size) {
     if (image.fullscreen) return general.ortho;
+    if (image.text >= 0) {
+        // The text block, as rasterised (the texture knows its canvas units).
+        if (auto s = texture_size("_text_" + std::to_string(image.id))) return *s;
+    }
     Vec2 size = parse_vec2(image.size.resolve(values), {0, 0});
     if (size[0] > 0 && size[1] > 0) return size;
     if (image.model_size[0] > 0 && image.model_size[1] > 0) return image.model_size;

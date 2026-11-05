@@ -507,3 +507,21 @@ date block of the Roxy scene comes out 590x160 against the 590x159 the editor st
 come from the item (Workshop fonts ship in the package), the assets or fontconfig for the
 `systemfont_` names. Scripted texts show their stored value for now; the clock reads 12:34
 until SceneScript runs.
+
+### SceneScript
+
+The clock now ticks. Scripts run on quickjs-ng, one context per scene and output, each
+script its own module (docs/FORMATS.md, 11). The API surface came from the official type
+declarations and from counting what the corpus actually calls: `update` and `init` on
+nearly every script, `createScriptProperties` on most, `engine.canvasSize`, `frametime`,
+`registerAudioBuffers`, `thisLayer.origin`/`visible`, `shared`, `getParent`,
+`input.cursorWorldPosition`, `thisObject.getAnimation().play()` in click handlers, the media
+events. Two things the corpus taught that the docs do not say: the object's
+`scriptproperties` may be bound to project properties, nested and with conditions, and
+sound objects are layers scripts look up by name to start and stop them. The 1266 scripts
+of the 36 scripted items load and run; what is left open is listed in FORMATS.
+
+Design note: scripts must not write into the scene description, which two outputs share.
+Every bound field got a key at parse time, and a per-output vector of cells, reachable
+through `Values`, holds what scripts wrote. The readers did not change; `Bound::at()` looks
+in the cell first.

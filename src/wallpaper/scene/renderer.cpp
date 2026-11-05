@@ -134,6 +134,21 @@ SceneRenderer::SceneRenderer(gpu::Context& gpu, gpu::Blit& blit,
     : gpu_(gpu), blit_(blit), assets_(std::move(assets)) {
     values_ = default_values(assets_->project());
     const SceneGeneral& general = assets_->scene().general;
+    scripts_ =
+        std::make_unique<ScriptHost>(assets_->scene(), assets_->project(), assets_->project().title,
+                                     assets_->vfs().item().filename().string());
+    if (scripts_->empty()) {
+        scripts_.reset();
+    } else {
+        values_.cells = &scripts_->cells();
+        scripts_->set_size_callback([this](int index) {
+            const SceneDesc& scene = assets_->scene();
+            auto size_of = [this](const std::string& name) { return picture_size_of(name); };
+            return object_size(scene.images[static_cast<std::size_t>(index)], scene.general,
+                               values_, size_of);
+        });
+        log::info("scene {}: {} scripts", assets_->project().title, scripts_->count());
+    }
     auto clear = parse_vec3(general.clear_color.resolve(values_), {0, 0, 0});
     clear_[0] = clear[0];
     clear_[1] = clear[1];
@@ -152,8 +167,72 @@ SceneRenderer::~SceneRenderer() {
 }
 
 void SceneRenderer::set_values(const Values& values) {
+    Values before = values_;
     values_ = values;
+    values_.cells = scripts_ ? &scripts_->cells() : nullptr;
+    if (scripts_ && scripts_started_) scripts_->values_changed(before, values_);
     stale_ = true;
+}
+
+const SceneTexture& SceneRenderer::texture_of(const std::string& name) const {
+    if (name.starts_with("_text_")) {
+        int id = std::atoi(name.c_str() + 6);
+        if (auto it = texts_.find(id); it != texts_.end()) return it->second.texture;
+    }
+    return assets_->texture(name);
+}
+
+std::optional<Vec2> SceneRenderer::picture_size_of(const std::string& name) const {
+    if (name.starts_with("_text_")) {
+        int id = std::atoi(name.c_str() + 6);
+        if (auto it = texts_.find(id); it != texts_.end()) {
+            const SceneTexture& t = it->second.texture;
+            return Vec2{static_cast<float>(t.img_width) * t.units,
+                        static_cast<float>(t.img_height) * t.units};
+        }
+    }
+    return assets_->picture_size(name);
+}
+
+void SceneRenderer::update_text(int id, double time) {
+    const SceneDesc& scene = assets_->scene();
+    for (const TextObject& text : scene.texts) {
+        if (text.id != id) continue;
+        nlohmann::json value = text.text.at(values_, time);
+        std::string str = value.is_string() ? value.get<std::string>()
+                          : value.is_null() ? ""
+                                            : value.dump();
+        TextOverride over;
+        if (!assets_->make_text(text, str, over.texture, over.center)) return;
+        // The old texture goes once the frames that read it are done.
+        if (auto it = texts_.find(id); it != texts_.end()) {
+            auto old = std::make_shared<SceneTexture>(std::move(it->second.texture));
+            gpu_.defer([old]() mutable { old.reset(); });
+        }
+        texts_[id] = std::move(over);
+        stale_ = true;
+        return;
+    }
+}
+
+ScriptFrame SceneRenderer::script_frame(const FrameInputs& inputs) const {
+    const SceneGeneral& general = assets_->scene().general;
+    ScriptFrame f;
+    f.time = inputs.time;
+    f.delta = inputs.delta;
+    f.daytime = inputs.daytime;
+    f.canvas[0] = general.ortho[0];
+    f.canvas[1] = general.ortho[1];
+    f.screen[0] = static_cast<float>(extent_.width);
+    f.screen[1] = static_cast<float>(extent_.height);
+    f.pointer_world[0] = canvas_left_ + inputs.pointer[0] * canvas_width_;
+    f.pointer_world[1] = canvas_bottom_ + (1 - inputs.pointer[1]) * canvas_height_;
+    f.pointer_screen[0] = inputs.pointer[0] * static_cast<float>(extent_.width);
+    f.pointer_screen[1] = inputs.pointer[1] * static_cast<float>(extent_.height);
+    f.left_down = (inputs.buttons & 1u) != 0;
+    f.audio_left = inputs.audio_left;
+    f.audio_right = inputs.audio_right;
+    return f;
 }
 
 SceneRenderer::Image SceneRenderer::make_image(VkExtent2D extent, VkFormat format) {
@@ -246,7 +325,9 @@ math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting, d
                        math::Mat4::scale(scale[0], scale[1], scale[2]);
     if (image.text >= 0) {
         // A text block sits around the origin by its alignment, not centred on it.
-        local = local * math::Mat4::translate(image.text_offset[0], image.text_offset[1], 0);
+        Vec2 offset = image.text_offset;
+        if (auto it = texts_.find(image.id); it != texts_.end()) offset = it->second.center;
+        local = local * math::Mat4::translate(offset[0], offset[1], 0);
     }
     if (image.parent < 0) return local;
     if (std::ranges::find(visiting, object) != visiting.end()) return local;  // a cycle
@@ -303,11 +384,22 @@ void SceneRenderer::pose_of(const ImageObject& object, const Mesh& mesh, double 
     std::vector<math::Mat4> layer_locals, rest;
     mesh.rest_pose(rest);
     bool first = true;
-    for (const AnimationLayer& layer : object.animation_layers) {
+    int image_index = -1;
+    const std::vector<AnimationLayer>* layers = &object.animation_layers;
+    if (scripts_) {
+        const SceneDesc& scene = assets_->scene();
+        for (std::size_t i = 0; i < scene.images.size(); ++i) {
+            if (&scene.images[i] == &object) image_index = static_cast<int>(i);
+        }
+        if (const auto* scripted = scripts_->animation_layers(image_index)) layers = scripted;
+    }
+    for (std::size_t l = 0; l < layers->size(); ++l) {
+        const AnimationLayer& layer = (*layers)[l];
         const Mesh::Animation* animation =
             layer.visible ? mesh.animation(layer.animation) : nullptr;
         if (animation == nullptr) continue;
-        double frame = Mesh::frame_at(*animation, time, layer.rate);
+        double t = scripts_ ? scripts_->layer_time(image_index, static_cast<int>(l), time) : time;
+        double frame = Mesh::frame_at(*animation, t, layer.rate);
         mesh.pose(*animation, frame, layer_locals);
         if (first) {
             locals = layer_locals;
@@ -379,9 +471,10 @@ void SceneRenderer::build(VkExtent2D extent) {
     // Depth covers what scenes use: objects sit at z = -100 and similar, WE's farz is 10000.
     projection_ = math::Mat4::ortho(left, left + vw, bottom, bottom + vh, -10000, 10000);
 
-    auto size_of = [this](const std::string& name) { return assets_->picture_size(name); };
-    auto info_of = [this](const std::string& name) { return assets_->texture(name).plan_info(); };
+    auto size_of = [this](const std::string& name) { return picture_size_of(name); };
+    auto info_of = [this](const std::string& name) { return texture_of(name).plan_info(); };
     plan_ = build_plan(scene, values_, size_of, false, info_of);
+    built_structure_ = scripts_ ? scripts_->structure_version() : 0;
     for (const auto& w2 : plan_.warnings) log::warn("scene: {}", w2);
 
     scene_ = make_image(extent, target_format);
@@ -423,7 +516,7 @@ void SceneRenderer::build(VkExtent2D extent) {
             const ImageObject& owner = scene.images[static_cast<std::size_t>(t.object)];
             if (!owner.material.passes.empty() && !owner.material.passes[0].textures.empty() &&
                 owner.material.passes[0].textures[0]) {
-                repeat = !assets_->texture(*owner.material.passes[0].textures[0]).clamp;
+                repeat = !texture_of(*owner.material.passes[0].textures[0]).clamp;
             }
         }
         wants.push_back({i, e, repeat});
@@ -473,9 +566,12 @@ void SceneRenderer::build(VkExtent2D extent) {
         if (follows_pointer(*object.desc)) uses_pointer_ = true;
     }
     particle_models_.clear();
+    particle_moving_.assign(scene.particles.size(), false);
     for (std::size_t i = 0; i < scene.particles.size(); ++i) {
         std::vector<int> visiting;
         particle_models_.push_back(particle_matrix(static_cast<int>(i), visiting, 0));
+        const ParticleObject& p = scene.particles[i];
+        if (p.origin.live() || p.scale.live() || p.angles.live()) particle_moving_[i] = true;
     }
 
     models_.clear();
@@ -484,7 +580,7 @@ void SceneRenderer::build(VkExtent2D extent) {
         // A transform with a timeline, its own or an ancestor's, moves every frame.
         for (int o = static_cast<int>(i), guard = 0; o >= 0 && guard < 64; ++guard) {
             const ImageObject& im = scene.images[static_cast<std::size_t>(o)];
-            if (im.origin.animated() || im.scale.animated() || im.angles.animated()) {
+            if (im.origin.live() || im.scale.live() || im.angles.live()) {
                 moving_[i] = true;
                 break;
             }
@@ -567,7 +663,7 @@ void SceneRenderer::build(VkExtent2D extent) {
             draw.extra["g_RenderVar0"] = {trail_length, trail_max, trail_min, 0};
             float fw = 1, fh = 1, frames = 1, ratio = 1;
             if (p.textures[0].kind == PlanTexture::Kind::file) {
-                const SceneTexture& t = assets_->texture(p.textures[0].file);
+                const SceneTexture& t = texture_of(p.textures[0].file);
                 ratio = static_cast<float>(t.tex_height) / static_cast<float>(t.tex_width);
                 if (t.frames > 1) {
                     fw = t.frame_width;
@@ -586,7 +682,7 @@ void SceneRenderer::build(VkExtent2D extent) {
             p.object >= 0 && scene.images[static_cast<std::size_t>(p.object)].puppet &&
             assets_->mesh(scene.images[static_cast<std::size_t>(p.object)].puppet_path) != nullptr;
         if (p.crop && !puppet_object && p.textures[0].kind == PlanTexture::Kind::file) {
-            const SceneTexture& t = assets_->texture(p.textures[0].file);
+            const SceneTexture& t = texture_of(p.textures[0].file);
             u1 = static_cast<float>(t.img_width) / static_cast<float>(t.tex_width);
             v1 = static_cast<float>(t.img_height) / static_cast<float>(t.tex_height);
         }
@@ -651,7 +747,7 @@ void SceneRenderer::build(VkExtent2D extent) {
             draw.copy_uv[1] = v1;
             const PlanTexture& t = p.textures[0];
             if (t.kind == PlanTexture::Kind::file) {
-                const SceneTexture& tex = assets_->texture(t.file);
+                const SceneTexture& tex = texture_of(t.file);
                 draw.copy_view = tex.texture ? tex.texture->view() : VK_NULL_HANDLE;
                 draw.copy_sampler = assets_->sampler(true, tex.nearest);
             } else if (t.kind == PlanTexture::Kind::framebuffer) {
@@ -679,7 +775,7 @@ void SceneRenderer::build(VkExtent2D extent) {
             draw.views[i] = white.texture ? white.texture->view() : VK_NULL_HANDLE;
             draw.samplers[i] = assets_->sampler(false, false);
             if (t.kind == PlanTexture::Kind::file) {
-                const SceneTexture& tex = assets_->texture(t.file);
+                const SceneTexture& tex = texture_of(t.file);
                 if (tex.texture) draw.views[i] = tex.texture->view();
                 draw.samplers[i] = assets_->sampler(
                     tex.clamp, tex.nearest || std::getenv("GLINT_NEAREST") != nullptr);
@@ -714,7 +810,7 @@ void SceneRenderer::build(VkExtent2D extent) {
                 draw.samplers[slot] = assets_->sampler(true, false);
             } else if (!sampler.fallback.starts_with("_rt_") &&
                        !sampler.fallback.starts_with("_alias_")) {
-                const SceneTexture& tex = assets_->texture(sampler.fallback);
+                const SceneTexture& tex = texture_of(sampler.fallback);
                 if (tex.texture) {
                     draw.views[slot] = tex.texture->view();
                     draw.samplers[slot] = assets_->sampler(tex.clamp, tex.nearest);
@@ -805,7 +901,8 @@ void SceneRenderer::fill_block(Draw& draw) {
         p.object >= 0 ? scene.images[static_cast<std::size_t>(p.object)] : no_object;
     bool material = p.effect < 0 && p.particle < 0;
     bool moving = p.object >= 0 && (parallax_ || moving_[static_cast<std::size_t>(p.object)]);
-    if (p.particle >= 0) moving = parallax_;
+    if (p.particle >= 0)
+        moving = parallax_ || particle_moving_[static_cast<std::size_t>(p.particle)];
     Vec3 color = parse_vec3(image.color.resolve(values_), {1, 1, 1});
     float alpha = image.alpha.resolve_float(values_, 1);
     float brightness = image.brightness.resolve_float(values_, 1);
@@ -827,7 +924,7 @@ void SceneRenderer::fill_block(Draw& draw) {
         }
         write(block, u, floats_of(value));
         if (!u.material.empty()) {
-            if (auto it = p.bound.find(u.material); it != p.bound.end() && it->second.animated()) {
+            if (auto it = p.bound.find(u.material); it != p.bound.end() && it->second.live()) {
                 Dynamic d{Dynamic::What::timeline, u.offset};
                 d.bound = &it->second;
                 d.uniform = &u;
@@ -889,7 +986,11 @@ void SceneRenderer::fill_block(Draw& draw) {
         } else if (n == "g_Color4") {
             if (material) {
                 vec({color[0] * brightness, color[1] * brightness, color[2] * brightness, alpha});
-                if (image.alpha.animated()) {
+                if (image.color.live() || image.brightness.live()) {
+                    Dynamic d{Dynamic::What::color4, u.offset};
+                    d.image = &image;
+                    draw.dynamics.push_back(d);
+                } else if (image.alpha.live()) {
                     // Only the alpha moves; it is the fourth component.
                     Dynamic d{Dynamic::What::alpha, u.offset + 12};
                     d.bound = &image.alpha;
@@ -900,15 +1001,25 @@ void SceneRenderer::fill_block(Draw& draw) {
             }
         } else if (material && n == "g_Color") {
             vec({color[0], color[1], color[2]});
+            if (image.color.live()) {
+                Dynamic d{Dynamic::What::color, u.offset};
+                d.image = &image;
+                draw.dynamics.push_back(d);
+            }
         } else if (material && (n == "g_UserAlpha" || n == "g_Alpha")) {
             vec({alpha});
-            if (image.alpha.animated()) {
+            if (image.alpha.live()) {
                 Dynamic d{Dynamic::What::alpha, u.offset};
                 d.bound = &image.alpha;
                 draw.dynamics.push_back(d);
             }
         } else if (material && n == "g_Brightness") {
             vec({brightness});
+            if (image.brightness.live()) {
+                Dynamic d{Dynamic::What::brightness, u.offset};
+                d.image = &image;
+                draw.dynamics.push_back(d);
+            }
         } else if (n.starts_with("g_Texture") && n.size() > 9 && std::isdigit(n[9])) {
             std::size_t slot = static_cast<std::size_t>(n[9] - '0');
             std::string rest = n.substr(10);
@@ -916,7 +1027,7 @@ void SceneRenderer::fill_block(Draw& draw) {
             const PlanTexture& t = p.textures[slot];
             float tw = 1, th = 1, iw = 1, ih = 1, levels = 1;
             if (t.kind == PlanTexture::Kind::file) {
-                const SceneTexture& tex = assets_->texture(t.file);
+                const SceneTexture& tex = texture_of(t.file);
                 tw = static_cast<float>(tex.tex_width);
                 th = static_cast<float>(tex.tex_height);
                 iw = static_cast<float>(tex.img_width);
@@ -953,7 +1064,12 @@ math::Mat4 SceneRenderer::particle_model(int particle, const FrameInputs& inputs
     float dy = (inputs.parallax[1] - 0.5f) * parallax_amount_ * object.parallax_depth[1] *
                canvas[1] * 0.2f;
     if (!parallax_) dx = dy = 0;
-    return math::Mat4::translate(dx, dy, 0) * particle_models_[static_cast<std::size_t>(particle)];
+    math::Mat4 base = particle_models_[static_cast<std::size_t>(particle)];
+    if (particle_moving_[static_cast<std::size_t>(particle)]) {
+        std::vector<int> visiting;
+        base = particle_matrix(particle, visiting, inputs.time);
+    }
+    return math::Mat4::translate(dx, dy, 0) * base;
 }
 
 math::Mat4 SceneRenderer::parallax_model(int object, const FrameInputs& inputs) const {
@@ -987,6 +1103,23 @@ void SceneRenderer::transition(VkCommandBuffer cmd, Image& image, VkImageLayout 
 void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameInputs& inputs) {
     if (stale_ || extent.width != extent_.width || extent.height != extent_.height) {
         build(extent);
+    }
+    if (scripts_) {
+        // The scripts run first: what they write this frame is drawn this frame. What
+        // changes the plan (visibility, a text) rebuilds it before the draws.
+        ScriptFrame f = script_frame(inputs);
+        if (!scripts_started_) {
+            scripts_->start(values_, f);
+            scripts_started_ = true;
+        }
+        bool down_edge = (inputs.buttons & 1u) != 0 && (last_buttons_ & 1u) == 0;
+        bool up_edge = (inputs.buttons & 1u) == 0 && (last_buttons_ & 1u) != 0;
+        last_buttons_ = inputs.buttons;
+        scripts_->frame(values_, f);
+        if (scripts_->uses_pointer()) scripts_->cursor(values_, f, down_edge, up_edge);
+        for (int id : scripts_->take_changed_texts()) update_text(id, inputs.time);
+        if (scripts_->structure_version() != built_structure_) stale_ = true;
+        if (stale_) build(extent);
     }
     if (scene_.image == VK_NULL_HANDLE || !uniforms_) return;
 
@@ -1039,6 +1172,24 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
                                   : 1.0f;
                     if (d.offset + 4 <= draw.block.size()) {
                         std::memcpy(draw.block.data() + d.offset, &a, 4);
+                    }
+                    break;
+                }
+                case Dynamic::What::color4:
+                case Dynamic::What::color:
+                case Dynamic::What::brightness: {
+                    const ImageObject& im = *d.image;
+                    Vec3 c = parse_vec3(im.color.at(values_, inputs.time), {1, 1, 1});
+                    nlohmann::json bj = im.brightness.at(values_, inputs.time);
+                    float b = bj.is_number() ? bj.get<float>() : 1.0f;
+                    nlohmann::json aj = im.alpha.at(values_, inputs.time);
+                    float a = aj.is_number() ? aj.get<float>() : 1.0f;
+                    if (d.what == Dynamic::What::color4) {
+                        put({c[0] * b, c[1] * b, c[2] * b, a});
+                    } else if (d.what == Dynamic::What::color) {
+                        put({c[0], c[1], c[2]});
+                    } else {
+                        put({b});
                     }
                     break;
                 }
