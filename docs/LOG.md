@@ -152,8 +152,12 @@ Frieren's legs; both are whole now.
 ### Shaders across the whole Workshop folder
 
 `we-inspect <item> --shaders` over all 107 scene items installed here: 3079 passes, 2996
-compile (97.3 %), 83 fail in 25 items, and one item does not get through the reader. The
-failures are the next work on the shader dialect.
+compile (97.3 %), 83 fail in 25 items, and one item does not get through the reader.
+
+After the dialect work of the same day (writable stage inputs, unbalanced `#endif`, HLSL's
+implicit conversions, FORMATS.md 8): 3031 compile (98.4 %), 48 fail. No scene compiles
+fewer passes than before any of it, and the five test scenes render the same mean colour as
+before (Frieren off by one step in one channel: its water moves between the two shots).
 
 ### Left out or different from the plan
 
@@ -256,8 +260,12 @@ Frieren's legs; both are whole now.
 ### Shaders across the whole Workshop folder
 
 `we-inspect <item> --shaders` over all 107 scene items installed here: 3079 passes, 2996
-compile (97.3 %), 83 fail in 25 items, and one item does not get through the reader. The
-failures are the next work on the shader dialect.
+compile (97.3 %), 83 fail in 25 items, and one item does not get through the reader.
+
+After the dialect work of the same day (writable stage inputs, unbalanced `#endif`, HLSL's
+implicit conversions, FORMATS.md 8): 3031 compile (98.4 %), 48 fail. No scene compiles
+fewer passes than before any of it, and the five test scenes render the same mean colour as
+before (Frieren off by one step in one channel: its water moves between the two shots).
 
 ### Left out or different from the plan
 

@@ -21,7 +21,7 @@ namespace glint::scene {
 namespace {
 
 // Bump when the rewriting changes, so cached SPIR-V from older rules is not reused.
-constexpr const char* rewrite_version = "glint-shader-3";
+constexpr const char* rewrite_version = "glint-shader-4";
 
 // HLSL habits of the dialect, as macros the preprocessor applies.
 constexpr const char* compat = R"(#define GLSL 1
@@ -54,7 +54,9 @@ constexpr const char* compat = R"(#define GLSL 1
 #define CAST3(x) (vec3(x))
 #define CAST4(x) (vec4(x))
 #define CAST3X3(x) (mat3(x))
-#define max(x, y) max(y, x)
+#define max glint_max
+#define min glint_min
+#define pow glint_pow
 #define sample glint_sample
 #define input glint_input
 #define output glint_output
@@ -67,6 +69,128 @@ constexpr const char* compat = R"(#define GLSL 1
 #define patch glint_patch
 #define resource glint_resource
 )";
+
+// HLSL's max, min and pow take a scalar on either side of a vector; GLSL's only take it on the
+// right (max, min) or not at all (pow). The dialect's calls go to these, by macro.
+std::string overload_helpers() {
+    std::string out;
+    const char* types[] = {"vec2", "vec3", "vec4"};
+    for (const char* f : {"max", "min"}) {
+        out += std::string("float glint_") + f + "(float a, float b) { return " + f + "(a, b); }\n";
+        out += std::string("int glint_") + f + "(int a, int b) { return " + f + "(a, b); }\n";
+        for (const char* t : types) {
+            std::string T = t;
+            out += T + " glint_" + f + "(" + T + " a, " + T + " b) { return " + f + "(a, b); }\n";
+            out += T + " glint_" + f + "(" + T + " a, float b) { return " + f + "(a, b); }\n";
+            out += T + " glint_" + f + "(float a, " + T + " b) { return " + f + "(b, a); }\n";
+        }
+    }
+    out += "float glint_pow(float a, float b) { return pow(a, b); }\n";
+    for (const char* t : types) {
+        std::string T = t;
+        out += T + " glint_pow(" + T + " a, " + T + " b) { return pow(a, b); }\n";
+        out += T + " glint_pow(" + T + " a, float b) { return pow(a, " + T + "(b)); }\n";
+        out += T + " glint_pow(float a, " + T + " b) { return pow(" + T + "(a), b); }\n";
+    }
+    return out;
+}
+
+bool convertible(const std::string& type) {
+    static const std::set<std::string> types = {
+        "float", "int",   "uint",  "bool",  "vec2",  "vec3",  "vec4",  "ivec2",
+        "ivec3", "ivec4", "uvec2", "uvec3", "uvec4", "bvec2", "bvec3", "bvec4"};
+    return types.contains(type);
+}
+
+// True if the expression has a comma outside parentheses (a declarator list).
+bool top_level_comma(std::string_view expr) {
+    int depth = 0;
+    for (char c : expr) {
+        if (c == '(' || c == '[') ++depth;
+        if (c == ')' || c == ']') --depth;
+        if (c == ',' && depth == 0) return true;
+    }
+    return false;
+}
+
+// HLSL converts implicitly where GLSL wants a constructor: a scalar into a vector, a vector
+// into a shorter one, bool into float, float into int. glint wraps the right-hand side of
+// initialised declarations and plain assignments in a constructor of the target type, which
+// does all of these, and the condition of an if in bool(). Types come from a table of the
+// stage's globals and, per function, its parameters and locals.
+void hlsl_conversions(std::string& body, std::map<std::string, std::string> globals) {
+    static const std::regex declaration(
+        R"(^(\s*)((?:const\s+)?)(float|int|uint|bool|[biu]?vec[234])\s+(\w+)\s*=\s*(.+);\s*$)");
+    static const std::regex assignment(R"(^(\s*)(\w+)\s*=\s*([^=].*);\s*$)");
+    static const std::regex function(R"(^\s*(\w+)\s+(\w+)\s*\(([^)]*)\)\s*\{?\s*$)");
+    static const std::regex parameter(R"((?:in|out|inout|const|\s)*\b(\w+)\s+(\w+)\s*$)");
+    std::istringstream in(body);
+    std::string out, line;
+    std::map<std::string, std::string> locals;
+    int depth = 0;
+    while (std::getline(in, line)) {
+        std::smatch m;
+        if (depth == 0 && std::regex_match(line, m, function)) {
+            locals.clear();
+            std::string params = m[3].str();
+            std::size_t start = 0;
+            while (start <= params.size()) {
+                std::size_t end = params.find(',', start);
+                if (end == std::string::npos) end = params.size();
+                std::string one = params.substr(start, end - start);
+                std::smatch p;
+                if (std::regex_search(one, p, parameter)) locals[p[2].str()] = p[1].str();
+                start = end + 1;
+            }
+        } else if (std::regex_match(line, m, declaration) && !top_level_comma(m[5].str())) {
+            std::string type = m[3].str();
+            (depth == 0 ? globals : locals)[m[4].str()] = type;
+            line = m[1].str() + m[2].str() + type + " " + m[4].str() + " = " + type + "(" +
+                   m[5].str() + ");";
+        } else if (depth > 0 && std::regex_match(line, m, assignment)) {
+            std::string name = m[2].str();
+            auto it = locals.find(name);
+            std::string type = it != locals.end() ? it->second : "";
+            if (type.empty()) {
+                if (auto g = globals.find(name); g != globals.end()) type = g->second;
+            }
+            if (convertible(type) && !top_level_comma(m[3].str())) {
+                line = m[1].str() + name + " = " + type + "(" + m[3].str() + ");";
+            }
+        }
+        // if (x) with a float x: HLSL's truthiness.
+        for (std::size_t at = line.find("if"); at != std::string::npos;
+             at = line.find("if", at + 2)) {
+            bool word = (at == 0 || !(std::isalnum(static_cast<unsigned char>(line[at - 1])) ||
+                                      line[at - 1] == '_'));
+            std::size_t open = line.find_first_not_of(" \t", at + 2);
+            if (!word || open == std::string::npos || line[open] != '(') continue;
+            int level = 0;
+            std::size_t close = std::string::npos;
+            for (std::size_t i = open; i < line.size(); ++i) {
+                if (line[i] == '(') ++level;
+                if (line[i] == ')' && --level == 0) {
+                    close = i;
+                    break;
+                }
+            }
+            if (close == std::string::npos) continue;
+            line.insert(close, ")");
+            line.insert(open + 1, "bool(");
+            at = close + 6;
+        }
+        // Locals are scoped by function; a declaration seen at any depth stays until the
+        // function ends, which is close enough for the shaders seen.
+        for (char c : line) {
+            if (c == '{') ++depth;
+            if (c == '}') --depth;
+        }
+        if (depth == 0) locals.clear();
+        out += line;
+        out += '\n';
+    }
+    body = std::move(out);
+}
 
 std::once_flag glslang_once;
 
@@ -374,6 +498,17 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
         split(expanded, vertex, stages[i]);
     }
 
+    for (int i = 0; i < 2; ++i) {
+        std::map<std::string, std::string> globals;
+        for (const auto* list : {&stages[i].uniforms, &stages[i].inputs, &stages[i].outputs}) {
+            for (const auto& d : *list) {
+                if (d.array.empty()) globals[d.name] = d.type;
+            }
+        }
+        if (i == 1) globals["glint_FragColor"] = "vec4";
+        hlsl_conversions(stages[i].body, globals);
+    }
+
     // One uniform block shared by both stages, std140, in first-seen order.
     std::string block;
     std::uint32_t offset = 0;
@@ -408,7 +543,7 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
         }
     }
     result.block_size = round_up(offset, 16);
-    std::string header = "#version 450\n";
+    std::string header = "#version 450\n" + overload_helpers();
     if (!block.empty()) {
         header += "layout(std140, set = 0, binding = 0) uniform GlintUniforms {\n" + block + "};\n";
     }

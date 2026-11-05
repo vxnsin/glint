@@ -230,6 +230,18 @@ Found on the corpus:
   with zeros.
 - `#require LightingV1` provides `PerformLighting_V1`, called only under `#if LIGHTING`;
   until lights in M5 the line is dropped.
+- Shaders write to their own inputs (HLSL allows it): attributes and varyings arrive under
+  another name and are copied into globals of the shader's name at the top of `main`.
+- An `#endif` too many (or too few) passes in Wallpaper Engine; glint drops stray ones and
+  closes open blocks at the end.
+- HLSL's implicit conversions: a scalar into a vector, a vector into a shorter one, bool into
+  float, float into int. glint wraps the right-hand side of initialised declarations and
+  plain assignments in a constructor of the target type (types from the stage's globals and
+  each function's parameters and locals), and an `if` condition in `bool()`. `max`, `min`
+  and `pow` get overloads that take a scalar on either side of a vector.
+- Over the 107 scene items installed on the author's machine, 3031 of 3079 passes compile.
+  What is left is mostly arithmetic between mismatched vectors (`vec3 * vec2`) and `%` on
+  floats, which need real type information to rewrite.
 
 Built-in uniforms glint provides: `g_ModelMatrix`, `g_ViewProjectionMatrix`,
 `g_ModelViewProjectionMatrix`, `g_ModelViewProjectionMatrixInverse`, `g_EffectTextureProjectionMatrix`,
