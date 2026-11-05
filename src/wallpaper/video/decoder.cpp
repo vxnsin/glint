@@ -12,6 +12,7 @@ extern "C" {
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <cstring>
 
 #include "core/log.hpp"
@@ -94,6 +95,7 @@ struct Decoder::State {
     double time_base = 0;
     double frame_duration = 1.0 / 30;
     double last_pts = 0;
+    double first_pts = -1;  // of the current pass, -1 until its first frame
 
     ~State() {
         if (sws != nullptr) sws_freeContext(sws);
@@ -213,7 +215,9 @@ bool Decoder::decode_one() {
         if (r != AVERROR(EAGAIN)) {
             if (r == AVERROR_EOF) {
                 // The end: start over, with the timeline carried on.
-                loop_offset_ = s.last_pts + s.frame_duration;
+                // The next pass starts one frame after this one ended.
+                loop_offset_ += s.last_pts + s.frame_duration - std::max(s.first_pts, 0.0);
+                s.first_pts = -1;
                 av_seek_frame(s.format, s.stream, 0, AVSEEK_FLAG_BACKWARD);
                 avcodec_flush_buffers(s.codec);
                 continue;
@@ -233,6 +237,7 @@ bool Decoder::decode_one() {
                      ? static_cast<double>(s.frame->best_effort_timestamp) * s.time_base
                      : s.last_pts + s.frame_duration;
     s.last_pts = pts;
+    if (s.first_pts < 0) s.first_pts = pts;
 
     if (s.frame->format == AV_PIX_FMT_VAAPI && prime_.load()) {
         // Mapped, not copied: the mapping holds the surface until the picture is dropped.
@@ -242,7 +247,7 @@ bool Decoder::decode_one() {
         if (av_hwframe_map(mapped, s.frame, AV_HWFRAME_MAP_READ) == 0 &&
             describe(*reinterpret_cast<const AVDRMFrameDescriptor*>(mapped->data[0]), prime)) {
             Picture p;
-            p.time = loop_offset_ + pts;
+            p.time = loop_offset_ + pts - s.first_pts;
             p.width = static_cast<std::uint32_t>(s.frame->width);
             p.height = static_cast<std::uint32_t>(s.frame->height);
             p.prime = prime;
@@ -266,7 +271,7 @@ bool Decoder::decode_one() {
         source = s.software;
     }
     Picture p;
-    p.time = loop_offset_ + pts;
+    p.time = loop_offset_ + pts - s.first_pts;
     p.width = static_cast<std::uint32_t>(source->width);
     p.height = static_cast<std::uint32_t>(source->height);
     std::uint32_t cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
