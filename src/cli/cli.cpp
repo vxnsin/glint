@@ -194,7 +194,13 @@ int run(int argc, char** argv) {
             if (eq == std::string_view::npos) return usage_error("options are key=value");
             std::string key(args[i].substr(0, eq));
             std::string value(args[i].substr(eq + 1));
-            if (key == "duration" || key == "fps") {
+            if (key == "volume") {
+                try {
+                    options[key] = std::stod(value);
+                } catch (...) {
+                    return usage_error("volume is a number from 0 to 1");
+                }
+            } else if (key == "duration" || key == "fps") {
                 try {
                     options[key] = std::stoi(value);
                 } catch (...) {

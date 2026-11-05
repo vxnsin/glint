@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "audio/player.hpp"
 #include "wallpaper/scene/renderer.hpp"
 #include "wallpaper/wallpaper.hpp"
 
@@ -59,6 +60,9 @@ public:
     bool wants_audio() const override;
     void audio_spectrum(const float* left, const float* right) override;
 
+    void pause() override;
+    void resume() override;
+
     bool wants_cursor() const override;
     void cursor(const Cursor& cursor) override;
 
@@ -78,6 +82,9 @@ private:
     float parallax_[2] = {0.5f, 0.5f};
     double last_time_ = 0;
     std::array<float, 64> audio_left_{}, audio_right_{};
+    void start_sound();
+    std::vector<File> sound_files_;  // what the player reads from, kept alive
+    std::unique_ptr<audio::Player> player_;
     bool audio_ = false;
 };
 

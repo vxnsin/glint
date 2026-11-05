@@ -67,6 +67,12 @@ compositor's text for the output. `state` is `running`, `paused` (with `reason`:
   (`on`, `off`; the capture for reactive scenes), `properties` (initial values, same as
   `props set`)
 
+Built so far for scenes: `volume` (0 to 1, default 0: a scene is silent unless asked, so a
+login does not start music) and `mute` play the scene's sound objects through one PipeWire
+stream; `properties`. Two outputs showing the same scene play its sound once. A paused
+output's sound pauses with it and resumes where it was. Sound objects marked `startsilent`
+wait for a script (M5).
+
 The reply comes when every addressed output has presented its first frame with the new
 wallpaper (an output that is paused counts once the new wallpaper is loaded); `load_ms` is
 the time from the request to that point. The crossfade, if any, runs on after the reply. The

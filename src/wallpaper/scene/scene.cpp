@@ -436,8 +436,20 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
             ++out.skipped["particle"];
         } else if (object.contains("text")) {
             ++out.skipped["text"];
-        } else if (object.contains("sound")) {
-            ++out.skipped["sound"];
+        } else if (object.contains("sound") && object["sound"].is_array()) {
+            SoundObject sound;
+            sound.id = object.value("id", next_id);
+            for (const auto& f : object["sound"]) {
+                if (f.is_string()) sound.files.push_back(f.get<std::string>());
+            }
+            sound.mode = str(object, "playbackmode", "loop");
+            sound.volume = object.contains("volume") ? parse_bound(object["volume"]) : Bound{1.0};
+            sound.visible =
+                object.contains("visible") ? parse_bound(object["visible"]) : Bound{true};
+            sound.min_time = number(object, "mintime", 1);
+            sound.max_time = std::max(sound.min_time, number(object, "maxtime", 5));
+            sound.start_silent = boolean(object, "startsilent", false);
+            if (!sound.files.empty()) out.sounds.push_back(std::move(sound));
         } else if (object.contains("light")) {
             ++out.skipped["light"];
         } else if (object.contains("model")) {

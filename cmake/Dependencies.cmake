@@ -11,7 +11,8 @@ find_package(Threads REQUIRED)
 
 pkg_check_modules(WAYLAND REQUIRED IMPORTED_TARGET wayland-client)
 pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil libswscale
+    libswresample)
 pkg_check_modules(LZ4 REQUIRED IMPORTED_TARGET liblz4)
 
 # VMA: one translation unit holds the implementation. It loads Vulkan through volk, so no

@@ -43,6 +43,8 @@ nlohmann::json options_json(const Options& options) {
         {"transition", options.transition},
         {"duration", options.duration_ms},
     };
+    if (options.volume > 0) json["volume"] = options.volume;
+    if (options.mute) json["mute"] = true;
     if (options.properties.is_object() && !options.properties.empty()) {
         json["properties"] = options.properties;
     }
@@ -75,6 +77,19 @@ std::string parse_options(const nlohmann::json& json, Options& options) {
         } else if (key == "properties") {
             if (!value.is_object()) return "properties is an object";
             options.properties = value;
+        } else if (key == "volume") {
+            if (!value.is_number() || value.get<double>() < 0 || value.get<double>() > 1) {
+                return "volume is 0 to 1";
+            }
+            options.volume = value.get<float>();
+        } else if (key == "mute") {
+            if (value.is_boolean()) {
+                options.mute = value.get<bool>();
+            } else if (value == "on" || value == "off") {
+                options.mute = value == "on";
+            } else {
+                return "mute is on or off";
+            }
         } else if (key == "fps") {
             // Accepted for every kind; a still picture has no use for it.
             if (!value.is_number()) return "fps is a number";

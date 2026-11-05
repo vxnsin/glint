@@ -147,6 +147,16 @@ struct ImageObject {
     std::vector<Effect> effects;
 };
 
+struct SoundObject {
+    int id = 0;
+    std::vector<std::string> files;
+    std::string mode = "loop";  // loop, random, single
+    Bound volume;
+    Bound visible;
+    float min_time = 1, max_time = 5;
+    bool start_silent = false;  // plays only when a script starts it (M5)
+};
+
 struct SceneGeneral {
     Vec2 ortho{1920, 1080};  // orthogonalprojection, the canvas
     Bound clear_color;
@@ -162,6 +172,7 @@ struct SceneGeneral {
 struct SceneDesc {
     SceneGeneral general;
     std::vector<ImageObject> images;  // in drawing order
+    std::vector<SoundObject> sounds;
     // Objects of kinds a later milestone draws: particle, text, sound, light, model.
     std::map<std::string, int> skipped;
     std::vector<std::string> warnings;

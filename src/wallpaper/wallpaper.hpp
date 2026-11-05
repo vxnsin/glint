@@ -48,6 +48,8 @@ struct Options {
     std::string transition = "fade";  // "fade" or "none"
     int duration_ms = 300;
     nlohmann::json properties;  // scene: values to start with, by property name
+    float volume = 0;           // scene sound, 0 to 1; silent unless asked for
+    bool mute = false;
 };
 
 // Parses "fill", "fit", ...; false if unknown.

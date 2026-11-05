@@ -76,6 +76,7 @@ if(GLINT_PLATFORM)
     target_sources(glint PRIVATE
         src/daemon.cpp
         src/audio/capture.cpp
+        src/audio/player.cpp
         src/input/hyprland.cpp
         src/cli/cli.cpp
         src/core/loop.cpp

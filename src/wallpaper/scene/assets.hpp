@@ -78,6 +78,9 @@ public:
     VkSampler sampler(bool clamp, bool nearest) const;
     std::uint64_t memory() const;
     bool animated() const { return animated_; }
+    const Vfs& vfs() const { return vfs_; }
+    // The one wallpaper that plays the scene's sound, so two outputs do not play it twice.
+    const void* sound_owner = nullptr;
 
 private:
     SceneAssets(gpu::Context& gpu, gpu::StagingRing& staging, Vfs vfs)

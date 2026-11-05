@@ -81,7 +81,56 @@ void SceneCache::request(const std::filesystem::path& item, Callback callback) {
 Scene::Scene(std::filesystem::path path, const Options& options, Services& services)
     : path_(std::move(path)), options_(options), services_(services) {}
 
-Scene::~Scene() = default;
+Scene::~Scene() {
+    player_.reset();
+    if (assets_ && assets_->sound_owner == this) assets_->sound_owner = nullptr;
+}
+
+void Scene::start_sound() {
+    float volume = options_.mute ? 0.0f : options_.volume;
+    if (volume <= 0 || assets_->sound_owner != nullptr) return;
+    const Values& values = renderer_->values();
+    std::vector<audio::TrackSpec> tracks;
+    for (const SoundObject& sound : assets_->scene().sounds) {
+        // Silent at start means a script starts it (M5).
+        if (sound.start_silent || !sound.visible.resolve_bool(values, true)) continue;
+        audio::TrackSpec spec;
+        spec.mode = sound.mode;
+        spec.volume = sound.volume.resolve_float(values, 1);
+        spec.min_pause = sound.min_time;
+        spec.max_pause = sound.max_time;
+        std::size_t first = sound_files_.size();
+        for (const std::string& path : sound.files) {
+            auto file = assets_->vfs().read(path);
+            if (!file) {
+                log::warn("sound {}: not found", path);
+                continue;
+            }
+            sound_files_.push_back(std::move(*file));
+        }
+        // Moving a File keeps its bytes where they are, so the views stay valid.
+        for (std::size_t i = first; i < sound_files_.size(); ++i) {
+            spec.files.push_back(sound_files_[i].bytes());
+        }
+        if (!spec.files.empty()) tracks.push_back(std::move(spec));
+    }
+    if (tracks.empty()) return;
+    player_ = std::make_unique<audio::Player>();
+    if (std::string error = player_->start(std::move(tracks), volume); !error.empty()) {
+        log::warn("sound: {}", error);
+        player_.reset();
+        return;
+    }
+    assets_->sound_owner = this;
+}
+
+void Scene::pause() {
+    if (player_) player_->set_paused(true);
+}
+
+void Scene::resume() {
+    if (player_) player_->set_paused(false);
+}
 
 void Scene::load(std::function<void(std::string error)> done) {
     std::weak_ptr<bool> alive = alive_;
@@ -103,6 +152,7 @@ void Scene::load(std::function<void(std::string error)> done) {
                 renderer_->set_values(values);
             }
             last_time_ = local_day_seconds();
+            start_sound();
             done({});
         });
 }
