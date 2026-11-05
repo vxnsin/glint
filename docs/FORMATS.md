@@ -147,7 +147,27 @@ object field / structural (texture variant, visibility) and applies changes with
 
 `models/x.json` (or in assets): `material` (path to material json), `autosize`, `width`,
 `height`, `fullscreen`, `passthrough`, `puppet` (path to the puppet mesh, M5). The image
-object's `size` is the model's size unless overridden.
+object's `size` is the model's size unless overridden. An explicit size wins even when it is
+`0 0`: such a layer shows nothing (a music player's options panel in one scene, a solid
+white layer that otherwise covered the screen).
+
+The two `passthrough` models of the assets show the scene behind them through their effects:
+
+- `util/fullscreenlayer`: the whole frame (`_rt_FullFrameBuffer`) is the layer's picture,
+  the `passthrough` shader draws the result back over the canvas.
+- `util/composelayer`: the `composelayer` vertex shader projects the object's quad with the
+  scene matrix to find the patch of the frame behind it and fills the whole target with
+  that patch. So it is the material pass itself that fills the layer (drawn into the layer
+  target), and after the effects the result is drawn back with `genericimage2` at the
+  object's place.
+
+Without visible effects a passthrough layer adds nothing and is not drawn; drawn into the
+scene, the composelayer shader stretched the 4 x 4 patch under a cursor helper over the
+whole screen.
+
+`colorBlendMode` (1 to 32, the modes of `common_blending.h`) becomes the `BLENDMODE` combo
+of the object's material passes; the image shaders then read the frame behind them from
+their `_rt_FullFrameBuffer` sampler and mix it themselves.
 
 ## 6. Material json (M2)
 
@@ -322,9 +342,10 @@ from the object (cursor-following ones from `g_PointerPosition`).
   `mirror` or `single`), f32 fps, u32 length in frames, u32 zero, u32 track count; per track
   (one per bone, in bone order) u32 zero, u32 byte size, then length + 1 keyframes of nine
   floats: translation, rotation (radians about x, y, z) and scale, the bone's transform
-  relative to its parent. Like an object's `angles`, z turns clockwise on the canvas (so it
-  is negated on glint's y-up canvas); with the other sign Yosuga's hair strands bend against
-  their curve and their thin triangle strips fold into one-pixel lines. After the tracks a few zero bytes (0, 0, 5, 6, 30, 31 by version)
+  relative to its parent. The z rotation turns the same way as the bone's rest matrix in
+  `MDLS`: in every puppet of the corpus with turned bones at rest, the first keyframe's
+  angle equals the rest matrix's angle, atan2(m[1], m[0]), so it is applied as it is. An
+  earlier negation made Lucy's 220 turned bones flip and the figure fall apart. After the tracks a few zero bytes (0, 0, 5, 6, 30, 31 by version)
   and a u32 count of events, each f32 time and a JSON string (`{"frame": 105, "name":
   "changeAnimation"}`). The last track in every file read so far ends exactly at the end
   offset.

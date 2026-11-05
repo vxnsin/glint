@@ -635,3 +635,30 @@ different header and vertex stride (52 bytes without normal and tangent, 84 with
 more), which the reader had taken for the usual 80. The layouts are told apart by their
 flags now (docs/FORMATS.md, 10), with a search over plausible strides for flags not seen
 before. Lucy and her cat, and Gojo, are puppets again.
+
+### The contact sheets
+
+A headless render of every safe-rated scene, laid out as contact sheets next to the
+previews, showed six scenes clearly wrong. Each was a general fault:
+
+- Hu Tao (2470680861) was one brown surface: a 4 x 4 compose layer that follows the cursor
+  has no effects, and its shader fills the target with the patch behind it. A passthrough
+  layer without effects is now not drawn at all.
+- Ellen (3290874632) showed the picture three times, squeezed: a compose layer with effects
+  had copied the whole frame into its layer instead of the patch behind it. The material
+  pass now fills the layer and `genericimage2` draws the result back.
+- Ai Hoshino (2983739644) was white: a solid layer of size `0 0` had fallen back to the
+  canvas size.
+- Lucy (3521337568) fell apart: bone keyframe rotations were negated against the rest
+  pose. A check over all 66 puppets of the safe corpus found the keyframe angle equal to the
+  rest angle in every rig where it can be told (Lucy, Gojo, Martinez, XME, Jane); Yosuga's
+  bones rest unturned and its hair looks the same either way. Her black wedge was the
+  atmosphere over the Earth, an object with `colorBlendMode` 7, which glint had read and never
+  used; it is now the shaders' `BLENDMODE` combo.
+- Reze (3577990983) was not a fault: an opening animation fades a black layer out over
+  three seconds, longer than the render ran.
+
+The daemon also stopped drawing on one output for good after a pause right at its start: a
+frame callback asked for before the pause never came, and no frame is drawn while one is
+pending. A resume now gives up on a pending callback and draws.
+

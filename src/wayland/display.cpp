@@ -269,6 +269,12 @@ void Output::request_frame() {
     wl_callback_add_listener(frame_, &OutputListeners::frame, this);
 }
 
+void Output::abandon_frame() {
+    if (frame_ == nullptr) return;
+    wl_callback_destroy(frame_);
+    frame_ = nullptr;
+}
+
 void Output::apply_surface_state() {
     if (surface_ == nullptr || !configured_) return;
     if (viewport_ != nullptr) {

@@ -684,9 +684,11 @@ void Daemon::pause_changed(Screen& entry, std::uint32_t before) {
             finish(entry.request, {});
             entry.request.reset();
         }
-    } else if (entry.current) {
-        entry.current->resume();
+    } else {
+        entry.output->abandon_frame();
         entry.dirty = true;  // the frame it would have drawn while paused
+        if (entry.current) entry.current->resume();
+        loop_.wake();
     }
 }
 

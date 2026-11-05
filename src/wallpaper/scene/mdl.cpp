@@ -50,11 +50,12 @@ math::Mat4 matrix_of(const float m[16]) {
 }
 
 math::Mat4 transform_of(const Mesh::Keyframe& k) {
-    // Like an object's angles: z turns clockwise on the canvas, so it is negated for the
-    // y-up canvas. With the sign the other way, hair strands bend against their curve and
-    // their thin triangle strips fold into lines.
+    // The keyframe angles turn the same way as the bones' rest matrices: in every puppet of
+    // the corpus whose rest pose has turned bones (Lucy's 220 of them among others), the first
+    // keyframe's z rotation equals the rest matrix's angle with this sign, and with the other
+    // one every turned bone flips and the figure falls apart.
     return math::Mat4::translate(k.translation[0], k.translation[1], k.translation[2]) *
-           math::Mat4::rotate_z(-k.rotation[2]) * math::Mat4::rotate_y(k.rotation[1]) *
+           math::Mat4::rotate_z(k.rotation[2]) * math::Mat4::rotate_y(k.rotation[1]) *
            math::Mat4::rotate_x(k.rotation[0]) *
            math::Mat4::scale(k.scale[0], k.scale[1], k.scale[2]);
 }

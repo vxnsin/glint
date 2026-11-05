@@ -52,8 +52,9 @@ Vec2 object_size(const ImageObject& image, const SceneGeneral& general, const Va
         // The text block, as rasterised (the texture knows its canvas units).
         if (auto s = texture_size("_text_" + std::to_string(image.id))) return *s;
     }
-    Vec2 size = parse_vec2(image.size.resolve(values), {0, 0});
-    if (size[0] > 0 && size[1] > 0) return size;
+    // An explicit size wins, zero included: a layer sized 0 x 0 shows nothing.
+    Vec2 size = parse_vec2(image.size.resolve(values), {-1, -1});
+    if (size[0] >= 0 && size[1] >= 0) return size;
     if (image.model_size[0] > 0 && image.model_size[1] > 0) return image.model_size;
     if (!image.material.passes.empty() && !image.material.passes[0].textures.empty() &&
         image.material.passes[0].textures[0]) {
@@ -257,6 +258,10 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
             plan.warnings.push_back(image.name + ": no material");
             return;
         }
+        if (Vec2 s = object_size(image, scene.general, values, texture_size);
+            !image.fullscreen && (s[0] <= 0 || s[1] <= 0)) {
+            return;
+        }
         int object = static_cast<int>(index);
         Geometry geometry = image.fullscreen ? Geometry::clip : Geometry::object;
 
@@ -281,8 +286,17 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
                 draw.object = object;
                 draw.request = {pass.shader, pass.combos, 0};
                 // A solid layer's shader draws its colour and nothing else; with effects it
-                // is the effects' result that must be drawn, tinted by the colour.
-                if (layer && pass.shader == "flat") draw.request = {"genericimage2", {}, 0};
+                // is the effects' result that must be drawn, tinted by the colour. A compose
+                // layer's shader samples the scene behind the object: once its effects have
+                // run, the result goes back as a plain picture.
+                if (layer && (pass.shader == "flat" || pass.shader == "composelayer")) {
+                    draw.request = {"genericimage2", {}, 0};
+                }
+                // The object's blend mode (multiply, screen, ...): the image shaders mix with
+                // the scene behind them themselves, switched on by the BLENDMODE combo.
+                if (image.color_blend_mode > 0) {
+                    draw.request.combos["BLENDMODE"] = image.color_blend_mode;
+                }
                 draw.blending = pass.blending;
                 draw.geometry = geometry;
                 draw.target = -1;
@@ -302,7 +316,10 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
         };
 
         if (effects.empty()) {
-            material_draws(std::nullopt);
+            // A passthrough model (a compose layer) shows the scene behind it through its
+            // effects; without any it adds nothing. Its shader would stretch the patch behind
+            // the quad over the whole target.
+            if (!image.passthrough) material_draws(std::nullopt);
             return;
         }
 
@@ -322,6 +339,21 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
         copy.textures[0] =
             texture_of(first.textures.empty() ? std::nullopt : first.textures[0], plan);
         copy.crop = copy.textures[0].kind == PlanTexture::Kind::file;
+        if (copy.textures[0].kind == PlanTexture::Kind::framebuffer && !image.fullscreen) {
+            // A compose layer: its material samples the scene behind the object's quad
+            // (composelayer's vertex shader projects the quad with the scene's matrix and
+            // fills the target), so the material pass itself fills the layer, not a copy of
+            // the whole frame.
+            copy.request = {first.shader, first.combos, 0};
+            copy.geometry = Geometry::object;
+            copy.blending = "normal";
+            copy.crop = false;
+            for (std::size_t i = 1; i < first.textures.size() && i < max_texture_slots; ++i) {
+                copy.textures[i] = texture_of(first.textures[i], plan);
+            }
+            copy.constants = first.constants;
+            copy.user = first.user_constants;
+        }
         plan.draws.push_back(std::move(copy));
         int current = a;
 
