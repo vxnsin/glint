@@ -233,10 +233,7 @@ bool SceneAssets::rasterize_text(const TextObject& text, const std::string& valu
 }
 
 void SceneAssets::read_text(const TextObject& text, const Values& values) {
-    nlohmann::json value = text.text.resolve(values);
-    std::string str = value.is_string() ? value.get<std::string>()
-                      : value.is_null() ? ""
-                                        : value.dump();
+    std::string str = text_value(text.text.resolve(values));
     PendingTexture pending;
     Vec2 center{0, 0};
     if (!rasterize_text(text, str, pending, center)) return;

@@ -168,8 +168,7 @@ int dump_texts(const Vfs& vfs, const SceneDesc& scene, const Values& values) {
     std::vector<std::string> warnings;
     for (const TextObject& text : scene.texts) {
         TextSpec spec;
-        nlohmann::json value = text.text.resolve(values);
-        spec.text = value.is_string() ? value.get<std::string>() : value.dump();
+        spec.text = text_value(text.text.resolve(values));
         spec.font = text.font;
         spec.pointsize = text.pointsize;
         spec.horizontal_align = text.horizontal_align;

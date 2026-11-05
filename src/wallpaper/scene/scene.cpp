@@ -483,6 +483,13 @@ bool parse_material(const Vfs& vfs, std::string_view path, Material& out,
     return true;
 }
 
+std::string text_value(const json& value) {
+    if (value.is_string()) return value.get<std::string>();
+    if (value.is_number_integer()) return std::to_string(value.get<long long>());
+    if (value.is_number()) return value.dump();
+    return {};
+}
+
 void bound_keys_begin(int start) {
     bound_keys = start;
 }

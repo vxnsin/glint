@@ -71,6 +71,9 @@ struct Bound {
     float resolve_float(const Values& values, float fallback) const;
 };
 Bound parse_bound(const nlohmann::json& json);
+// A text object's string from what its field resolved to: numbers as written, a boolean
+// or nothing as an empty string (a text bound to a label property shows nothing).
+std::string text_value(const nlohmann::json& value);
 // Keys for the bound fields parsed from here on (one scene's are consecutive from 0, a
 // layer a script creates later continues from the scene's bound_count).
 void bound_keys_begin(int start);

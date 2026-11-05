@@ -610,3 +610,11 @@ drawing the effects' result tinted by the layer's colour; the frame around the a
 came out purple as authored and the bars are gone until there is audio. One run of
 glint-render on this scene ended in a heap corruption that did not come back in several
 runs, with or without the sanitizer; noted here in case it shows again.
+
+### Two more from the headless pictures
+
+A terminal-styled scene showed a large "false": a text object bound to a property of the
+label type, whose value is a boolean; a text now shows nothing for a boolean and the number
+for a number. Its GIF window stayed empty because the GIF is a video texture (TEXB0003 with
+bit 5 of the flags), which the new mip-size check had refused as too short; the flag now
+counts, and the video itself still waits for M4.

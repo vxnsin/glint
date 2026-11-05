@@ -229,10 +229,7 @@ void SceneRenderer::update_text(int id, double time) {
     const SceneDesc& scene = scene_desc();
     for (const TextObject& text : scene.texts) {
         if (text.id != id) continue;
-        nlohmann::json value = text.text.at(values_, time);
-        std::string str = value.is_string() ? value.get<std::string>()
-                          : value.is_null() ? ""
-                                            : value.dump();
+        std::string str = text_value(text.text.at(values_, time));
         TextOverride over;
         if (!assets_->make_text(text, str, over.texture, over.center)) return;
         // The old texture goes once the frames that read it are done.

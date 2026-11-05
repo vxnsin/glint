@@ -103,8 +103,9 @@ std::string parse_tex(std::span<const std::byte> data, Tex& out) {
                 return "mip data runs past the end";
             }
             // The bytes a mip of this size takes in the format; an embedded file (PNG, JPEG)
-            // and a video are read by their own decoders and checked there.
-            if (!out.embedded() && !out.video) {
+            // and a video (TEXB0004's flag, or bit 5 of the header flags in older files)
+            // are read by their own decoders and checked there.
+            if (!out.embedded() && !out.video && (out.flags & 32u) == 0) {
                 std::uint64_t expect = 0;
                 auto blocks = [](std::int32_t n) {
                     return static_cast<std::uint64_t>((n + 3) / 4);
