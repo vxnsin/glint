@@ -485,3 +485,13 @@ Three scenes the user pointed at, each a general fault:
 Found on the way and fixed: alphafade defaults (particles popped out), the `rope`
 renderer (one ribbon through all particles, used by cursor trails), and a puppet's layer
 now holds the whole stored texture because mesh uvs run a little past the picture.
+
+### Yosuga once more
+
+The pieces the user saw flying about the hair are two things. The spiked strand ends in
+front of the sleeve are painted that way (the texture of 右边头发2 flares into points at the
+bottom) and the scene lists that bundle after the body, so it is drawn in front; that part
+is as authored. The torn, stretched look came from summing bone rotations down the chain;
+with joints following the parent but each bone keeping its own rotation the strands sway
+gently and stay whole. The remaining uncertainty is the exact sway, which a 192-pixel
+preview cannot settle.

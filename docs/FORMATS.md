@@ -312,8 +312,11 @@ from the object (cursor-following ones from `g_PointerPosition`).
   "changeAnimation"}`). The last track in every file read so far ends exactly at the end
   offset.
 - Skinning: vertex' = sum over its four bones of weight x global(pose) x inverse(global(rest))
-  x vertex, with global = the parent's global times the bone's local transform (translation,
-  then rotation z, y, x, then scale). glint does this on the CPU each frame; the posed
+  x vertex. A bone's global transform takes its joint through the parent's transform but
+  keeps its own rotation and scale: the chain does not sum rotations. Yosuga's hair strands
+  have six bones at about ten degrees each at the wave's peak; summed, the tip swept across
+  the body and the thin triangle strips tore into spikes, which the Workshop preview does not
+  show. This is read off the corpus, not a specification. glint does this on the CPU each frame; the posed
   vertices go into a buffer of their own.
 - An object's `animationlayers`: `animation` (id), `rate`, `blend`, `visible`, `additive`.
   The first visible layer gives the pose; later ones blend in by their weight, additive ones

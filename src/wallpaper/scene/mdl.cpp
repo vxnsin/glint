@@ -260,6 +260,24 @@ void Mesh::pose(const Animation& animation, double frame, std::vector<math::Mat4
     }
 }
 
+namespace {
+
+// A bone's place in the mesh: its joint follows the parent (the local translation taken
+// through the parent's transform), but its rotation and scale are its own, not the chain's
+// sum. A hair strand of six bones at ten degrees each bends ten degrees along its length,
+// not sixty; with the chain's sum its tip swept across the body and the triangles between
+// neighbouring bones stretched into spikes.
+math::Mat4 chain(const math::Mat4& parent, const math::Mat4& local) {
+    float x = local.m[12], y = local.m[13], z = local.m[14];
+    math::Mat4 r = local;
+    r.m[12] = parent.m[0] * x + parent.m[4] * y + parent.m[8] * z + parent.m[12];
+    r.m[13] = parent.m[1] * x + parent.m[5] * y + parent.m[9] * z + parent.m[13];
+    r.m[14] = parent.m[2] * x + parent.m[6] * y + parent.m[10] * z + parent.m[14];
+    return r;
+}
+
+}  // namespace
+
 void Mesh::skin_matrices(const std::vector<math::Mat4>& locals,
                          std::vector<math::Mat4>& out) const {
     std::size_t n = std::min(locals.size(), bones.size());
@@ -268,8 +286,8 @@ void Mesh::skin_matrices(const std::vector<math::Mat4>& locals,
         int parent = bones[b].parent;
         math::Mat4 rest = matrix_of(bones[b].matrix);
         if (parent >= 0 && static_cast<std::size_t>(parent) < b) {
-            global_pose[b] = global_pose[static_cast<std::size_t>(parent)] * locals[b];
-            global_rest[b] = global_rest[static_cast<std::size_t>(parent)] * rest;
+            global_pose[b] = chain(global_pose[static_cast<std::size_t>(parent)], locals[b]);
+            global_rest[b] = chain(global_rest[static_cast<std::size_t>(parent)], rest);
         } else {
             global_pose[b] = locals[b];
             global_rest[b] = rest;
@@ -284,16 +302,19 @@ bool Mesh::attachment_matrix(const std::string& name, const std::vector<math::Ma
     for (const Attachment& a : attachments) {
         if (a.name != name) continue;
         math::Mat4 global;
-        // The chain from the root down to the bone.
-        std::vector<int> chain;
+        // The chain from the root down to the bone, joints following as in skin_matrices.
+        std::vector<int> path;
         for (int bone = a.bone, guard = 0;
              bone >= 0 && bone < static_cast<int>(bones.size()) && guard < 256; ++guard) {
-            chain.push_back(bone);
+            path.push_back(bone);
             bone = bones[static_cast<std::size_t>(bone)].parent;
         }
-        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        bool first = true;
+        for (auto it = path.rbegin(); it != path.rend(); ++it) {
             auto b = static_cast<std::size_t>(*it);
-            global = global * (b < locals.size() ? locals[b] : matrix_of(bones[b].matrix));
+            math::Mat4 local = b < locals.size() ? locals[b] : matrix_of(bones[b].matrix);
+            global = first ? local : chain(global, local);
+            first = false;
         }
         out = global * matrix_of(a.matrix);
         return true;
