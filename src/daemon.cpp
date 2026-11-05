@@ -138,6 +138,7 @@ int Daemon::run() {
     state::State restored = state::load();
     all_ = restored.all;
     outputs_ = std::move(restored.outputs);
+    properties_ = std::move(restored.properties);
     if (all_ || !outputs_.empty()) {
         log::info("restoring {} from {}", all_ ? all_->path.string() : "per-output wallpapers",
                   state::file().string());
@@ -376,7 +377,13 @@ void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<
         entry.request.reset();
     }
     std::string error;
-    auto wallpaper = make_wallpaper(assignment.path, assignment.options, *services_, error);
+    // Scene settings saved for this project come along.
+    Options options = assignment.options;
+    if (auto it = properties_.find(assignment.path.string()); it != properties_.end()) {
+        if (!options.properties.is_object()) options.properties = nlohmann::json::object();
+        for (const auto& [k, v] : it->second.items()) options.properties[k] = v;
+    }
+    auto wallpaper = make_wallpaper(assignment.path, options, *services_, error);
     if (!wallpaper) {
         entry.error = error;
         if (request) finish(request, error);
@@ -553,6 +560,7 @@ void Daemon::save_state() const {
     state::State current;
     current.all = all_;
     current.outputs = outputs_;
+    current.properties = properties_;
     if (!state::save(current)) log::warn("cannot write {}", state::file().string());
 }
 
@@ -790,15 +798,78 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
                 });
         });
         entry->dirty = true;  // a still output draws once more for it
-    } else if (op == "props" || op == "inspect") {
-        reply.error(op + " comes with milestone M2 (scenes)");
+    } else if (op == "props") {
+        props(request, std::move(reply));
+    } else if (op == "inspect") {
+        reply.error("inspect comes with milestone M6");
     } else if (op == "audio" || op == "cursor") {
         reply.error(op + " comes with milestone M3");
     } else if (op == "settings") {
-        reply.error("settings come with milestone M2");
+        reply.error("settings come with milestone M6");
     } else {
         reply.error("unknown op '" + op + "'");
     }
+}
+
+void Daemon::props(const nlohmann::json& request, ipc::Server::Reply reply) {
+    std::string output = request.value("output", "");
+    Screen* entry = screen(output);
+    if (entry == nullptr) return reply.error("props needs an output");
+    Wallpaper* wallpaper =
+        entry->incoming && entry->incoming->ready() ? entry->incoming.get() : entry->current.get();
+    if (wallpaper == nullptr) return reply.error("nothing on that output");
+    if (!wallpaper->ready()) return reply.error("still loading");
+    std::string path = wallpaper->path().string();
+
+    auto changed_event = [&](const std::vector<std::string>& names) {
+        nlohmann::json values = nlohmann::json::object();
+        for (const Property& p : wallpaper->properties()) {
+            if (std::ranges::find(names, p.name) == names.end()) continue;
+            values[p.name] = nlohmann::json::parse(p.value, nullptr, false);
+        }
+        if (server_ && !names.empty()) {
+            server_->broadcast("props", {{"output", output}, {"changed", values}});
+        }
+        entry->dirty = true;
+    };
+
+    if (request.value("reset", false)) {
+        auto names = wallpaper->reset_properties();
+        properties_.erase(path);
+        save_state();
+        changed_event(names);
+        return reply.ok({{"changed", names}});
+    }
+    if (request.contains("set")) {
+        if (!request["set"].is_object()) return reply.error("set is an object of name: value");
+        std::vector<std::string> changed;
+        for (const auto& [name, value] : request["set"].items()) {
+            auto names = wallpaper->set_property(name, value.dump());
+            if (names.empty()) return reply.error("cannot set " + name + " to " + value.dump());
+            changed.insert(changed.end(), names.begin(), names.end());
+            properties_[path][name] = value;
+        }
+        save_state();
+        changed_event(changed);
+        // Every value is a uniform or a visibility; nothing needs a recompile.
+        return reply.ok({{"changed", changed}, {"recompiled", nlohmann::json::array()}});
+    }
+    nlohmann::json list = nlohmann::json::array();
+    for (const Property& p : wallpaper->properties()) {
+        nlohmann::json item = {{"name", p.name},
+                               {"type", p.type},
+                               {"text", p.text},
+                               {"order", p.order},
+                               {"visible", p.visible}};
+        item["value"] = nlohmann::json::parse(p.value, nullptr, false);
+        item["default"] = nlohmann::json::parse(p.def, nullptr, false);
+        auto extra = nlohmann::json::parse(p.extra, nullptr, false);
+        if (extra.is_object()) {
+            for (const auto& [k, v] : extra.items()) item[k] = v;
+        }
+        list.push_back(item);
+    }
+    reply.ok(list);
 }
 
 }  // namespace glint

@@ -95,6 +95,11 @@ State load() {
         return state;
     }
     if (json.contains("all")) state.all = entry_from(json["all"]);
+    if (json.contains("properties") && json["properties"].is_object()) {
+        for (const auto& [path, values] : json["properties"].items()) {
+            if (values.is_object()) state.properties[path] = values;
+        }
+    }
     if (json.contains("outputs") && json["outputs"].is_object()) {
         for (const auto& [name, value] : json["outputs"].items()) {
             if (auto entry = entry_from(value)) state.outputs[name] = *entry;
@@ -107,6 +112,10 @@ bool save(const State& state) {
     nlohmann::json json = {{"version", state_version}, {"outputs", nlohmann::json::object()}};
     if (state.all) json["all"] = entry_json(*state.all);
     for (const auto& [name, entry] : state.outputs) json["outputs"][name] = entry_json(entry);
+    if (!state.properties.empty()) {
+        json["properties"] = nlohmann::json::object();
+        for (const auto& [path, values] : state.properties) json["properties"][path] = values;
+    }
 
     std::error_code ec;
     std::filesystem::create_directories(paths::state_dir(), ec);

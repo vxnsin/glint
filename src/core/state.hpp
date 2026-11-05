@@ -18,8 +18,9 @@ struct Entry {
 };
 
 struct State {
-    std::optional<Entry> all;              // "*"
-    std::map<std::string, Entry> outputs;  // by connector name
+    std::optional<Entry> all;                          // "*"
+    std::map<std::string, Entry> outputs;              // by connector name
+    std::map<std::string, nlohmann::json> properties;  // scene settings by project path
 };
 
 std::filesystem::path file();

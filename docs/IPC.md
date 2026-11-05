@@ -1,8 +1,9 @@
 # glint IPC
 
-Version 1. Milestone M1 implements `outputs`, `set`, `unset`, `status`, `pause`, `resume`,
-`subscribe` and `version` for still pictures. The other operations answer with an error that
-names the milestone that brings them; their description below is the plan.
+Version 1. Implemented: `outputs`, `set`, `unset`, `status`, `pause`, `resume`, `props`,
+`subscribe`, `screenshot` and `version`, for still pictures and Wallpaper Engine scenes. The
+other operations (`audio`, `cursor`, `settings`, `inspect`) answer with an error that names
+the milestone that brings them; their description below is the plan.
 
 ## Transport
 
@@ -78,8 +79,9 @@ that fails to decode answers with the decoder's error, the output keeps what it 
 the assignment goes back to what it was. Successful `set` and `unset` are written to
 `$XDG_STATE_HOME/glint/state.json` and restored when the daemon starts.
 
-In M1 every file is decoded as a still picture with FFmpeg (JPEG, PNG, WebP, and the first
-frame of anything else FFmpeg reads). Options in M1: `scaling`, `color`, `transition` (`fade`
+A folder with a `project.json` of type `scene` is a Wallpaper Engine scene; the CLI also takes
+a bare Workshop id and looks in Steam's Workshop folder. Every file is decoded as a still
+picture with FFmpeg (JPEG, PNG, WebP, and the first frame of anything else FFmpeg reads). Options in M1: `scaling`, `color`, `transition` (`fade`
 or `none`), `duration` (milliseconds, default 300); `fps` is accepted and ignored.
 
 `unset` on an output with its own entry falls back to `*` if there is one, else to the
@@ -127,6 +129,11 @@ video: `volume`, `mute`, `loop`, `speed`. For a picture: `scaling`, `color`.
 -> {"op": "props", "output": "DP-1", "reset": true}      // back to the project's defaults
 ```
 
+In glint: for a scene the list is `project.json`'s properties, labels and HTML headings
+(type `text`, `group`) included so a panel can show them. Pictures have no properties yet.
+`props` applies to the wallpaper on that output; the reply to a set lists `recompiled` as
+empty, since every bound value in the corpus is a uniform or a visibility.
+
 Rules:
 
 - Values are typed as in the listing. `color` is `#rrggbb` in both directions (Wallpaper
@@ -138,6 +145,17 @@ Rules:
 - A change that flips a shader combo recompiles from the cache; the old pipeline draws until
   the new one is ready.
 - The `props` event (below) fires for every change, including the ones a script makes.
+
+### screenshot
+
+```
+-> {"op": "screenshot", "output": "DP-1", "path": "/tmp/shot.png"}
+<- {"ok": true, "result": {"path": "/tmp/shot.png", "width": 2560, "height": 1440}}
+```
+
+Reads back the next frame glint presents on the output, after its own drawing and before the
+compositor's, and writes it as PNG. A still output draws once more for it; a paused one
+answers with an error.
 
 ### pause / resume
 

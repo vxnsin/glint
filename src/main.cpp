@@ -27,14 +27,17 @@ void usage() {
         "  glint unset <output|*>\n"
         "  glint status [output]\n"
         "  glint pause|resume [output|*] [locked|request]\n"
-        "  glint subscribe [state|outputs|error ...]\n"
+        "  glint props <output> [reset | name value ...]\n"
+        "  glint screenshot <output> <file.png>\n"
+        "  glint subscribe [state|props|outputs|error ...]\n"
         "  glint version\n"
         "  glint --version | --help\n"
         "\n"
         "  set options: scaling=fill|fit|center|tile|stretch color=#rrggbb\n"
         "               transition=fade|none duration=<ms>\n"
         "  add --json to any command for the raw reply.\n"
-        "  later milestones: props, inspect, settings (M2), audio, cursor (M3)\n",
+        "  set takes a picture, a scene folder or a Workshop id.\n"
+        "  later milestones: audio, cursor (M3), inspect, settings (M6)\n",
         glint::version);
 }
 

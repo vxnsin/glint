@@ -137,6 +137,7 @@ private:
     nlohmann::json output_json(const Screen& screen) const;
     nlohmann::json status_json(Screen& screen);
     void save_state() const;
+    void props(const nlohmann::json& request, ipc::Server::Reply reply);
 
     Loop loop_;
     wl::Display display_;
@@ -150,9 +151,10 @@ private:
     std::unique_ptr<Services> services_;
     std::vector<std::unique_ptr<Screen>> screens_;
 
-    std::optional<Assignment> all_;              // "*"
-    std::map<std::string, Assignment> outputs_;  // by connector name; wins over "*"
-    std::uint64_t generation_ = 0;               // bumped on every change of the assignments
+    std::optional<Assignment> all_;                     // "*"
+    std::map<std::string, Assignment> outputs_;         // by connector name; wins over "*"
+    std::map<std::string, nlohmann::json> properties_;  // scene settings by project path
+    std::uint64_t generation_ = 0;                      // bumped on every change of the assignments
     std::uint32_t paused_all_ = 0;  // reasons set for "*", on every output including new ones
     std::unique_ptr<ipc::Server> server_;
     bool force_toplevels_ = false;  // GLINT_TRACK_TOPLEVELS=1

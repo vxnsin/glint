@@ -128,6 +128,14 @@ void print_text(const std::string& op, const json& result) {
     } else if (op == "set") {
         std::printf("%s, %s ms\n", result.value("kind", "?").c_str(),
                     number(result["load_ms"], 1).c_str());
+    } else if (op == "props" && result.is_array()) {
+        for (const auto& p : result) {
+            if (p.value("type", "") == "text" || p.value("type", "") == "group") continue;
+            std::printf("%-16s %-8s %-28s %s%s\n", p.value("name", "?").c_str(),
+                        p.value("type", "?").c_str(), p["value"].dump().c_str(),
+                        p.value("text", "").substr(0, 40).c_str(),
+                        p.value("visible", true) ? "" : "  (hidden)");
+        }
     } else if (op == "screenshot") {
         std::printf("%s, %dx%d\n", result.value("path", "?").c_str(), result.value("width", 0),
                     result.value("height", 0));
@@ -213,8 +221,27 @@ int run(int argc, char** argv) {
         json events = json::array();
         for (std::size_t i = 1; i < args.size(); ++i) events.push_back(std::string(args[i]));
         if (!events.empty()) request["events"] = events;
-    } else if (op == "props" || op == "audio" || op == "cursor" || op == "settings" ||
-               op == "inspect") {
+    } else if (op == "props") {
+        // props <output>                 list
+        // props <output> reset
+        // props <output> name value ...  set (value as JSON, else a string)
+        if (args.size() < 2) return usage_error("props <output> [reset | name value ...]");
+        request["output"] = std::string(args[1]);
+        if (args.size() == 3 && args[2] == "reset") {
+            request["reset"] = true;
+        } else if (args.size() > 2) {
+            if ((args.size() - 2) % 2 != 0) return usage_error("props: name value pairs");
+            json set = json::object();
+            for (std::size_t i = 2; i + 1 < args.size(); i += 2) {
+                std::string text(args[i + 1]);
+                if (text == "on") text = "true";
+                if (text == "off") text = "false";
+                json value = json::parse(text, nullptr, false);
+                set[std::string(args[i])] = value.is_discarded() ? json(text) : value;
+            }
+            request["set"] = set;
+        }
+    } else if (op == "audio" || op == "cursor" || op == "settings" || op == "inspect") {
         // Sent as is; the daemon says which milestone brings it.
     } else {
         std::fprintf(stderr, "glint: unknown command '%s'\n", op.c_str());
