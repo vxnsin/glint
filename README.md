@@ -10,9 +10,9 @@
   Built for <a href="https://github.com/facet-shell">facet</a>, usable from any shell.
 </p>
 
-**Status: milestone M1.** The daemon puts still pictures on every output with Vulkan and
-is driven over the socket; Wallpaper Engine scenes (M2) and videos (M4) are next. Open work
-is tracked in the [issues](https://github.com/vxnsin/glint/issues).
+**Status: milestone M2.** The daemon puts still pictures and Wallpaper Engine scenes (image
+layers, effects, live settings) on every output with Vulkan and is driven over the socket;
+particles, text, sound and video come in the next milestones. Open work is tracked in the [issues](https://github.com/vxnsin/glint/issues).
 
 ## What it does
 
@@ -67,12 +67,13 @@ glint pause '*' locked                  # from a lockscreen; resume with the sam
 glint subscribe                         # events as JSON lines
 ```
 
-From M2 on, Workshop items and their settings:
+Wallpaper Engine scenes from the Workshop and their settings:
 
 ```
-glint set '*' ~/.local/share/Steam/steamapps/workshop/content/431960/123456
+glint set '*' 3426865175                # a Workshop id, or the item's folder
 glint props DP-1                        # the scene's own settings
 glint props DP-1 bloom off
+glint screenshot DP-1 shot.png          # what glint drew, without the windows on top
 ```
 
 The daemon remembers what was on which output in `$XDG_STATE_HOME/glint/state.json` and puts
