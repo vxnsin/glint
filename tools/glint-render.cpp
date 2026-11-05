@@ -2,13 +2,16 @@
 // For looking at a scene while no output is free, and for regression pictures.
 //
 //   glint-render <item> <out.png> [--size WxH] [--frames N] [--fps F] [--pointer X,Y]
-//                [--prop name=value ...]
+//                [--prop name=value ...] [--media "title|artist|album|cover.png"]
 //
 // N frames are drawn at 1/F seconds each (scripts, timelines and particles run on that
 // clock); the last one is written. The pointer is a share of the output, 0 to 1, y down.
+// --media plays a track for the scene: its media events and the cover in its thumbnail
+// slot, as the daemon would give them from MPRIS.
 
 #include <vk_mem_alloc.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +25,7 @@
 #include "gpu/context.hpp"
 #include "gpu/staging.hpp"
 #include "gpu/surface.hpp"
+#include "gpu/texture.hpp"
 #include "gpu/vulkan.hpp"
 #include "wallpaper/image/decode.hpp"
 #include "wallpaper/scene/assets.hpp"
@@ -72,6 +76,7 @@ int main(int argc, char** argv) {
     double fps = 60;
     float pointer[2] = {0.5f, 0.5f};
     std::vector<std::pair<std::string, std::string>> props;
+    std::string media;
     for (int i = 3; i < argc; ++i) {
         std::string arg = argv[i];
         auto value = [&](const char* name) -> const char* {
@@ -97,6 +102,8 @@ int main(int argc, char** argv) {
             auto eq = text.find('=');
             if (eq == std::string::npos) return usage();
             props.emplace_back(text.substr(0, eq), text.substr(eq + 1));
+        } else if (const char* v6 = value("--media")) {
+            media = v6;
         } else {
             return usage();
         }
@@ -127,6 +134,50 @@ int main(int argc, char** argv) {
                 values[name] = v.is_discarded() ? nlohmann::json(text) : v;
             }
             renderer.set_values(values);
+        }
+
+        if (!media.empty()) {
+            // "title|artist|album|cover": a playing track with its cover.
+            MediaState state;
+            std::vector<std::string> parts;
+            std::size_t start = 0;
+            for (;;) {
+                auto bar = media.find('|', start);
+                parts.push_back(media.substr(
+                    start, bar == std::string::npos ? std::string::npos : bar - start));
+                if (bar == std::string::npos) break;
+                start = bar + 1;
+            }
+            state.available = true;
+            state.playback = 1;
+            state.title = parts.size() > 0 ? parts[0] : "";
+            state.artist = parts.size() > 1 ? parts[1] : "";
+            state.album = parts.size() > 2 ? parts[2] : "";
+            state.album_artist = state.artist;
+            state.content_type = "music";
+            state.duration = 240;
+            state.position = 42;
+            if (parts.size() > 3 && !parts[3].empty()) {
+                image::Decoded cover;
+                std::string e = image::decode(parts[3], 512, staging, cover);
+                if (!e.empty()) {
+                    std::fprintf(stderr, "cover %s: %s\n", parts[3].c_str(), e.c_str());
+                } else {
+                    state.thumbnail = gpu::Texture::upload_rgba(*gpu, staging, cover.pixels,
+                                                                cover.width, cover.height);
+                    state.has_thumbnail = state.thumbnail != nullptr;
+                    state.thumbnail_width = cover.width;
+                    state.thumbnail_height = cover.height;
+                    float primary[3] = {0.2f, 0.3f, 0.8f}, white[3] = {1, 1, 1};
+                    std::copy_n(primary, 3, state.primary);
+                    std::copy_n(primary, 3, state.secondary);
+                    std::copy_n(primary, 3, state.tertiary);
+                    std::copy_n(white, 3, state.text_color);
+                    std::copy_n(white, 3, state.high_contrast);
+                }
+            }
+            state.properties_version = state.playback_version = state.thumbnail_version = 1;
+            renderer.set_media(state);
         }
 
         // The picture: a colour image drawn into like a swapchain image, read back once.

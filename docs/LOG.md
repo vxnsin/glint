@@ -599,3 +599,14 @@ headless: the GPU context without surface extensions, the renderer into a colour
 the last frame read back as a PNG, 120 frames of the Roxy scene in 0.4 s. It is the tool for
 regression pictures as well (issue #21). The first picture it drew showed the date and the
 clock set by their scripts, in place, with their blur.
+
+### A solid layer's effects
+
+The classroom's sound bar is a white solid layer with an audio-bars effect and a
+perspective warp. glint drew a white square: a solid layer's material shader (`flat`)
+paints its colour and never looks at a texture, so after the effects had run it painted
+over their result. With effects on a solid layer the last pass is `genericimage2` now,
+drawing the effects' result tinted by the layer's colour; the frame around the album cover
+came out purple as authored and the bars are gone until there is audio. One run of
+glint-render on this scene ended in a heap corruption that did not come back in several
+runs, with or without the sanitizer; noted here in case it shows again.

@@ -280,6 +280,9 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
                 PlanDraw draw;
                 draw.object = object;
                 draw.request = {pass.shader, pass.combos, 0};
+                // A solid layer's shader draws its colour and nothing else; with effects it
+                // is the effects' result that must be drawn, tinted by the colour.
+                if (layer && pass.shader == "flat") draw.request = {"genericimage2", {}, 0};
                 draw.blending = pass.blending;
                 draw.geometry = geometry;
                 draw.target = -1;
