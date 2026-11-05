@@ -84,8 +84,11 @@ std::string Context::init(wl_display* display, std::optional<dev_t> main_device)
         .engineVersion = VK_MAKE_VERSION(0, 1, 0),
         .apiVersion = api_version,
     };
+    // Without a display (glint-render) no surface is ever made: no surface extensions and
+    // any graphics queue will do.
     const char* instance_extensions[] = {VK_KHR_SURFACE_EXTENSION_NAME,
                                          VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME};
+    bool headless = display == nullptr;
     std::vector<const char*> layers;
     if (const char* v = std::getenv("GLINT_VALIDATION"); v != nullptr && v[0] == '1') {
         layers.push_back("VK_LAYER_KHRONOS_validation");
@@ -95,7 +98,7 @@ std::string Context::init(wl_display* display, std::optional<dev_t> main_device)
         .pApplicationInfo = &app,
         .enabledLayerCount = static_cast<std::uint32_t>(layers.size()),
         .ppEnabledLayerNames = layers.data(),
-        .enabledExtensionCount = 2,
+        .enabledExtensionCount = headless ? 0u : 2u,
         .ppEnabledExtensionNames = instance_extensions,
     };
     if (VkResult r = vkCreateInstance(&instance_info, nullptr, &instance_); r != VK_SUCCESS) {
@@ -137,7 +140,8 @@ std::string Context::init(wl_display* display, std::optional<dev_t> main_device)
         std::optional<std::uint32_t> family;
         for (std::uint32_t i = 0; i < family_count; ++i) {
             if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0 &&
-                vkGetPhysicalDeviceWaylandPresentationSupportKHR(physical, i, display)) {
+                (headless ||
+                 vkGetPhysicalDeviceWaylandPresentationSupportKHR(physical, i, display))) {
                 family = i;
                 break;
             }
@@ -158,7 +162,10 @@ std::string Context::init(wl_display* display, std::optional<dev_t> main_device)
         }
         candidates.push_back({physical, *family, score, props.properties.deviceName});
     }
-    if (candidates.empty()) return "no Vulkan 1.3 device can present to this Wayland display";
+    if (candidates.empty()) {
+        return headless ? "no Vulkan 1.3 device with a graphics queue"
+                        : "no Vulkan 1.3 device can present to this Wayland display";
+    }
     auto best = std::ranges::max_element(candidates, {}, &Candidate::score);
     physical_ = best->physical;
     queue_family_ = best->family;

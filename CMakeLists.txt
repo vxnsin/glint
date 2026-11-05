@@ -142,6 +142,24 @@ if(GLINT_PLATFORM)
     target_link_libraries(we-inspect PRIVATE glint_scene)
     target_compile_options(we-inspect PRIVATE ${GLINT_WARNINGS})
 
+    # Headless renders of a scene into a PNG: the renderer with the GPU pieces, no Wayland.
+    add_executable(glint-render
+        tools/glint-render.cpp
+        src/gpu/blit.cpp
+        src/gpu/buffer.cpp
+        src/gpu/context.cpp
+        src/gpu/staging.cpp
+        src/gpu/texture.cpp
+        src/gpu/volk.cpp
+        src/wallpaper/image/decode.cpp
+        src/wallpaper/scene/assets.cpp
+        src/wallpaper/scene/renderer.cpp
+    )
+    target_include_directories(glint-render PRIVATE src ${CMAKE_BINARY_DIR}/generated)
+    target_link_libraries(glint-render PRIVATE glint::platform glint_scene)
+    target_compile_options(glint-render PRIVATE ${GLINT_WARNINGS})
+    add_dependencies(glint-render glint_shaders)
+
     add_executable(glint-tests tests/readers.cpp)
     target_link_libraries(glint-tests PRIVATE glint_scene)
     target_compile_options(glint-tests PRIVATE ${GLINT_WARNINGS})

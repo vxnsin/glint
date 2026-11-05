@@ -590,3 +590,12 @@ are started, held and stopped by scripts (`getLayer(name).play()`). The player's
 now take that: a held track keeps its ring and stays silent, a stopped one is taken back
 to its first file by the decoder, and the scene applies what the scripts changed once per
 frame, by version.
+
+### glint-render
+
+Both outputs were covered by games for most of a day, and a covered output gets no frames,
+so nothing could be looked at. `glint-render <item> out.png --frames 120` now draws a scene
+headless: the GPU context without surface extensions, the renderer into a colour image,
+the last frame read back as a PNG, 120 frames of the Roxy scene in 0.4 s. It is the tool for
+regression pictures as well (issue #21). The first picture it drew showed the date and the
+clock set by their scripts, in place, with their blur.

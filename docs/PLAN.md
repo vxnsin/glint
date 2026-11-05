@@ -322,7 +322,8 @@ src/
 apps/glint-app/       the Qt app, own target
 third_party/vma/      vk_mem_alloc.h, the only vendored file
 tests/                readers, preprocessor, property conditions
-tools/                we-inspect: dumps a project, scene, pkg or tex
+tools/                we-inspect: dumps a project, scene, pkg or tex; runs scripts, text, shaders
+                      glint-render: a scene headless into a PNG (no compositor)
 ```
 
 Every wallpaper kind implements one interface: load (on a worker, the old one keeps
