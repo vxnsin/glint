@@ -149,6 +149,7 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
     if (object.contains("parent") && object["parent"].is_number()) {
         image.parent = object["parent"].get<int>();
     }
+    image.attachment = str(object, "attachment");
     image.origin = parse_bound(object.value("origin", json("0 0 0")));
     image.scale = parse_bound(object.value("scale", json("1 1 1")));
     image.angles = parse_bound(object.value("angles", json("0 0 0")));

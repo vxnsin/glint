@@ -100,6 +100,7 @@ struct ImageObject {
     int id = 0;
     std::string name;
     int parent = -1;
+    std::string attachment;  // a named point on the parent puppet's skeleton
     Bound origin, scale, angles, size;
     Bound visible, alpha, color, brightness;
     int color_blend_mode = 0;

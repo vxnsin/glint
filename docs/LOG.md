@@ -125,6 +125,36 @@ picture is not logged; that was not measured.
   PNG.
 - Two outputs with different scales correct: yes, at 1.5 and 1.25 next to 1.
 
+### The five scenes
+
+| Scene | Load from disk cache | GPU per frame | GPU memory | Against its preview |
+|---|---|---|---|---|
+| Roxy (3780525249) | 81 ms | 0.21 ms | 83 MB | as in the preview |
+| Frieren (3426865175) | 130 ms | 1.32 ms | 283 MB | figures complete, no particles |
+| Astronaut (2185197772) | 328 ms | 2.43 ms | 475 MB | as in the preview |
+| Jane Doe (3337889865) | 102 ms | 0.96 ms | 227 MB | as in the preview |
+| Yosuga no Sora (2857144643) | 31 ms | 0.98 ms | 198 MB | background right, figure in its rest pose |
+
+All at 2560x1440 and 60 fps, loaded by a running daemon after another scene; GPU memory is
+`memory_mb` of `glint status`, the scene's textures and its targets on this output.
+
+The Astronaut first drew only its clear colour: its layers sit at z = -100, and the scene
+projection's depth range was -1 to 1. It is -10000 to 10000 now, Wallpaper Engine's `farz`.
+
+Yosuga no Sora is a rig: 18 puppets hang from attachment points on each other's skeletons.
+The attachments are read (FORMATS.md, 10) and place each part on its parent, but the figure
+sits on the suitcase only through its animation, which glint does not play until M5; in the
+rest pose the parts point the wrong way. Its puppet meshes also settled where puppets are
+placed: the mesh positions are relative to the object's origin as they are. The first M2
+build centred each mesh on its bounding box, which on Frieren cut Himmel's head off and
+Frieren's legs; both are whole now.
+
+### Shaders across the whole Workshop folder
+
+`we-inspect <item> --shaders` over all 107 scene items installed here: 3079 passes, 2996
+compile (97.3 %), 83 fail in 25 items, and one item does not get through the reader. The
+failures are the next work on the shader dialect.
+
 ### Left out or different from the plan
 
 - Uploads run on the graphics queue, not a separate transfer queue. The mip chain needs
@@ -150,8 +180,12 @@ picture is not logged; that was not measured.
 ### Setup
 
 As for M1. Two corpus items are installed, Roxy on a sunset street (3780525249) and
-Frieren - Pagoda of flowers (3426865175); Astronaut, Forest River and Aurora Lake are not
-subscribed yet, so the five-scene check of the milestone is open. Each engine ran alone on
+Frieren - Pagoda of flowers (3426865175). Astronaut, Forest River and Aurora Lake are not
+subscribed; Luis chose to take three of the installed scenes in their place, all rated
+Everyone: Astronaut [7680x2160] [Audio responsive] (2185197772, the same artwork at 32:9,
+14 layers and 100 effects), Jane Doe from Zenless Zone Zero (3337889865, 3 layers and 13
+effects, nothing in it waits for a later milestone) and Yosuga no Sora (2857144643, 27
+layers, 26 effects, 18 puppets, nothing waiting for a later milestone either). Each engine ran alone on
 DP-2 (2560x1440) at 60 fps, muted, without its fullscreen pause; HDMI-A-1 showed glint's
 background colour, or nothing for linux-wallpaperengine. Same measures as in M1 over 30
 seconds, after 5 seconds of settling.
@@ -192,15 +226,45 @@ Checked with `glint screenshot` against the items' previews: Roxy draws as in th
 Frieren draws the backdrop, flowers, the colour filter over the whole frame and both figures.
 The figures are puppets: their texture is an atlas of parts, and drawn flat it showed the
 parts scattered. glint now draws the puppet's mesh in its rest pose, which puts each figure
-together; it does not move. Setting `xme` off over `glint props` hides Himmel at once, and
+together; it does not move. The other three scenes are below. Setting `xme` off over `glint props` hides Himmel at once, and
 the conditions of the other settings follow.
+
+### The five scenes
+
+| Scene | Load from disk cache | GPU per frame | GPU memory | Against its preview |
+|---|---|---|---|---|
+| Roxy (3780525249) | 81 ms | 0.21 ms | 83 MB | as in the preview |
+| Frieren (3426865175) | 130 ms | 1.32 ms | 283 MB | figures complete, no particles |
+| Astronaut (2185197772) | 328 ms | 2.43 ms | 475 MB | as in the preview |
+| Jane Doe (3337889865) | 102 ms | 0.96 ms | 227 MB | as in the preview |
+| Yosuga no Sora (2857144643) | 31 ms | 0.98 ms | 198 MB | background right, figure in its rest pose |
+
+All at 2560x1440 and 60 fps, loaded by a running daemon after another scene; GPU memory is
+`memory_mb` of `glint status`, the scene's textures and its targets on this output.
+
+The Astronaut first drew only its clear colour: its layers sit at z = -100, and the scene
+projection's depth range was -1 to 1. It is -10000 to 10000 now, Wallpaper Engine's `farz`.
+
+Yosuga no Sora is a rig: 18 puppets hang from attachment points on each other's skeletons.
+The attachments are read (FORMATS.md, 10) and place each part on its parent, but the figure
+sits on the suitcase only through its animation, which glint does not play until M5; in the
+rest pose the parts point the wrong way. Its puppet meshes also settled where puppets are
+placed: the mesh positions are relative to the object's origin as they are. The first M2
+build centred each mesh on its bounding box, which on Frieren cut Himmel's head off and
+Frieren's legs; both are whole now.
+
+### Shaders across the whole Workshop folder
+
+`we-inspect <item> --shaders` over all 107 scene items installed here: 3079 passes, 2996
+compile (97.3 %), 83 fail in 25 items, and one item does not get through the reader. The
+failures are the next work on the shader dialect.
 
 ### Left out or different from the plan
 
 - Particles, text, sound, lights, puppet animation, the camera shake and bloom: M3 and M5.
   Values animated by timelines take their static value.
-- The puppet's placement uses the centre of its mesh's bounding box; the exact transform
-  from the skeleton is open (FORMATS.md, 10).
+- Puppets stand in their rest pose; rigs posed by an animation look wrong until M5.
+- Objects marked `perspective` are drawn flat with the scene's orthographic camera.
 - Copybackground, effect commands (`copy`, `swap`) and the 33 colour blend modes that read
   `_rt_FullFrameBuffer` through the BLENDMODE combo are not done; nothing in the two installed
   scenes uses them. The fixed blendings (normal, translucent, additive) are.

@@ -237,6 +237,16 @@ math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting) c
             visiting.push_back(object);
             math::Mat4 parent = model_matrix(static_cast<int>(i), visiting);
             visiting.pop_back();
+            // Hung from a point on the parent puppet's skeleton.
+            const ImageObject& owner = scene.images[i];
+            if (!image.attachment.empty() && owner.puppet) {
+                if (const Mesh* mesh = assets_->mesh(owner.puppet_path)) {
+                    float ax = 0, ay = 0;
+                    if (mesh->attachment_position(image.attachment, ax, ay)) {
+                        return parent * math::Mat4::translate(ax, ay, 0) * local;
+                    }
+                }
+            }
             return parent * local;
         }
     }
@@ -256,7 +266,8 @@ void SceneRenderer::build(VkExtent2D extent) {
     float vw = static_cast<float>(extent.width) / canvas_scale_;
     float vh = static_cast<float>(extent.height) / canvas_scale_;
     float left = (w - vw) * 0.5f, bottom = (h - vh) * 0.5f;
-    projection_ = math::Mat4::ortho(left, left + vw, bottom, bottom + vh, -1, 1);
+    // Depth covers what scenes use: objects sit at z = -100 and similar, WE's farz is 10000.
+    projection_ = math::Mat4::ortho(left, left + vw, bottom, bottom + vh, -10000, 10000);
 
     auto size_of = [this](const std::string& name) { return assets_->picture_size(name); };
     plan_ = build_plan(scene, values_, size_of);
@@ -310,16 +321,8 @@ void SceneRenderer::build(VkExtent2D extent) {
                                ? assets_->mesh(object.puppet_path)
                                : nullptr;
         if (mesh != nullptr && !p.request.name.empty()) {
-            // The rest mesh, its bounding box centred on the object's origin. Its uvs index
-            // the picture; drawn from a layer they are scaled to the layer's crop.
-            float lo[2] = {1e30f, 1e30f}, hi[2] = {-1e30f, -1e30f};
-            for (std::size_t i = 0; i < mesh->vertices.size(); i += 5) {
-                for (int k = 0; k < 2; ++k) {
-                    lo[k] = std::min(lo[k], mesh->vertices[i + static_cast<std::size_t>(k)]);
-                    hi[k] = std::max(hi[k], mesh->vertices[i + static_cast<std::size_t>(k)]);
-                }
-            }
-            float cx = (lo[0] + hi[0]) * 0.5f, cy = (lo[1] + hi[1]) * 0.5f;
+            // The rest mesh: its positions are already relative to the object's origin. Its
+            // uvs index the picture; drawn from a layer they are scaled to the layer's crop.
             float su = 1, sv = 1;
             if (p.textures[0].kind == PlanTexture::Kind::target &&
                 !object.material.passes.empty() && !object.material.passes[0].textures.empty() &&
@@ -329,8 +332,8 @@ void SceneRenderer::build(VkExtent2D extent) {
                 sv = static_cast<float>(t.tex_height) / static_cast<float>(t.img_height);
             }
             for (std::size_t i = 0; i < mesh->vertices.size(); i += 5) {
-                vertices.push_back(mesh->vertices[i] - cx);
-                vertices.push_back(mesh->vertices[i + 1] - cy);
+                vertices.push_back(mesh->vertices[i]);
+                vertices.push_back(mesh->vertices[i + 1]);
                 vertices.push_back(0);
                 vertices.push_back(mesh->vertices[i + 3] * su);
                 vertices.push_back(mesh->vertices[i + 4] * sv);

@@ -257,18 +257,25 @@ from the object (cursor-following ones from `g_PointerPosition`).
 - `puppet` in a model json names a `.mdl` (`models/x_puppet.mdl`): the mesh, its bones and
   their animations. The picture of a puppet is an atlas of the parts, so drawn as a flat
   quad it shows the parts scattered; the mesh puts them together.
-- MDLV0023, read from the three puppets of 3426865175 (all three end their blocks where the
-  next begins): `char[9] "MDLV0023"`, three u32 (`0x01800009 1 1`), the material path
-  NUL-terminated, seven u32 of zero, a u32 of flags (`0x0180000f`), u32 byte size of the
-  vertices, the vertices at 80 bytes (position 3 floats in picture pixels with y up, normal
-  3, tangent 4, bone indices 4 x u32, weights 4, uv 2), u32 byte size of the indices, u16
-  triangles. Then a block that starts `01 01 00 00 00` (not read yet), `MDLS0004` (the
-  skeleton: per bone a parent, a 4x4 rest matrix and a JSON string), `MDAT0001`,
-  `MDLA0006` (animations).
-- Until bones arrive in M5, glint draws the mesh in its rest pose with the centre of its
-  bounding box on the object's origin. On the small puppet of the corpus that is exactly
-  where the flat picture sits (one picture pixel per unit); on the two large ones it puts
-  the figures together as in the preview. The exact placement from the skeleton is open.
+- MDLV0023, read from the puppets of 3426865175 and 2857144643: `char[9] "MDLV0023"`, three
+  u32 (`0x01800009 1 1`), the material path NUL-terminated, seven u32 of zero, a u32 of flags
+  (`0x0180000f`), u32 byte size of the vertices, the vertices at 80 bytes (position 3 floats
+  in picture pixels with y up, relative to the object's origin; normal 3, tangent 4, bone
+  indices 4 x u32, weights 4, uv 2), u32 byte size of the indices, u16 triangles. Then a
+  block that starts `01 01 00 00 00` (not read yet), then:
+  - `MDLS0004`: u32 end offset, u16 bone count, per bone four bytes, i32 parent (-1 for the
+    root), u32 64, the 4x4 rest matrix relative to the parent (column-major), a
+    NUL-terminated JSON string (often empty).
+  - `MDAT0001`: u32 end offset, u16 count, per attachment u16 bone, the name NUL-terminated,
+    a 4x4 matrix relative to that bone.
+  - `MDLA0006`: the animations (not read yet).
+- An image object with `"parent"` and `"attachment": "name"` hangs from that attachment of
+  the parent puppet: its transform is the parent's, then the attachment's place in the rest
+  pose (the bone chain's translations plus its own), then the object's own origin.
+- Until bones and animations arrive in M5, glint draws every puppet mesh in its rest pose.
+  That puts figures together whose rest pose is their shown pose (3426865175). Rigs whose
+  pose comes from an animation (the sitting figure of 2857144643) show their rest pose,
+  which is not what Wallpaper Engine shows.
 - Object `animationlayers` blend the animations; bone physics (spring, gravity, limits).
 - `.mdl` (3D models, compiled from obj/fbx): header `MDLV0001`, meshes with vertex
   streams, skeleton (`MDLS`), animations (`MDLA`), morph (`MDMP`), attachments (`MDAT`).

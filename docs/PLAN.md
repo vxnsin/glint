@@ -358,8 +358,10 @@ previous, combos, conditions, the 33 blend modes, masks, tint and colour-blend p
 properties over IPC driving uniforms and combos live, the per-frame block. Done when five
 Workshop scenes Luis picks render like in Wallpaper Engine, load from cache under a
 second, switch without a bare screen, and cost less GPU and CPU time per frame than the
-old engine. Built on 2026-11-05 except for the three corpus scenes
-not installed yet; what was measured and left out is in `docs/LOG.md`.
+old engine. Built on 2026-11-05; three corpus scenes were not
+installed and three installed ones took their place (Astronaut 2185197772, Jane Doe
+3337889865, Yosuga no Sora 2857144643). Four of the five match their previews, the fifth
+needs puppet animation (M5); what was measured and left out is in `docs/LOG.md`.
 
 M3, interaction and audio: cursor from `wl_pointer` and Hyprland's socket,
 `g_PointerPositionLast`, `g_PointerState`, mouse-delay effects, per-layer parallax; sound
