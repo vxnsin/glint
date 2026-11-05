@@ -79,6 +79,10 @@ glint screenshot DP-1 shot.png          # what glint drew, without the windows o
 The daemon remembers what was on which output in `$XDG_STATE_HOME/glint/state.json` and puts
 it back on the next start.
 
+Two tools come with the build: `glint-render <item> out.png --frames 120` draws a scene
+headless into a PNG (no compositor needed, scripts and particles run), and `we-inspect <item>`
+dumps what glint reads from a Workshop item (`--shaders`, `--scripts`, `--text`).
+
 The socket protocol is in [docs/IPC.md](docs/IPC.md). It is plain JSON lines, so a shell
 can use it directly; Quickshell's `Socket` type does, and `socat` works for scripts.
 
