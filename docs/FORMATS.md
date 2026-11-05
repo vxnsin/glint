@@ -478,7 +478,19 @@ worker to at most 512 pixels, uploaded once, and shared by every output; the col
 most common saturated 4-bit bins of the picture. The client runs only while a shown scene
 wants media (a thumbnail slot or a script with media handlers).
 
-## 14. Video and web items (M4, M6)
+## 14. Video textures (M4)
+
+A `.tex` may hold an mp4 (TEXB0004's video field, or bit 5 of the header flags in
+TEXB0003 files; a GIF the editor took in becomes one). Nine items of the corpus have them,
+often as the whole animated background at 4K. glint writes the payload to
+`$XDG_CACHE_HOME/glint/video/<hash>.mp4` once, opens it with the video wallpaper's decoder
+on a thread of its own (software, or VA-API with the planes copied out), waits for the
+first frame on the loading worker, and each frame takes the picture due at the scene time,
+uploads its three planes and converts them with the video pass into an RGBA image that the
+scene samples like any texture (`SceneTexture::external`). Two outputs share the decoder
+and the picture; the one further along in time drives it.
+
+## 15. Video and web items (M4, M6)
 
 - `type: video`: `file` is an mp4/webm; decode with FFmpeg, no special format.
 - `type: web`: `file` is the html; `general.properties` reach the page through

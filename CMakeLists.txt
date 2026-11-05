@@ -151,9 +151,11 @@ if(GLINT_PLATFORM)
         src/gpu/staging.cpp
         src/gpu/texture.cpp
         src/gpu/volk.cpp
+        src/gpu/video_pass.cpp
         src/wallpaper/image/decode.cpp
         src/wallpaper/scene/assets.cpp
         src/wallpaper/scene/renderer.cpp
+        src/wallpaper/video/decoder.cpp
     )
     target_include_directories(glint-render PRIVATE src ${CMAKE_BINARY_DIR}/generated)
     target_link_libraries(glint-render PRIVATE glint::platform glint_scene)

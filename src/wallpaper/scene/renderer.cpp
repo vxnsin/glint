@@ -799,7 +799,7 @@ void SceneRenderer::build(VkExtent2D extent) {
             const PlanTexture& t = p.textures[0];
             if (t.kind == PlanTexture::Kind::file) {
                 const SceneTexture& tex = texture_of(t.file);
-                draw.copy_view = tex.texture ? tex.texture->view() : VK_NULL_HANDLE;
+                draw.copy_view = tex.view();
                 draw.copy_sampler = assets_->sampler(true, tex.nearest);
             } else if (t.kind == PlanTexture::Kind::framebuffer) {
                 draw.copy_view = framebuffer_.view;
@@ -815,7 +815,7 @@ void SceneRenderer::build(VkExtent2D extent) {
                 draw.copy_sampler = assets_->sampler(true, false);
             } else {
                 const SceneTexture& white = assets_->texture("");
-                draw.copy_view = white.texture ? white.texture->view() : VK_NULL_HANDLE;
+                draw.copy_view = white.view();
                 draw.copy_sampler = assets_->sampler(true, false);
             }
             draws_.push_back(std::move(draw));
@@ -835,11 +835,11 @@ void SceneRenderer::build(VkExtent2D extent) {
         for (std::size_t i = 0; i < max_texture_slots; ++i) {
             const PlanTexture& t = p.textures[i];
             const SceneTexture& white = assets_->texture("");
-            draw.views[i] = white.texture ? white.texture->view() : VK_NULL_HANDLE;
+            draw.views[i] = white.view();
             draw.samplers[i] = assets_->sampler(false, false);
             if (t.kind == PlanTexture::Kind::file) {
                 const SceneTexture& tex = texture_of(t.file);
-                if (tex.texture) draw.views[i] = tex.texture->view();
+                if (tex.view() != VK_NULL_HANDLE) draw.views[i] = tex.view();
                 draw.samplers[i] = assets_->sampler(
                     tex.clamp, tex.nearest || std::getenv("GLINT_NEAREST") != nullptr);
             } else if (t.kind == PlanTexture::Kind::target) {
@@ -875,7 +875,7 @@ void SceneRenderer::build(VkExtent2D extent) {
                        !sampler.fallback.starts_with("_alias_")) {
                 const SceneTexture& tex = texture_of(sampler.fallback);
                 if (tex.texture) {
-                    draw.views[slot] = tex.texture->view();
+                    draw.views[slot] = tex.view();
                     draw.samplers[slot] = assets_->sampler(tex.clamp, tex.nearest);
                 }
             }
@@ -1095,7 +1095,7 @@ void SceneRenderer::fill_block(Draw& draw) {
                 th = static_cast<float>(tex.tex_height);
                 iw = static_cast<float>(tex.img_width);
                 ih = static_cast<float>(tex.img_height);
-                levels = tex.texture ? static_cast<float>(tex.texture->levels()) : 1;
+                levels = static_cast<float>(tex.levels());
             } else if (t.kind == PlanTexture::Kind::target) {
                 const Image& image2 = *targets_[static_cast<std::size_t>(t.target)].image;
                 tw = iw = static_cast<float>(image2.extent.width);
@@ -1198,6 +1198,9 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
         if (stale_) build(extent);
     }
     if (scene_.image == VK_NULL_HANDLE || !uniforms_) return;
+
+    // Video textures: the frames due now, into their pictures before anything samples them.
+    if (assets_->has_videos()) assets_->advance_videos(cmd, inputs.time);
 
     // Uniform blocks: the static part as built, the dynamic part patched for this frame.
     frame_ ^= 1u;

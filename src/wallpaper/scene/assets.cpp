@@ -5,12 +5,17 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <format>
+#include <fstream>
 #include <set>
 
 #include "core/clock.hpp"
 #include "core/log.hpp"
+#include "core/paths.hpp"
 #include "gpu/context.hpp"
+#include "gpu/pictures.hpp"
 #include "gpu/texture.hpp"
+#include "gpu/video_pass.hpp"
 #include "wallpaper/image/decode.hpp"
 #include "wallpaper/scene/tex.hpp"
 
@@ -271,7 +276,48 @@ void SceneAssets::read_texture(const std::string& name) {
         return;
     }
     if (tex.images.empty() || tex.images[0].empty()) return;
-    if (tex.video) warnings_.push_back("texture " + name + ": video textures come with M4");
+    if (tex.video) {
+        // An mp4 inside the .tex: written to the cache once, decoded from there on the
+        // decoder's own thread, and drawn into a picture every frame (finish() opens it).
+        std::vector<std::byte> payload;
+        if (!mip_bytes(tex.images[0][0], payload) || payload.empty()) {
+            warnings_.push_back("texture " + name + ": video payload unreadable");
+            return;
+        }
+        std::uint64_t hash = 1469598103934665603ull;
+        for (char c : name) hash = (hash ^ static_cast<unsigned char>(c)) * 1099511628211ull;
+        for (std::size_t i = 0; i < payload.size(); i += 4096) {
+            hash = (hash ^ static_cast<unsigned char>(payload[i])) * 1099511628211ull;
+        }
+        hash = (hash ^ payload.size()) * 1099511628211ull;
+        std::filesystem::path dir = paths::cache_dir() / "video";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        std::filesystem::path cached = dir / (std::format("{:016x}", hash) + ".mp4");
+        if (!std::filesystem::exists(cached, ec) ||
+            std::filesystem::file_size(cached, ec) != payload.size()) {
+            std::ofstream out(cached, std::ios::binary | std::ios::trunc);
+            out.write(reinterpret_cast<const char*>(payload.data()),
+                      static_cast<std::streamsize>(payload.size()));
+            if (!out) {
+                warnings_.push_back("texture " + name + ": cannot write the video to the cache");
+                return;
+            }
+        }
+        // Opened here on the worker, with the first frame decoded, so the main thread only
+        // makes the images.
+        std::string error;
+        auto decoder = video::Decoder::open(cached, "auto", false, error);
+        if (!decoder) {
+            warnings_.push_back("texture " + name + ": video: " + error);
+            return;
+        }
+        decoder->wait_first();
+        pending_videos_.push_back(
+            {name, cached, tex.img_width, tex.img_height, std::move(decoder)});
+        animated_ = true;
+        return;
+    }
 
     PendingTexture pending;
     pending.name = name;
@@ -428,6 +474,8 @@ SceneProgram* SceneAssets::compile_program(const ShaderRequest& request) {
 bool SceneAssets::finish() {
     VkDevice device = gpu_.device();
     upload_pending();
+    for (PendingVideo& p : pending_videos_) start_video(p);
+    pending_videos_.clear();
 
     // A white pixel for every slot nothing is bound to.
     auto span = staging_.allocate(4);
@@ -493,6 +541,7 @@ bool SceneAssets::finish() {
 }
 
 SceneAssets::~SceneAssets() {
+    release_videos();
     VkDevice device = gpu_.device();
     // Pipelines and modules may still be in use by frames in flight.
     std::vector<VkPipeline> pipelines;
@@ -671,6 +720,248 @@ VkPipeline SceneAssets::pipeline(SceneProgram& program, const std::string& blend
     }
     program.pipelines[key] = result;
     return result;
+}
+
+namespace {
+
+void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageLayout from, VkImageLayout to) {
+    VkImageMemoryBarrier2 b{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .oldLayout = from,
+        .newLayout = to,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    VkDependencyInfo dep{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &b,
+    };
+    vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+}  // namespace
+
+void SceneAssets::start_video(PendingVideo& pending) {
+    std::unique_ptr<video::Decoder> decoder = std::move(pending.decoder);
+    if (!decoder) return;
+    auto v = std::make_unique<VideoTexture>();
+    v->name = pending.name;
+    v->width = std::max(1u, decoder->info().width);
+    v->height = std::max(1u, decoder->info().height);
+    v->decoder = std::move(decoder);
+
+    VkDevice device = gpu_.device();
+    std::uint32_t sizes[3][2] = {{v->width, v->height},
+                                 {(v->width + 1) / 2, (v->height + 1) / 2},
+                                 {(v->width + 1) / 2, (v->height + 1) / 2}};
+    VkDeviceSize bytes = 0;
+    for (int i = 0; i < 3; ++i) {
+        VideoTexture::Plane& p = v->planes[static_cast<std::size_t>(i)];
+        p.width = sizes[i][0];
+        p.height = sizes[i][1];
+        bytes += static_cast<VkDeviceSize>(p.width) * p.height;
+        VkImageCreateInfo info{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = VK_FORMAT_R8_UNORM,
+            .extent = {p.width, p.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        VmaAllocationCreateInfo alloc{.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        VmaAllocationInfo result{};
+        if (vmaCreateImage(gpu_.allocator(), &info, &alloc, &p.image, &p.allocation, &result) !=
+            VK_SUCCESS) {
+            warnings_.push_back("texture " + pending.name + ": video planes: out of memory");
+            return;
+        }
+        v->memory += result.size;
+        VkImageViewCreateInfo view{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = p.image,
+            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .format = VK_FORMAT_R8_UNORM,
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        vkCreateImageView(device, &view, nullptr, &p.view);
+    }
+    for (gpu::Buffer& b : v->staging) {
+        b = gpu::Buffer(gpu_.allocator(), bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, true);
+    }
+    VkImageCreateInfo info{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent = {v->width, v->height, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VmaAllocationCreateInfo alloc{.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    VmaAllocationInfo result{};
+    if (vmaCreateImage(gpu_.allocator(), &info, &alloc, &v->image, &v->allocation, &result) !=
+        VK_SUCCESS) {
+        warnings_.push_back("texture " + pending.name + ": video picture: out of memory");
+        return;
+    }
+    v->memory += result.size;
+    VkImageViewCreateInfo view{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = v->image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    vkCreateImageView(device, &view, nullptr, &v->view);
+    if (!video_pass_) video_pass_ = std::make_unique<gpu::VideoPass>(gpu_);
+
+    SceneTexture t;
+    t.external = v->view;
+    t.tex_width = t.img_width = v->width;
+    t.tex_height = t.img_height = v->height;
+    t.clamp = true;
+    textures_[pending.name] = t;
+    log::info("texture {}: video {}x{} {} fps, {}", pending.name, v->width, v->height,
+              v->decoder->info().fps, v->decoder->info().codec);
+    videos_.push_back(std::move(v));
+}
+
+void SceneAssets::advance_videos(VkCommandBuffer cmd, double time) {
+    for (auto& owned : videos_) {
+        VideoTexture& v = *owned;
+        std::optional<video::Picture> picture = v.decoder->take(time);
+        bool first = v.layout == VK_IMAGE_LAYOUT_UNDEFINED;
+        if (!picture && !first) continue;
+        if (picture &&
+            (picture->width != v.planes[0].width || picture->height != v.planes[0].height ||
+             picture->prime) &&
+            !v.complained) {
+            v.complained = true;
+            log::warn("texture {}: video frame {}x{}{} does not fit its planes {}x{}", v.name,
+                      picture->width, picture->height, picture->prime ? " (dma-buf)" : "",
+                      v.planes[0].width, v.planes[0].height);
+        }
+        if (picture && picture->width == v.planes[0].width &&
+            picture->height == v.planes[0].height && !picture->prime) {
+            // The planes, through one of two staging buffers (the GPU may still read the
+            // other).
+            gpu::Buffer& buffer = v.staging[v.slot];
+            v.slot ^= 1u;
+            const std::vector<std::uint8_t>* data[] = {&picture->y, &picture->u, &picture->v};
+            VkDeviceSize offset = 0;
+            for (std::size_t i = 0; i < 3 && buffer; ++i) {
+                VideoTexture::Plane& p = v.planes[i];
+                if (offset + data[i]->size() > buffer.size()) break;
+                std::memcpy(buffer.mapped() + offset, data[i]->data(), data[i]->size());
+                image_barrier(cmd, p.image,
+                              p.sampled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                        : VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                VkBufferImageCopy copy{
+                    .bufferOffset = offset,
+                    .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                    .imageExtent = {p.width, p.height, 1},
+                };
+                vkCmdCopyBufferToImage(cmd, buffer.get(), p.image,
+                                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                image_barrier(cmd, p.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                p.sampled = true;
+                offset += data[i]->size();
+            }
+            if (buffer) buffer.flush(0, VK_WHOLE_SIZE);
+            if (v.shown < 0) {
+                log::debug("texture {}: first video frame at {:.3f} s (scene time {:.3f})", v.name,
+                           picture->time, time);
+            }
+            v.shown = picture->time;
+        }
+        bool planes_ready = v.planes[0].sampled && v.planes[1].sampled && v.planes[2].sampled;
+        // The picture: the planes converted, or black until the first frame is there.
+        image_barrier(cmd, v.image, v.layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        VkRenderingAttachmentInfo color{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = v.view,
+            .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        };
+        color.clearValue.color = {{0, 0, 0, 1}};
+        VkExtent2D extent{v.width, v.height};
+        VkRenderingInfo info{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = {{0, 0}, extent},
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color,
+        };
+        vkCmdBeginRendering(cmd, &info);
+        if (planes_ready && video_pass_) {
+            VkViewport viewport{0, 0, static_cast<float>(v.width), static_cast<float>(v.height),
+                                0, 1};
+            VkRect2D scissor{{0, 0}, extent};
+            vkCmdSetViewport(cmd, 0, 1, &viewport);
+            vkCmdSetScissor(cmd, 0, 1, &scissor);
+            gpu::Target target{cmd, extent, VK_FORMAT_R8G8B8A8_UNORM, {}, true};
+            gpu::VideoPass::Frame frame{v.planes[0].view,
+                                        v.planes[1].view,
+                                        v.planes[2].view,
+                                        v.width,
+                                        v.height,
+                                        v.decoder->info().bt709,
+                                        v.decoder->info().full_range,
+                                        false};
+            float white[3] = {1, 1, 1};
+            video_pass_->draw(target, frame, gpu::Scaling::stretch, white, 1.0f);
+        }
+        vkCmdEndRendering(cmd);
+        image_barrier(cmd, v.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        v.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+}
+
+void SceneAssets::release_videos() {
+    if (videos_.empty()) return;
+    VkDevice device = gpu_.device();
+    std::vector<std::pair<VkImage, VmaAllocation>> images;
+    std::vector<VkImageView> views;
+    std::vector<gpu::Buffer> buffers;
+    for (auto& owned : videos_) {
+        VideoTexture& v = *owned;
+        v.decoder.reset();  // its thread first
+        for (VideoTexture::Plane& p : v.planes) {
+            if (p.view != VK_NULL_HANDLE) views.push_back(p.view);
+            if (p.image != VK_NULL_HANDLE) images.emplace_back(p.image, p.allocation);
+        }
+        if (v.view != VK_NULL_HANDLE) views.push_back(v.view);
+        if (v.image != VK_NULL_HANDLE) images.emplace_back(v.image, v.allocation);
+        for (gpu::Buffer& b : v.staging) buffers.push_back(std::move(b));
+    }
+    videos_.clear();
+    VmaAllocator allocator = gpu_.allocator();
+    auto held = std::make_shared<std::vector<gpu::Buffer>>(std::move(buffers));
+    gpu_.defer([device, allocator, images, views, held]() mutable {
+        for (VkImageView v : views) vkDestroyImageView(device, v, nullptr);
+        for (auto& [image, allocation] : images) vmaDestroyImage(allocator, image, allocation);
+        held.reset();
+    });
 }
 
 }  // namespace glint::scene

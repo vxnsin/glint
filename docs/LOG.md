@@ -618,3 +618,12 @@ label type, whose value is a boolean; a text now shows nothing for a boolean and
 for a number. Its GIF window stayed empty because the GIF is a video texture (TEXB0003 with
 bit 5 of the flags), which the new mip-size check had refused as too short; the flag now
 counts, and the video itself still waits for M4.
+
+### Video textures
+
+The dark, noisy render of one scene turned out to be its background missing: a 4K mp4
+inside a .tex, which glint had skipped since M2 (and, for older files, had uploaded as if
+it were pixels). Nine items carry such textures. They now go through the video wallpaper's
+decoder into an RGBA picture per frame (docs/FORMATS.md, 14); the GIF windows of the
+terminal scene move and the 4K background shows. The decoder is opened on the loading
+worker with its first frame ready, so the first draw has a picture.

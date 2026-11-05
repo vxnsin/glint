@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "core/log.hpp"
 #include "core/paths.hpp"
 #include "gpu/blit.hpp"
 #include "gpu/buffer.hpp"
@@ -109,6 +110,9 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (const char* level = std::getenv("GLINT_LOG"); level != nullptr && level[0] == 'd') {
+        log::set_level(log::Level::debug);
+    }
     std::string error;
     auto gpu = gpu::Context::create(nullptr, std::nullopt, error);
     if (!gpu) {

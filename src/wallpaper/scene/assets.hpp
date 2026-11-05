@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -8,6 +9,8 @@
 #include <vector>
 
 #include "gpu/staging.hpp"
+#include "gpu/texture.hpp"
+#include "gpu/video_pass.hpp"
 #include "gpu/vulkan.hpp"
 #include "wallpaper/scene/mdl.hpp"
 #include "wallpaper/scene/plan.hpp"
@@ -16,12 +19,13 @@
 #include "wallpaper/scene/shader.hpp"
 #include "wallpaper/scene/text.hpp"
 #include "wallpaper/scene/vfs.hpp"
+#include "wallpaper/video/decoder.hpp"
 
 namespace glint {
 class Workers;
 namespace gpu {
 class Context;
-class Texture;
+class VideoPass;
 }  // namespace gpu
 }  // namespace glint
 
@@ -41,7 +45,10 @@ struct SceneTexture {
     float frame_width = 1, frame_height = 1;
     int format = 0;   // the shaders' FORMAT_ code: 0 RGBA8, 4 DXT5, 6 DXT3, 7 DXT1, 8 RG88, 9 R8
     float units = 1;  // canvas units per texel: text is rasterised finer than the canvas
+    VkImageView external = VK_NULL_HANDLE;  // a video texture's picture, drawn each frame
 
+    VkImageView view() const { return texture ? texture->view() : external; }
+    std::uint32_t levels() const { return texture ? texture->levels() : 1; }
     PlanTextureInfo plan_info() const { return {frames, format}; }
 };
 
@@ -82,6 +89,10 @@ public:
     // White when a file is missing; transparent black for a render target (_rt_...) glint
     // does not make, so a missing layer adds nothing instead of covering the scene.
     const SceneTexture& texture(const std::string& name) const;
+    // Video textures (an mp4 inside a .tex): the frame due at the scene time is decoded,
+    // uploaded and converted into each one's picture. Recorded into cmd before the draws.
+    void advance_videos(VkCommandBuffer cmd, double time);
+    bool has_videos() const { return !videos_.empty(); }
     // A texture or shader a layer made at run time needs: read, compiled and uploaded now,
     // on the main thread. False when it cannot be had.
     bool ensure_texture(const std::string& name);
@@ -134,6 +145,41 @@ private:
     std::map<std::string, SceneTexture> textures_;
     std::vector<PendingTexture> pending_;
     std::filesystem::path shader_cache_;
+    // A video texture: its decoder on its own thread, the YUV planes the frames go into and
+    // the RGBA picture the scene samples.
+    struct VideoTexture {
+        std::string name;
+        std::unique_ptr<video::Decoder> decoder;
+        struct Plane {
+            VkImage image = VK_NULL_HANDLE;
+            VmaAllocation allocation = VK_NULL_HANDLE;
+            VkImageView view = VK_NULL_HANDLE;
+            std::uint32_t width = 0, height = 0;
+            bool sampled = false;
+        };
+        std::array<Plane, 3> planes{};
+        std::array<gpu::Buffer, 2> staging;
+        std::uint32_t slot = 0;
+        VkImage image = VK_NULL_HANDLE;  // the picture
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;
+        VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VkDeviceSize memory = 0;
+        std::uint32_t width = 0, height = 0;
+        double shown = -1;
+        bool complained = false;
+    };
+    struct PendingVideo {
+        std::string name;
+        std::filesystem::path file;
+        std::uint32_t width = 0, height = 0;
+        std::unique_ptr<video::Decoder> decoder;  // opened on the worker, first frame ready
+    };
+    std::vector<PendingVideo> pending_videos_;
+    std::vector<std::unique_ptr<VideoTexture>> videos_;
+    std::unique_ptr<gpu::VideoPass> video_pass_;
+    void start_video(PendingVideo& pending);
+    void release_videos();
     std::set<std::string> missing_;  // textures asked for at run time that were not there
     bool upload_pending();
     SceneTexture white_;
