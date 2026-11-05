@@ -67,6 +67,13 @@ compositor's text for the output. `state` is `running`, `paused` (with `reason`:
   (`on`, `off`; the capture for reactive scenes), `properties` (initial values, same as
   `props set`)
 
+Built for videos: `volume` and `mute` (the file's sound track, silent by default), `speed`,
+`hwdec`; videos always loop. Outputs showing the same file with the same `hwdec`, `speed`
+and volume share one decoder and one sound stream and stay on the same frame; each keeps its
+own `scaling` and `color`. With VA-API the decoded frames are imported into Vulkan as
+dma-bufs without a copy; when the driver cannot export or import them glint copies them out
+instead, as it does with `GLINT_VIDEO_COPY=1`.
+
 Built so far for scenes: `volume` (0 to 1, default 0: a scene is silent unless asked, so a
 login does not start music) and `mute` play the scene's sound objects through one PipeWire
 stream; `properties`. Two outputs showing the same scene play its sound once. A paused

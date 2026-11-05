@@ -331,3 +331,45 @@ its own, which brings the scene's water back).
 - Per-output volume over the `audio` op; the volume is the `set` option.
 - Sound objects that start silent wait for SceneScript (M5).
 - The interactive CLI menus (#49) are not built yet.
+
+## M4, video (2026-11-05)
+
+Measured on 3784694220, a 3840x2160 h264 video at 30 fps (7.5 s, so every window below spans
+several loops), shown on DP-2 at 2560x1440. CPU and context switches over 15 s with
+`/proc/<pid>/stat` after 8 s of warm-up, GPU busy from the DRM fdinfo:
+
+| decode                        | CPU   | switches/s | GPU gfx | VRAM    |
+|-------------------------------|-------|------------|---------|---------|
+| VA-API, frames as dma-bufs    | 2.7 % | 432        | 0.6 %   | 506 MiB |
+| VA-API, frames copied out     | 36 %  | 1014       | 3.7 %   | 472 MiB |
+| software (`hwdec=no`)         | 56 %  | 770        | 2.4 %   | 145 MiB |
+
+The copy is av_hwframe_transfer_data into memory, then the three planes through a staging
+buffer. The dma-buf path maps each VA-API surface to DRM PRIME (on this card one buffer
+object: R8 luma at offset 0, GR88 chroma after it, modifier 0x200000020801b04), imports each
+surface once as two images with VK_EXT_image_drm_format_modifier, takes them over from the
+foreign queue per frame and samples the chroma interleaved. The decoder's surface pool grows
+by seven so the queued frames and the one on screen do not starve it, which is the extra
+VRAM. Colours match the copy path in screenshots; the import cache stays at the pool's size
+(the dma-buf fd count stays flat over minutes).
+
+The Workshop folder holds 69 videos: 66 h264 (two of them full-range yuvj420p), one HEVC,
+one VP9 and one empty download. HEVC, VP9 and h264 with two video streams all play through
+VA-API as dma-bufs.
+
+The same video on both outputs: one decoder, the same frame on both screens, 2.0 % CPU and
+485 MiB, against 891 MiB with a decoder per output before. Covering DP-2 with a fullscreen
+window paused DP-2 while HDMI-A-1 played on.
+
+A synthetic 3 s video with the frame number in its brightness read back at 30 frames per
+second across three loops. That test found a bug from the first video commit: the loop
+offset was set instead of added to, so from the third pass on every frame was due at once
+and the decoder ran as fast as it could (the 42 % and 203 % measured then were that).
+
+### Left out
+
+- The `fps` cap is accepted and ignored; a video draws on every frame callback and changes
+  its picture at its own rate.
+- Video textures inside scenes (TEXB0004 with the video flag) are not decoded yet.
+- 10-bit (P010) import is written but untested; none of the videos is 10-bit.
+- NVDEC and Vulkan Video decode are not done; this machine has neither need.
