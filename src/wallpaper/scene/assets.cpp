@@ -152,11 +152,26 @@ std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item
         }
         self->programs_[key] = std::move(program);
     }
+    // Timelines move a scene even when no shader reads the time.
+    for (const ImageObject& image : self->scene_.images) {
+        if (image.origin.animated() || image.scale.animated() || image.angles.animated() ||
+            image.alpha.animated()) {
+            self->animated_ = true;
+        }
+        for (const Effect& effect : image.effects) {
+            for (const auto& o : effect.overrides) {
+                for (const auto& [key, bound] : o.constants) {
+                    if (bound.animated()) self->animated_ = true;
+                }
+            }
+        }
+    }
     self->load_ms_ = clock::ms_since(start);
     return self;
 }
 
 void SceneAssets::read_texture(const std::string& name) {
+    if (name.starts_with("_rt_")) return;  // a render target, not a file
     std::string path = texture_path(name);
     auto file = vfs_.read(path);
     if (!file) {
@@ -273,6 +288,13 @@ bool SceneAssets::finish() {
         white_.texture = gpu::Texture::upload(gpu_, staging_, span, VK_FORMAT_R8G8B8A8_UNORM,
                                               {&level, 1}, false);
     }
+    auto none = staging_.allocate(4);
+    if (none.data != nullptr) {
+        std::memset(none.data, 0, 4);
+        gpu::Texture::Level level{0, 1, 1};
+        clear_.texture = gpu::Texture::upload(gpu_, staging_, none, VK_FORMAT_R8G8B8A8_UNORM,
+                                              {&level, 1}, false);
+    }
 
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     bindings.push_back({0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
@@ -348,6 +370,7 @@ SceneAssets::~SceneAssets() {
 
 const SceneTexture& SceneAssets::texture(const std::string& name) const {
     if (auto it = textures_.find(name); it != textures_.end()) return it->second;
+    if (name.starts_with("_rt_")) return clear_;
     return white_;
 }
 

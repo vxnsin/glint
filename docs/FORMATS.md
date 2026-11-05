@@ -130,8 +130,15 @@ Top level: `general`, `camera`, `objects`, `version`.
 
 Value sources: any field may be a plain value or `{"value": ..., "user": "propname"}` (bound
 to a project property, optionally `"user": {"name": "...", "condition": "..."}`),
-`{"value", "script": "..."}` (SceneScript, M5), or `{"value", "animation": ...}` (timeline,
-M3). `user` bindings are what makes `props set` live: glint keeps a table binding -> uniform /
+`{"value", "script": "..."}` (SceneScript, M5), or `{"value", "animation": ...}` (timeline).
+
+A timeline: `{"c0": [keyframes], "c1": [...], ..., "options": {"fps": 30, "length": 90,
+"mode": "single" | "loop" | "mirror"}}`, one channel per component. A keyframe is `{"frame",
+"value", "back": {"enabled", "x", "y"}, "front": {...}}`; between two keyframes the value is
+a cubic bezier whose handles sit at `x` times the segment's length in frames and `y` in value
+(0.5 and 0 give a smooth ease). Over the installed scenes timelines drive effect constants
+(about 100), an object's `alpha` (28), `origin` (20), `angles` (11) and `scale` (4); `single`
+plays once and holds, `loop` repeats, `mirror` goes back and forth. `user` bindings are what makes `props set` live: glint keeps a table binding -> uniform /
 object field / structural (texture variant, visibility) and applies changes without reload.
 
 `version` 1 scenes have objects without `id`; assign them in order.
@@ -158,6 +165,12 @@ object's `size` is the model's size unless overridden.
 
 Special texture names: `_rt_FullFrameBuffer`, `_rt_imageLayerComposite_<id>_a`,
 `_rt_MipMappedFrameBuffer`, `_alias_<name>`, and the effect-local `_rt_...` from `fbos`.
+`_rt_imageLayerComposite_<id>_a` is object `<id>` drawn with its material into a target of
+its own; scenes keep hidden helper objects for it (3377132665 has a hidden 4x4 "necessary for
+layered clouds"). A render target glint does not make reads as transparent black.
+
+A layer samples like the picture it holds: wrapping when the picture's .tex has no clamp
+flag. A `scroll` effect moves a repeating picture across the layer's edge.
 
 ## 7. Effect json (M2)
 

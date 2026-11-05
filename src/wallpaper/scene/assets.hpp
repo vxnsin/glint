@@ -64,7 +64,9 @@ public:
     int compiled() const { return compiled_; }
     int cached() const { return cached_; }
 
-    const SceneTexture& texture(const std::string& name) const;  // white when missing
+    // White when a file is missing; transparent black for a render target (_rt_...) glint
+    // does not make, so a missing layer adds nothing instead of covering the scene.
+    const SceneTexture& texture(const std::string& name) const;
     std::optional<Vec2> picture_size(const std::string& name) const;
     SceneProgram* program(const ShaderRequest& request);
     // A puppet's rest mesh by .mdl path, null when it did not read.
@@ -100,6 +102,7 @@ private:
     std::map<std::string, SceneTexture> textures_;
     std::vector<PendingTexture> pending_;
     SceneTexture white_;
+    SceneTexture clear_;  // transparent black, for render targets glint does not make
     std::map<std::string, SceneProgram> programs_;
     std::map<std::string, Mesh> meshes_;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;

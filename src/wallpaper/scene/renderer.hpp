@@ -75,10 +75,14 @@ private:
             model,
             model_inverse,  // object transforms under parallax
             audio,          // g_AudioSpectrum{16,32,64}{Left,Right}: bands and side below
+            timeline,       // a material constant with a timeline: bound and uniform below
+            alpha,          // the object's alpha with a timeline
         } what;
         std::uint32_t offset;
         int bands = 0;
         bool right = false;
+        const Bound* bound = nullptr;
+        const ShaderUniform* uniform = nullptr;
     };
     struct Draw {
         const PlanDraw* plan = nullptr;
@@ -107,7 +111,7 @@ private:
     void destroy_image(Image& image);
     void fill_block(Draw& draw);
     math::Mat4 parallax_model(int object, const FrameInputs& inputs) const;
-    math::Mat4 model_matrix(int object, std::vector<int>& visiting) const;
+    math::Mat4 model_matrix(int object, std::vector<int>& visiting, double time) const;
     void transition(VkCommandBuffer cmd, Image& image, VkImageLayout layout);
 
     gpu::Context& gpu_;
@@ -132,7 +136,8 @@ private:
     std::uint32_t frame_ = 0;
     float clear_[4] = {0, 0, 0, 1};
     bool clear_enabled_ = true;
-    std::vector<math::Mat4> models_;  // per object, without parallax
+    std::vector<math::Mat4> models_;  // per object, without parallax, at time 0
+    std::vector<bool> moving_;        // per object: a timeline moves its transform
     bool parallax_ = false;
     bool uses_audio_ = false;
     float parallax_amount_ = 0;

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -26,13 +27,38 @@ using Vec4 = std::array<float, 4>;
 Vec3 parse_vec3(const nlohmann::json& json, Vec3 fallback);
 Vec2 parse_vec2(const nlohmann::json& json, Vec2 fallback);
 
+// A timeline (the "animation" value source): one channel of keyframes per component, a cubic
+// bezier between neighbouring keyframes. Handle x is a share of the segment (0.5 is half way),
+// handle y an offset in value.
+struct Keyframe {
+    float frame = 0, value = 0;
+    float back_x = 0, back_y = 0, front_x = 0, front_y = 0;
+    bool back = false, front = false;  // handle enabled; otherwise the segment is straight
+};
+
+struct Animation {
+    enum class Mode { single, loop, mirror };
+    std::vector<std::vector<Keyframe>> channels;  // c0, c1, ...
+    float fps = 30;
+    float length = 0;  // frames
+    Mode mode = Mode::single;
+
+    // The components at a time in seconds since the scene started.
+    std::vector<float> at(double seconds) const;
+};
+
 // A field that may be bound to a project property:
 // plain value, {"value": v, "user": "name"} or {"value": v, "user": {"name", "condition"}}.
 struct Bound {
     nlohmann::json value;
-    std::string user;       // property name, empty if not bound
-    std::string condition;  // with a condition: true when the property equals it
-    bool script = false;    // a SceneScript value (M5); the static value is used
+    std::string user;                      // property name, empty if not bound
+    std::string condition;                 // with a condition: true when the property equals it
+    bool script = false;                   // a SceneScript value (M5); the static value is used
+    std::shared_ptr<Animation> animation;  // a timeline; the static value when null
+
+    bool animated() const { return animation != nullptr; }
+    // The value at a time: the timeline if there is one, else resolve(values).
+    nlohmann::json at(const Values& values, double seconds) const;
 
     // The value with the current property values applied.
     nlohmann::json resolve(const Values& values) const;

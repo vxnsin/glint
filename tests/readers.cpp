@@ -4,6 +4,7 @@
 #include <lz4.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -218,6 +219,37 @@ void test_bound() {
     CHECK((parse_vec2(nlohmann::json("4"), {0, 0}) == Vec2{4, 4}));
 }
 
+void test_animation() {
+    auto make = [](const char* mode, bool eased) {
+        nlohmann::json a = {
+            {"animation",
+             {{"c0",
+               {{{"frame", 0}, {"value", 0}, {"front", {{"enabled", eased}, {"x", 0.5}, {"y", 0}}}},
+                {{"frame", 30},
+                 {"value", 10},
+                 {"back", {{"enabled", eased}, {"x", -0.5}, {"y", 0}}}}}},
+              {"options", {{"fps", 30}, {"length", 30}, {"mode", mode}}}}},
+            {"value", 0}};
+        return parse_bound(a);
+    };
+    auto near = [](float a, float b) { return std::abs(a - b) < 0.05f; };
+    Bound linear = make("single", false);
+    CHECK(linear.animated());
+    CHECK(near(linear.animation->at(0.5)[0], 5));
+    CHECK(near(linear.animation->at(5.0)[0], 10));  // single: holds the end
+    Bound loop = make("loop", false);
+    CHECK(near(loop.animation->at(1.25)[0], 2.5));
+    Bound mirror = make("mirror", false);
+    CHECK(near(mirror.animation->at(1.25)[0], 7.5));  // on its way back
+    Bound eased = make("single", true);
+    CHECK(near(eased.animation->at(0.5)[0], 5));  // symmetric ease: the middle
+    CHECK(eased.animation->at(0.1)[0] < 1.0f);    // slow start
+    Values values;
+    CHECK(eased.at(values, 1.0).is_number());
+    Bound plain = parse_bound(nlohmann::json(2.0));
+    CHECK(!plain.animated() && plain.at(values, 3.0) == 2.0);
+}
+
 void test_corpus() {
     std::filesystem::path workshop;
     if (const char* env = std::getenv("GLINT_WORKSHOP")) {
@@ -288,6 +320,7 @@ int main() {
     test_package();
     test_tex();
     test_bound();
+    test_animation();
     test_corpus();
     std::printf("%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

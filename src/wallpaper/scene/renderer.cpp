@@ -219,12 +219,12 @@ void SceneRenderer::release() {
     extent_ = {0, 0};
 }
 
-math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting) const {
+math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting, double time) const {
     const SceneDesc& scene = assets_->scene();
     const ImageObject& image = scene.images[static_cast<std::size_t>(object)];
-    Vec3 origin = parse_vec3(image.origin.resolve(values_), {0, 0, 0});
-    Vec3 scale = parse_vec3(image.scale.resolve(values_), {1, 1, 1});
-    Vec3 angles = parse_vec3(image.angles.resolve(values_), {0, 0, 0});
+    Vec3 origin = parse_vec3(image.origin.at(values_, time), {0, 0, 0});
+    Vec3 scale = parse_vec3(image.scale.at(values_, time), {1, 1, 1});
+    Vec3 angles = parse_vec3(image.angles.at(values_, time), {0, 0, 0});
     // scene.json keeps angles in radians; z turns clockwise on the canvas.
     math::Mat4 local = math::Mat4::translate(origin[0], origin[1], origin[2]) *
                        math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
@@ -235,7 +235,7 @@ math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting) c
     for (std::size_t i = 0; i < scene.images.size(); ++i) {
         if (scene.images[i].id == image.parent) {
             visiting.push_back(object);
-            math::Mat4 parent = model_matrix(static_cast<int>(i), visiting);
+            math::Mat4 parent = model_matrix(static_cast<int>(i), visiting, time);
             visiting.pop_back();
             // Hung from a point on the parent puppet's skeleton.
             const ImageObject& owner = scene.images[i];
@@ -282,13 +282,38 @@ void SceneRenderer::build(VkExtent2D extent) {
                      std::clamp(static_cast<std::uint32_t>(std::lround(sy)), 1u, max_target)};
         Image image = make_image(e, target_format);
         image.repeat = t.repeat;
+        // A layer wraps like the picture it holds: a scrolling effect moves a repeating
+        // picture across its edge, and clamping would smear the edge into long bars.
+        if (t.name == "layer a" || t.name == "layer b") {
+            const ImageObject& owner = scene.images[static_cast<std::size_t>(t.object)];
+            if (!owner.material.passes.empty() && !owner.material.passes[0].textures.empty() &&
+                owner.material.passes[0].textures[0]) {
+                image.repeat = !assets_->texture(*owner.material.passes[0].textures[0]).clamp;
+            }
+        }
         targets_.push_back(image);
     }
 
     models_.clear();
+    moving_.assign(scene.images.size(), false);
+    for (std::size_t i = 0; i < scene.images.size(); ++i) {
+        // A transform with a timeline, its own or an ancestor's, moves every frame.
+        for (int o = static_cast<int>(i), guard = 0; o >= 0 && guard < 64; ++guard) {
+            const ImageObject& im = scene.images[static_cast<std::size_t>(o)];
+            if (im.origin.animated() || im.scale.animated() || im.angles.animated()) {
+                moving_[i] = true;
+                break;
+            }
+            int next = -1;
+            for (std::size_t k = 0; k < scene.images.size(); ++k) {
+                if (scene.images[k].id == im.parent) next = static_cast<int>(k);
+            }
+            o = next;
+        }
+    }
     for (std::size_t i = 0; i < scene.images.size(); ++i) {
         std::vector<int> visiting;
-        models_.push_back(model_matrix(static_cast<int>(i), visiting));
+        models_.push_back(model_matrix(static_cast<int>(i), visiting, 0));
     }
 
     // Vertices: one quad (triangle strip, position and texcoord) per draw.
@@ -465,22 +490,32 @@ void SceneRenderer::fill_block(Draw& draw) {
             if (auto v = values_.find(user->second); v != values_.end()) value = v->second;
         }
         write(block, u, floats_of(value));
+        if (!u.material.empty()) {
+            if (auto it = p.bound.find(u.material); it != p.bound.end() && it->second.animated()) {
+                Dynamic d{Dynamic::What::timeline, u.offset};
+                d.bound = &it->second;
+                d.uniform = &u;
+                draw.dynamics.push_back(d);
+            }
+        }
 
         const std::string& n = u.name;
         auto vec = [&](std::initializer_list<float> f) { write(block, u, std::vector<float>(f)); };
         if (n == "g_ModelViewProjectionMatrix") {
             write_matrix(block, u.offset, mvp);
-            if (object && parallax_) draw.dynamics.push_back({Dynamic::What::mvp, u.offset});
+            if (object && (parallax_ || moving_[static_cast<std::size_t>(p.object)]))
+                draw.dynamics.push_back({Dynamic::What::mvp, u.offset});
         } else if (n == "g_ModelViewProjectionMatrixInverse") {
             write_matrix(block, u.offset, mvp.inverse());
-            if (object && parallax_)
+            if (object && (parallax_ || moving_[static_cast<std::size_t>(p.object)]))
                 draw.dynamics.push_back({Dynamic::What::mvp_inverse, u.offset});
         } else if (n == "g_ModelMatrix") {
             write_matrix(block, u.offset, model);
-            if (object && parallax_) draw.dynamics.push_back({Dynamic::What::model, u.offset});
+            if (object && (parallax_ || moving_[static_cast<std::size_t>(p.object)]))
+                draw.dynamics.push_back({Dynamic::What::model, u.offset});
         } else if (n == "g_ModelMatrixInverse") {
             write_matrix(block, u.offset, model.inverse());
-            if (object && parallax_)
+            if (object && (parallax_ || moving_[static_cast<std::size_t>(p.object)]))
                 draw.dynamics.push_back({Dynamic::What::model_inverse, u.offset});
         } else if (n == "g_ViewProjectionMatrix") {
             write_matrix(block, u.offset, view_projection);
@@ -519,6 +554,12 @@ void SceneRenderer::fill_block(Draw& draw) {
         } else if (n == "g_Color4") {
             if (material) {
                 vec({color[0] * brightness, color[1] * brightness, color[2] * brightness, alpha});
+                if (image.alpha.animated()) {
+                    // Only the alpha moves; it is the fourth component.
+                    Dynamic d{Dynamic::What::alpha, u.offset + 12};
+                    d.bound = &image.alpha;
+                    draw.dynamics.push_back(d);
+                }
             } else {
                 vec({1, 1, 1, 1});
             }
@@ -526,6 +567,11 @@ void SceneRenderer::fill_block(Draw& draw) {
             vec({color[0], color[1], color[2]});
         } else if (material && (n == "g_UserAlpha" || n == "g_Alpha")) {
             vec({alpha});
+            if (image.alpha.animated()) {
+                Dynamic d{Dynamic::What::alpha, u.offset};
+                d.bound = &image.alpha;
+                draw.dynamics.push_back(d);
+            }
         } else if (material && n == "g_Brightness") {
             vec({brightness});
         } else if (n.starts_with("g_Texture") && n.size() > 9 && std::isdigit(n[9])) {
@@ -574,7 +620,16 @@ math::Mat4 SceneRenderer::parallax_model(int object, const FrameInputs& inputs) 
                canvas[0] * 0.2f;
     float dy =
         (inputs.parallax[1] - 0.5f) * parallax_amount_ * image.parallax_depth[1] * canvas[1] * 0.2f;
-    return math::Mat4::translate(dx, dy, 0) * models_[static_cast<std::size_t>(object)];
+    if (!parallax_) {
+        dx = 0;
+        dy = 0;
+    }
+    math::Mat4 base = models_[static_cast<std::size_t>(object)];
+    if (moving_[static_cast<std::size_t>(object)]) {
+        std::vector<int> visiting;
+        base = model_matrix(object, visiting, inputs.time);
+    }
+    return math::Mat4::translate(dx, dy, 0) * base;
 }
 
 void SceneRenderer::transition(VkCommandBuffer cmd, Image& image, VkImageLayout layout) {
@@ -628,6 +683,18 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
                 case Dynamic::What::model_inverse:
                     write_matrix(draw.block, d.offset, model.inverse());
                     break;
+                case Dynamic::What::timeline:
+                    write(draw.block, *d.uniform, floats_of(d.bound->at(values_, inputs.time)));
+                    break;
+                case Dynamic::What::alpha: {
+                    float a = d.bound->at(values_, inputs.time).is_number()
+                                  ? d.bound->at(values_, inputs.time).get<float>()
+                                  : 1.0f;
+                    if (d.offset + 4 <= draw.block.size()) {
+                        std::memcpy(draw.block.data() + d.offset, &a, 4);
+                    }
+                    break;
+                }
                 case Dynamic::What::audio: {
                     const float* source = d.right ? inputs.audio_right : inputs.audio_left;
                     for (int k = 0; k < d.bands; ++k) {

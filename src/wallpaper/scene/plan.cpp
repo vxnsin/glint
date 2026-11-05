@@ -1,5 +1,8 @@
 #include "wallpaper/scene/plan.hpp"
 
+#include <regex>
+#include <set>
+
 namespace glint::scene {
 
 namespace {
@@ -10,6 +13,11 @@ PlanTexture texture_of(const std::optional<std::string>& name, Plan& plan) {
     if (name->starts_with("_rt_FullFrameBuffer") || name->starts_with("_rt_MipMappedFrameBuffer")) {
         t.kind = PlanTexture::Kind::framebuffer;
         plan.reads_framebuffer = true;
+        return t;
+    }
+    if (auto it = plan.composites.find(*name); it != plan.composites.end()) {
+        t.kind = PlanTexture::Kind::target;
+        t.target = it->second;
         return t;
     }
     t.kind = PlanTexture::Kind::file;
@@ -52,6 +60,72 @@ std::string request_key(const ShaderRequest& request) {
 Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize& texture_size,
                 bool everything) {
     Plan plan;
+
+    // Composites first: an object some texture list names as _rt_imageLayerComposite_<id>_a
+    // is drawn with its material into a target of its own, hidden or not (scenes keep
+    // hidden helper objects for exactly this), before anything reads it.
+    {
+        static const std::regex composite(R"(^_rt_imageLayerComposite_(\d+)_[ab]$)");
+        std::set<std::string> names;
+        auto note = [&](const std::optional<std::string>& t) {
+            if (t && std::regex_match(*t, composite)) names.insert(*t);
+        };
+        for (const ImageObject& image : scene.images) {
+            for (const auto& pass : image.material.passes) {
+                for (const auto& t : pass.textures) note(t);
+            }
+            for (const Effect& effect : image.effects) {
+                for (const EffectPass& ep : effect.passes) {
+                    for (const auto& mp : ep.material.passes) {
+                        for (const auto& t : mp.textures) note(t);
+                    }
+                    for (const auto& b : ep.binds) note(b.name);
+                }
+                for (const auto& o : effect.overrides) {
+                    for (const auto& t : o.textures) note(t);
+                }
+            }
+        }
+        for (const std::string& name : names) {
+            std::smatch m;
+            std::regex_match(name, m, composite);
+            int id = std::stoi(m[1].str());
+            int object = -1;
+            for (std::size_t i = 0; i < scene.images.size(); ++i) {
+                if (scene.images[i].id == id) object = static_cast<int>(i);
+            }
+            if (object < 0 ||
+                scene.images[static_cast<std::size_t>(object)].material.passes.empty()) {
+                plan.warnings.push_back(name + ": no such image object");
+                continue;
+            }
+            const ImageObject& image = scene.images[static_cast<std::size_t>(object)];
+            int target = static_cast<int>(plan.targets.size());
+            plan.targets.push_back({object, object_size(image, scene.general, values, texture_size),
+                                    false, false, name});
+            plan.composites[name] = target;
+            bool first = true;
+            for (const MaterialPass& pass : image.material.passes) {
+                PlanDraw draw;
+                draw.object = object;
+                draw.request = {pass.shader, pass.combos, 0};
+                draw.blending = first ? "normal" : pass.blending;
+                draw.geometry = Geometry::clip;
+                draw.target = target;
+                draw.clear = first;
+                for (std::size_t i = 0; i < pass.textures.size() && i < max_texture_slots; ++i) {
+                    draw.textures[i] = texture_of(pass.textures[i], plan);
+                }
+                draw.crop = draw.textures[0].kind == PlanTexture::Kind::file;
+                draw.constants = pass.constants;
+                draw.user = pass.user_constants;
+                bind_mask(draw);
+                plan.draws.push_back(std::move(draw));
+                first = false;
+            }
+        }
+    }
+
     for (std::size_t index = 0; index < scene.images.size(); ++index) {
         const ImageObject& image = scene.images[index];
         if (!everything && !image.visible.resolve_bool(values, true)) continue;

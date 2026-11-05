@@ -59,6 +59,9 @@ struct PlanDraw {
 struct Plan {
     std::vector<PlanDraw> draws;
     std::vector<PlanTarget> targets;
+    // _rt_imageLayerComposite_<id>_a and _b: an object's picture in a target of its own,
+    // drawn first in every frame, by name.
+    std::map<std::string, int> composites;
     bool reads_framebuffer = false;
     std::vector<std::string> warnings;
 };

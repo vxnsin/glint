@@ -1,6 +1,7 @@
 #include "wallpaper/scene/scene.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <sstream>
 
@@ -221,7 +222,117 @@ Bound parse_bound(const json& j) {
         }
     }
     b.script = j.contains("script");
+    if (j.contains("animation") && j["animation"].is_object()) {
+        const json& a = j["animation"];
+        auto animation = std::make_shared<Animation>();
+        const json options = a.value("options", json::object());
+        animation->fps = number(options, "fps", 30);
+        if (animation->fps <= 0) animation->fps = 30;
+        animation->length = number(options, "length", 0);
+        std::string mode = str(options, "mode", "single");
+        animation->mode = mode == "loop"     ? Animation::Mode::loop
+                          : mode == "mirror" ? Animation::Mode::mirror
+                                             : Animation::Mode::single;
+        for (int c = 0; c < 4; ++c) {
+            std::string key = "c" + std::to_string(c);
+            if (!a.contains(key) || !a[key].is_array()) break;
+            std::vector<Keyframe> keys;
+            for (const json& k : a[key]) {
+                Keyframe f;
+                f.frame = number(k, "frame", 0);
+                f.value = number(k, "value", 0);
+                if (k.contains("back") && k["back"].is_object()) {
+                    f.back = boolean(k["back"], "enabled", false);
+                    f.back_x = number(k["back"], "x", 0);
+                    f.back_y = number(k["back"], "y", 0);
+                }
+                if (k.contains("front") && k["front"].is_object()) {
+                    f.front = boolean(k["front"], "enabled", false);
+                    f.front_x = number(k["front"], "x", 0);
+                    f.front_y = number(k["front"], "y", 0);
+                }
+                keys.push_back(f);
+            }
+            std::ranges::sort(keys, {}, &Keyframe::frame);
+            animation->channels.push_back(std::move(keys));
+        }
+        if (animation->length <= 0) {
+            for (const auto& ch : animation->channels) {
+                if (!ch.empty()) animation->length = std::max(animation->length, ch.back().frame);
+            }
+        }
+        if (!animation->channels.empty()) b.animation = std::move(animation);
+    }
     return b;
+}
+
+namespace {
+
+float bezier(float p0, float p1, float p2, float p3, float t) {
+    float u = 1 - t;
+    return u * u * u * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t * t * t * p3;
+}
+
+float channel_at(const std::vector<Keyframe>& keys, float frame) {
+    if (keys.empty()) return 0;
+    if (frame <= keys.front().frame) return keys.front().value;
+    if (frame >= keys.back().frame) return keys.back().value;
+    std::size_t i = 1;
+    while (i < keys.size() && keys[i].frame < frame) ++i;
+    const Keyframe& a = keys[i - 1];
+    const Keyframe& b = keys[i];
+    float span = b.frame - a.frame;
+    if (span <= 0) return b.value;
+    if (!a.front && !b.back) {
+        return a.value + (b.value - a.value) * (frame - a.frame) / span;
+    }
+    float x0 = a.frame, y0 = a.value;
+    float x1 = a.frame + (a.front ? a.front_x : 0) * span, y1 = a.value + (a.front ? a.front_y : 0);
+    float x2 = b.frame + (b.back ? b.back_x : 0) * span, y2 = b.value + (b.back ? b.back_y : 0);
+    float x3 = b.frame, y3 = b.value;
+    // x(t) is monotonic for sane handles: bisect for t.
+    float lo = 0, hi = 1, t = 0.5f;
+    for (int k = 0; k < 24; ++k) {
+        t = (lo + hi) * 0.5f;
+        if (bezier(x0, x1, x2, x3, t) < frame) {
+            lo = t;
+        } else {
+            hi = t;
+        }
+    }
+    return bezier(y0, y1, y2, y3, t);
+}
+
+}  // namespace
+
+std::vector<float> Animation::at(double seconds) const {
+    double frame = seconds * fps;
+    if (length > 0) {
+        switch (mode) {
+            case Mode::single: frame = std::min(frame, static_cast<double>(length)); break;
+            case Mode::loop: frame = std::fmod(frame, static_cast<double>(length)); break;
+            case Mode::mirror: {
+                double cycle = std::fmod(frame, 2.0 * length);
+                frame = cycle <= length ? cycle : 2.0 * length - cycle;
+                break;
+            }
+        }
+    }
+    std::vector<float> out;
+    for (const auto& ch : channels) out.push_back(channel_at(ch, static_cast<float>(frame)));
+    return out;
+}
+
+json Bound::at(const Values& values, double seconds) const {
+    if (!animation) return resolve(values);
+    std::vector<float> v = animation->at(seconds);
+    if (v.size() == 1) return v[0];
+    std::string text;
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        if (i > 0) text += ' ';
+        text += std::to_string(v[i]);
+    }
+    return text;
 }
 
 json Bound::resolve(const Values& values) const {

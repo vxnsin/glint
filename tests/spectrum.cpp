@@ -1,5 +1,7 @@
 // Tests for the FFT and the 64-band audio spectrum, on synthetic signals only.
 
+#include "audio/spectrum.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -9,7 +11,6 @@
 #include <vector>
 
 #include "audio/fft.hpp"
-#include "audio/spectrum.hpp"
 
 namespace {
 
@@ -42,10 +43,10 @@ std::vector<std::complex<float>> naive_dft(const std::vector<std::complex<float>
     for (std::size_t k = 0; k < n; ++k) {
         std::complex<double> sum;
         for (std::size_t t = 0; t < n; ++t) {
-            const double angle = -2.0 * std::numbers::pi * static_cast<double>(k * t) /
-                                 static_cast<double>(n);
-            sum += std::complex<double>(x[t]) *
-                   std::complex<double>(std::cos(angle), std::sin(angle));
+            const double angle =
+                -2.0 * std::numbers::pi * static_cast<double>(k * t) / static_cast<double>(n);
+            sum +=
+                std::complex<double>(x[t]) * std::complex<double>(std::cos(angle), std::sin(angle));
         }
         out[k] = std::complex<float>(sum);
     }
@@ -159,8 +160,8 @@ void test_sines() {
         float hz;
         float min, max;
     };
-    const Case cases[] = {{50.f, 0.4f, 1.3f},   {100.f, 0.5f, 1.3f},   {440.f, 0.8f, 1.2f},
-                          {1000.f, 0.8f, 1.2f}, {3000.f, 0.8f, 1.2f},  {8000.f, 0.8f, 1.2f},
+    const Case cases[] = {{50.f, 0.4f, 1.3f},   {100.f, 0.5f, 1.3f},  {440.f, 0.8f, 1.2f},
+                          {1000.f, 0.8f, 1.2f}, {3000.f, 0.8f, 1.2f}, {8000.f, 0.8f, 1.2f},
                           {15000.f, 0.8f, 1.2f}};
     for (const Case& c : cases) {
         Spectrum spectrum(plain_options());
