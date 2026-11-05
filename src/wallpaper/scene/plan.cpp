@@ -79,7 +79,7 @@ bool visible_with_parents(const SceneDesc& scene, int id, const Values& values) 
         bool found = false;
         for (const ImageObject& o : scene.images) {
             if (o.id != current) continue;
-            own = o.visible.resolve_bool(values, true);
+            own = !o.destroyed && o.visible.resolve_bool(values, true);
             propagate = !o.disable_propagation;
             parent = o.parent;
             found = true;

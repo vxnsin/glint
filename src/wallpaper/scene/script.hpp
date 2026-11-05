@@ -17,6 +17,8 @@
 // is never touched.
 namespace glint::scene {
 
+class Vfs;
+
 // What the scripts see of the frame.
 struct ScriptFrame {
     double time = 0;   // seconds the scene has run
@@ -41,8 +43,9 @@ struct AnimationLayerState {
 
 class ScriptHost {
 public:
+    // vfs: the item's files, for layers scripts create (null: createLayer is refused).
     ScriptHost(const SceneDesc& scene, const Project& project, std::string label,
-               std::string storage_id);
+               std::string storage_id, const Vfs* vfs = nullptr);
     ~ScriptHost();
     ScriptHost(const ScriptHost&) = delete;
     ScriptHost& operator=(const ScriptHost&) = delete;
@@ -50,6 +53,8 @@ public:
     bool empty() const;
     std::size_t count() const;
     const std::vector<ScriptCell>& cells() const { return cells_; }
+    // The scene as the scripts left it: its own copy, with the layers they created.
+    const SceneDesc& scene() const { return scene_; }
 
     // The object sizes scripts read (`thisLayer.size`): by image index.
     void set_size_callback(std::function<Vec2(int)> callback) { size_of_ = std::move(callback); }
@@ -91,6 +96,7 @@ public:
     struct Script;
 
 private:
+    SceneDesc scene_;
     std::unique_ptr<Impl> impl_;
     std::vector<ScriptCell> cells_;
     std::vector<std::string> warnings_;

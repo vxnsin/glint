@@ -314,7 +314,7 @@ class NoAnimation {
     addEndedCallback(f) { }
 }
 
-const __layerFields = ['origin', 'angles', 'scale', 'parallaxDepth', 'visible', 'alpha', 'color', 'brightness',
+const __layerFields = ['origin', 'angles', 'scale', 'parallaxDepth', 'visible', 'alpha', 'color', 'brightness', 'alignment',
     'size', 'text', 'pointsize', 'font', 'padding', 'horizontalalign', 'verticalalign', 'anchor',
     'limitrows', 'maxrows', 'limitwidth', 'maxwidth', 'opaquebackground', 'backgroundcolor',
     'perspective', 'solid', 'volume', 'count', 'rate', 'speed', 'lifetime', 'colorn'];
@@ -489,9 +489,9 @@ const thisScene = {
     getLayerByID(id) { const p = __native.findLayer(Number(id)); return p ? __glint.layer(p[0], p[1]) : undefined; },
     getLayerCount() { return __native.layerCount(); },
     enumerateLayers() { const out = []; const n = __native.layerCount(); for (let i = 0; i < n; ++i) { const p = __native.layerAt(i); if (p) out.push(__glint.layer(p[0], p[1])); } return out; },
-    destroyLayer(l) { return false; },
-    createLayer(c) { __native.warn('createLayer is not supported'); return undefined; },
-    sortLayer(l, i) { return false; },
+    destroyLayer(l) { const p = typeof l === 'object' && l !== null ? [l.__kind, l.__index] : __native.findLayer(l); return p ? __native.destroyLayer(p[0], p[1]) : false; },
+    createLayer(c) { return __glint.createLayer(c); },
+    sortLayer(l, i) { const p = typeof l === 'object' && l !== null ? [l.__kind, l.__index] : __native.findLayer(l); return p ? __native.sortLayer(p[0], p[1], Number(i)) : false; },
     getLayerIndex(l) { const p = typeof l === 'object' && l !== null ? [l.__kind, l.__index] : __native.findLayer(l); return p ? __native.layerIndex(p[0], p[1]) : -1; },
     getInitialLayerConfig(l) { return {}; },
     getCameraTransforms() { return { eye: new Vec3(0, 0, 0), center: new Vec3(0, 0, -1), up: new Vec3(0, 1, 0), zoom: 1 }; },
@@ -600,9 +600,10 @@ const __glint = {
         for (const k in values) out[k] = colors.indexOf(k) >= 0 && typeof values[k] === 'string' ? new Vec3(values[k]) : values[k];
         return out;
     },
-    register(script, kind, index, effect, field) {
-        __glint.scripts[script] = { kind, index, effect: effect < 0 ? undefined : effect, field, ns: {} };
+    register(script, kind, index, effect, field, workshop) {
+        __glint.scripts[script] = { kind, index, effect: effect < 0 ? undefined : effect, field, ns: {}, workshop: workshop || '' };
     },
+    current: -1,
     setNamespace(script, ns) { __glint.scripts[script].ns = ns; },
     loadStorage(obj) {
         for (const loc of ['screen', 'global']) {
@@ -617,16 +618,49 @@ const __glint = {
         const fn = s.ns[name];
         if (typeof fn !== 'function') return undefined;
         const v = __toScript(s.field, raw);
-        const r = fn(v);
-        return r === undefined ? undefined : __toScene(s.field, r, v);
+        __glint.current = script;
+        try {
+            const r = fn(v);
+            return r === undefined ? undefined : __toScene(s.field, r, v);
+        } finally {
+            __glint.current = -1;
+        }
     },
     // An event handler, if the script exports it.
     event(script, name, arg) {
         const s = __glint.scripts[script];
         const fn = s.ns[name];
         if (typeof fn !== 'function') return false;
-        fn(arg);
+        __glint.current = script;
+        try {
+            fn(arg);
+        } finally {
+            __glint.current = -1;
+        }
         return true;
+    },
+    // A layer from a model path or a configuration object (thisScene.createLayer).
+    createLayer(config) {
+        const s = __glint.current >= 0 ? __glint.scripts[__glint.current] : undefined;
+        const workshop = s ? s.workshop : '';
+        let object = {};
+        if (typeof config === 'string') {
+            object.image = config;
+        } else if (config && typeof config === 'object') {
+            if (typeof config.path === 'string') object.image = config.path;
+            if (typeof config.image === 'string') object.image = config.image;
+            for (const k of ['name', 'alignment']) if (config[k] !== undefined) object[k] = String(config[k]);
+            for (const k of ['origin', 'angles', 'scale', 'color', 'parallaxDepth', 'size']) {
+                if (config[k] !== undefined) object[k] = __toScene(k, config[k]);
+            }
+            for (const k of ['visible', 'alpha', 'brightness']) if (config[k] !== undefined) object[k] = config[k];
+            if (config.parent !== undefined && config.parent !== null) {
+                const p = typeof config.parent === 'object' ? config.parent : thisScene.getLayer(config.parent);
+                if (p) object.parent = p.id;
+            }
+        }
+        const made = __native.createLayer(JSON.stringify(object), workshop);
+        return made ? __glint.layer(made[0], made[1]) : undefined;
     },
     has(script, name) { return typeof __glint.scripts[script].ns[name] === 'function'; },
     cursorEvent(world, local) { const e = new CursorEvent(); e.worldPosition = new Vec3(world[0], world[1], 0); e.localPosition = new Vec3(local[0], local[1], 0); return e; },

@@ -535,3 +535,12 @@ Spotify, and FFmpeg's own http client fetches it, so no new dependency was neede
 sdbus-c++ was agreed on earlier. The thumbnail slot in a scene is a material instance with
 a system texture, which the readers had skipped; it now resolves to the cover when there is
 one and to the scene's placeholder otherwise.
+
+### Layers made by scripts
+
+The audio visualisers in the corpus draw nothing of their own: their one script creates
+sixty-three copies of a bar model at start and moves them with the spectrum. The script
+host now owns a copy of the scene description and adds layers to it, with their textures
+and shader variants read and compiled on the spot; `alignment`, which no static layer in
+the corpus uses, puts a bar's origin on its bottom edge so it grows upward. The image list
+is reserved ahead, because scripts and draws point into it.

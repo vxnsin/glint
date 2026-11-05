@@ -136,13 +136,13 @@ SceneRenderer::SceneRenderer(gpu::Context& gpu, gpu::Blit& blit,
     const SceneGeneral& general = assets_->scene().general;
     scripts_ =
         std::make_unique<ScriptHost>(assets_->scene(), assets_->project(), assets_->project().title,
-                                     assets_->vfs().item().filename().string());
+                                     assets_->vfs().item().filename().string(), &assets_->vfs());
     if (scripts_->empty()) {
         scripts_.reset();
     } else {
         values_.cells = &scripts_->cells();
         scripts_->set_size_callback([this](int index) {
-            const SceneDesc& scene = assets_->scene();
+            const SceneDesc& scene = scene_desc();
             auto size_of = [this](const std::string& name) { return picture_size_of(name); };
             return object_size(scene.images[static_cast<std::size_t>(index)], scene.general,
                                values_, size_of);
@@ -150,7 +150,7 @@ SceneRenderer::SceneRenderer(gpu::Context& gpu, gpu::Blit& blit,
         log::info("scene {}: {} scripts", assets_->project().title, scripts_->count());
         if (scripts_->uses_media()) uses_media_ = true;
     }
-    for (const ImageObject& im : assets_->scene().images) {
+    for (const ImageObject& im : scene_desc().images) {
         if (im.media_thumbnail) uses_media_ = true;
     }
     auto clear = parse_vec3(general.clear_color.resolve(values_), {0, 0, 0});
@@ -185,7 +185,7 @@ void SceneRenderer::set_media(const MediaState& state) {
     if (thumbnail) stale_ = true;
 }
 
-const SceneTexture& SceneRenderer::texture_of(const std::string& name) const {
+const SceneTexture& SceneRenderer::texture_of(const std::string& name) {
     if (name.starts_with("$mediaThumbnail:")) {
         if (media_.has_thumbnail && media_.thumbnail) {
             static thread_local SceneTexture cover;
@@ -201,10 +201,11 @@ const SceneTexture& SceneRenderer::texture_of(const std::string& name) const {
         int id = std::atoi(name.c_str() + 6);
         if (auto it = texts_.find(id); it != texts_.end()) return it->second.texture;
     }
+    if (scripts_) assets_->ensure_texture(name);  // a layer a script made may name a new file
     return assets_->texture(name);
 }
 
-std::optional<Vec2> SceneRenderer::picture_size_of(const std::string& name) const {
+std::optional<Vec2> SceneRenderer::picture_size_of(const std::string& name) {
     if (name.starts_with("$mediaThumbnail:")) {
         if (media_.has_thumbnail) {
             return Vec2{static_cast<float>(media_.thumbnail_width),
@@ -220,11 +221,12 @@ std::optional<Vec2> SceneRenderer::picture_size_of(const std::string& name) cons
                         static_cast<float>(t.img_height) * t.units};
         }
     }
+    if (scripts_) assets_->ensure_texture(name);
     return assets_->picture_size(name);
 }
 
 void SceneRenderer::update_text(int id, double time) {
-    const SceneDesc& scene = assets_->scene();
+    const SceneDesc& scene = scene_desc();
     for (const TextObject& text : scene.texts) {
         if (text.id != id) continue;
         nlohmann::json value = text.text.at(values_, time);
@@ -245,7 +247,7 @@ void SceneRenderer::update_text(int id, double time) {
 }
 
 ScriptFrame SceneRenderer::script_frame(const FrameInputs& inputs) const {
-    const SceneGeneral& general = assets_->scene().general;
+    const SceneGeneral& general = scene_desc().general;
     ScriptFrame f;
     f.time = inputs.time;
     f.delta = inputs.delta;
@@ -342,7 +344,7 @@ void SceneRenderer::release() {
 }
 
 math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting, double time) const {
-    const SceneDesc& scene = assets_->scene();
+    const SceneDesc& scene = scene_desc();
     const ImageObject& image = scene.images[static_cast<std::size_t>(object)];
     Vec3 origin = parse_vec3(image.origin.at(values_, time), {0, 0, 0});
     Vec3 scale = parse_vec3(image.scale.at(values_, time), {1, 1, 1});
@@ -389,7 +391,7 @@ math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting, d
 
 math::Mat4 SceneRenderer::particle_matrix(int particle, std::vector<int>& visiting,
                                           double time) const {
-    const SceneDesc& scene = assets_->scene();
+    const SceneDesc& scene = scene_desc();
     const ParticleObject& object = scene.particles[static_cast<std::size_t>(particle)];
     Vec3 origin = parse_vec3(object.origin.at(values_, time), {0, 0, 0});
     Vec3 scale = parse_vec3(object.scale.at(values_, time), {1, 1, 1});
@@ -416,7 +418,7 @@ void SceneRenderer::pose_of(const ImageObject& object, const Mesh& mesh, double 
     int image_index = -1;
     const std::vector<AnimationLayer>* layers = &object.animation_layers;
     if (scripts_) {
-        const SceneDesc& scene = assets_->scene();
+        const SceneDesc& scene = scene_desc();
         for (std::size_t i = 0; i < scene.images.size(); ++i) {
             if (&scene.images[i] == &object) image_index = static_cast<int>(i);
         }
@@ -450,7 +452,7 @@ void SceneRenderer::pose_of(const ImageObject& object, const Mesh& mesh, double 
 }
 
 math::Mat4 SceneRenderer::transform_of_id(int id, std::vector<int>& visiting, double time) const {
-    const SceneDesc& scene = assets_->scene();
+    const SceneDesc& scene = scene_desc();
     for (std::size_t i = 0; i < scene.images.size(); ++i) {
         if (scene.images[i].id == id) return model_matrix(static_cast<int>(i), visiting, time);
     }
@@ -482,7 +484,7 @@ math::Mat4 SceneRenderer::transform_of_id(int id, std::vector<int>& visiting, do
 
 void SceneRenderer::build(VkExtent2D extent) {
     release();
-    const SceneDesc& scene = assets_->scene();
+    const SceneDesc& scene = scene_desc();
     const SceneGeneral& general = scene.general;
     extent_ = extent;
 
@@ -769,7 +771,14 @@ void SceneRenderer::build(VkExtent2D extent) {
         } else if (p.geometry == Geometry::object) {
             Vec2 size = object_size(object, general, values_, size_of);
             float x = size[0] * 0.5f, y = size[1] * 0.5f;
-            quad(-x, y, x, -y);
+            // Where the origin sits in the quad: its centre, or an edge or corner.
+            float ox = 0, oy = 0;
+            const std::string& a = object.alignment;
+            if (a.find("left") != std::string::npos) ox = x;
+            if (a.find("right") != std::string::npos) ox = -x;
+            if (a.find("top") != std::string::npos) oy = -y;
+            if (a.find("bottom") != std::string::npos) oy = y;
+            quad(-x + ox, y + oy, x + ox, -y + oy);
         } else {
             quad(-1, -1, 1, 1);
         }
@@ -798,6 +807,10 @@ void SceneRenderer::build(VkExtent2D extent) {
         }
 
         draw.program = assets_->program(p.request);
+        if (draw.program == nullptr && scripts_) {
+            // A variant a made layer needs that the load did not see.
+            draw.program = assets_->compile_program(p.request);
+        }
         if (draw.program == nullptr) continue;  // the shader did not compile: skipped
         draw.pipeline =
             assets_->pipeline(*draw.program, p.blending, target_format,
@@ -919,7 +932,7 @@ void SceneRenderer::build(VkExtent2D extent) {
 void SceneRenderer::fill_block(Draw& draw) {
     const PlanDraw& p = *draw.plan;
     const CompiledShader& shader = draw.program->shader;
-    const SceneDesc& scene = assets_->scene();
+    const SceneDesc& scene = scene_desc();
     std::vector<std::byte>& block = draw.block;
 
     bool object = p.geometry == Geometry::object;
@@ -1091,8 +1104,8 @@ void SceneRenderer::fill_block(Draw& draw) {
 }
 
 math::Mat4 SceneRenderer::particle_model(int particle, const FrameInputs& inputs) const {
-    const ParticleObject& object = assets_->scene().particles[static_cast<std::size_t>(particle)];
-    const Vec2& canvas = assets_->scene().general.ortho;
+    const ParticleObject& object = scene_desc().particles[static_cast<std::size_t>(particle)];
+    const Vec2& canvas = scene_desc().general.ortho;
     float dx = -(inputs.parallax[0] - 0.5f) * parallax_amount_ * object.parallax_depth[0] *
                canvas[0] * 0.2f;
     float dy = (inputs.parallax[1] - 0.5f) * parallax_amount_ * object.parallax_depth[1] *
@@ -1107,8 +1120,8 @@ math::Mat4 SceneRenderer::particle_model(int particle, const FrameInputs& inputs
 }
 
 math::Mat4 SceneRenderer::parallax_model(int object, const FrameInputs& inputs) const {
-    const ImageObject& image = assets_->scene().images[static_cast<std::size_t>(object)];
-    const Vec2& canvas = assets_->scene().general.ortho;
+    const ImageObject& image = scene_desc().images[static_cast<std::size_t>(object)];
+    const Vec2& canvas = scene_desc().general.ortho;
     // The layer moves against the pointer by the scene's amount times its depth. The scale
     // (a tenth of the canvas at full amount) is glint's reading of how far Wallpaper Engine
     // moves layers; it is checked by eye, not against a reference.
@@ -1265,7 +1278,7 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
     // The particles: each root system steps once (its children with it), then every draw
     // writes its quads into this frame's slot.
     if (particle_capacity_ > 0 && particle_vertices_[frame_]) {
-        const SceneDesc& scene = assets_->scene();
+        const SceneDesc& scene = scene_desc();
         for (std::size_t i = 0; i < systems_.size(); ++i) {
             ParticleEnv env;
             env.delta = inputs.delta;
@@ -1296,7 +1309,7 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
 
     // Puppets: the animation layers' pose, blended, skins the rest-pose vertices.
     if (skinned_capacity_ > 0 && skinned_vertices_[frame_]) {
-        const SceneDesc& scene = assets_->scene();
+        const SceneDesc& scene = scene_desc();
         auto* out = reinterpret_cast<float*>(skinned_vertices_[frame_].mapped());
         std::vector<math::Mat4> locals, skin;
         for (Draw& draw : draws_) {

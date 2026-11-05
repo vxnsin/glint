@@ -164,6 +164,7 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
     image.color_blend_mode = static_cast<int>(number(object, "colorBlendMode", 0));
     image.parallax_depth = parse_vec2(object.value("parallaxDepth", json()), {1, 1});
     image.copy_background = boolean(object, "copybackground", false);
+    image.alignment = str(object, "alignment", "center");
     image.disable_propagation = boolean(object, "disablepropagation", false);
     image.perspective = boolean(object, "perspective", false);
 
@@ -460,6 +461,19 @@ bool parse_material(const Vfs& vfs, std::string_view path, Material& out,
         out.passes.push_back(std::move(p));
     }
     return true;
+}
+
+void bound_keys_begin(int start) {
+    bound_keys = start;
+}
+
+int bound_keys_end() {
+    return bound_keys;
+}
+
+void parse_image_object(const Vfs& vfs, const json& object, ImageObject& image,
+                        std::vector<std::string>& warnings) {
+    parse_image(vfs, object, image, warnings);
 }
 
 std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {

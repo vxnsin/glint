@@ -143,6 +143,7 @@ std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item
 
     // Every shader, also those of hidden objects and effects, so a property change never
     // waits for a compile.
+    self->shader_cache_ = shader_cache;
     ShaderCompiler compiler(self->vfs_, shader_cache);
     for (const PlanDraw& draw : all.draws) {
         if (draw.request.name.empty()) continue;
@@ -371,8 +372,8 @@ void SceneAssets::read_texture(const std::string& name) {
     pending_.push_back(std::move(pending));
 }
 
-bool SceneAssets::finish() {
-    VkDevice device = gpu_.device();
+bool SceneAssets::upload_pending() {
+    bool ok = true;
     for (PendingTexture& p : pending_) {
         std::vector<gpu::Texture::Level> levels;
         for (const auto& [offset, size] : p.levels)
@@ -382,9 +383,54 @@ bool SceneAssets::finish() {
             textures_[p.name] = p.info;
         } else {
             warnings_.push_back("texture " + p.name + ": upload failed");
+            ok = false;
         }
     }
     pending_.clear();
+    return ok;
+}
+
+bool SceneAssets::ensure_texture(const std::string& name) {
+    if (textures_.contains(name)) return true;
+    if (name.empty() || name.starts_with("_") || name.starts_with("$") || missing_.contains(name)) {
+        return false;
+    }
+    read_texture(name);
+    upload_pending();
+    if (!textures_.contains(name)) {
+        missing_.insert(name);
+        return false;
+    }
+    return true;
+}
+
+SceneProgram* SceneAssets::compile_program(const ShaderRequest& request) {
+    std::string key = request_key(request);
+    if (auto it = programs_.find(key); it != programs_.end()) {
+        return it->second.shader.error.empty() ? &it->second : nullptr;
+    }
+    ShaderCompiler compiler(vfs_, shader_cache_);
+    SceneProgram program;
+    program.shader = compiler.compile(request);
+    if (!program.shader.error.empty()) {
+        warnings_.push_back("shader " + request.name + ": " + program.shader.error.substr(0, 300));
+        programs_[key] = std::move(program);
+        return nullptr;
+    }
+    for (const ShaderSampler& sampler : program.shader.samplers) {
+        const std::string& f = sampler.fallback;
+        if (!f.empty() && !f.starts_with("_rt_") && !f.starts_with("_alias_")) ensure_texture(f);
+    }
+    VkDevice device = gpu_.device();
+    program.vertex = module(device, program.shader.vertex);
+    program.fragment = module(device, program.shader.fragment);
+    SceneProgram& stored = programs_[key] = std::move(program);
+    return &stored;
+}
+
+bool SceneAssets::finish() {
+    VkDevice device = gpu_.device();
+    upload_pending();
 
     // A white pixel for every slot nothing is bound to.
     auto span = staging_.allocate(4);

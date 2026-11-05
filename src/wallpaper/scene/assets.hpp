@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -81,6 +82,10 @@ public:
     // White when a file is missing; transparent black for a render target (_rt_...) glint
     // does not make, so a missing layer adds nothing instead of covering the scene.
     const SceneTexture& texture(const std::string& name) const;
+    // A texture or shader a layer made at run time needs: read, compiled and uploaded now,
+    // on the main thread. False when it cannot be had.
+    bool ensure_texture(const std::string& name);
+    SceneProgram* compile_program(const ShaderRequest& request);
     // A text object set anew (a script changed its string): the texture, uploaded now, and
     // the block's centre from the origin. False when nothing could be drawn.
     bool make_text(const TextObject& text, const std::string& value, SceneTexture& out,
@@ -128,6 +133,9 @@ private:
     std::vector<std::string> warnings_;
     std::map<std::string, SceneTexture> textures_;
     std::vector<PendingTexture> pending_;
+    std::filesystem::path shader_cache_;
+    std::set<std::string> missing_;  // textures asked for at run time that were not there
+    bool upload_pending();
     SceneTexture white_;
     SceneTexture clear_;  // transparent black, for render targets glint does not make
     std::map<std::string, SceneProgram> programs_;

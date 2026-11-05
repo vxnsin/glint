@@ -71,6 +71,14 @@ struct Bound {
     float resolve_float(const Values& values, float fallback) const;
 };
 Bound parse_bound(const nlohmann::json& json);
+// Keys for the bound fields parsed from here on (one scene's are consecutive from 0, a
+// layer a script creates later continues from the scene's bound_count).
+void bound_keys_begin(int start);
+int bound_keys_end();
+// An image object from its scene.json entry, as load_scene reads them.
+struct ImageObject;
+void parse_image_object(const Vfs& vfs, const nlohmann::json& object, ImageObject& image,
+                        std::vector<std::string>& warnings);
 
 struct MaterialPass {
     std::string shader;    // "genericimage2", "effects/iris"
@@ -154,11 +162,14 @@ struct ImageObject {
     bool autosize = false;
     bool fullscreen = false;
     bool passthrough = false;
-    bool media_thumbnail = false;  // a slot shows the playing media's cover
-    int text = -1;                 // index into SceneDesc::texts when this is a text object
-    Vec2 text_offset{0, 0};        // the text block's centre from the origin, set at load
-    bool puppet = false;           // drawn as its mesh, posed by its animation layers
-    std::string puppet_path;       // the .mdl
+    bool media_thumbnail = false;      // a slot shows the playing media's cover
+    std::string alignment = "center";  // where the origin sits in the quad: center, top,
+                                       // bottom, left, right, topleft...
+    bool destroyed = false;            // removed by a script; kept so indices hold
+    int text = -1;                     // index into SceneDesc::texts when this is a text object
+    Vec2 text_offset{0, 0};            // the text block's centre from the origin, set at load
+    bool puppet = false;               // drawn as its mesh, posed by its animation layers
+    std::string puppet_path;           // the .mdl
     std::vector<AnimationLayer> animation_layers;
     Vec2 model_size{0, 0};
 

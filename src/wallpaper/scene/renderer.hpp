@@ -148,9 +148,13 @@ private:
     void pose_of(const ImageObject& object, const Mesh& mesh, double time,
                  std::vector<math::Mat4>& locals) const;
     void transition(VkCommandBuffer cmd, Image& image, VkImageLayout layout);
-    // A texture by name: a text this output set anew, else the shared one.
-    const SceneTexture& texture_of(const std::string& name) const;
-    std::optional<Vec2> picture_size_of(const std::string& name) const;
+    // The scene as drawn: the scripts' copy when there are scripts (with the layers they
+    // made), else the shared description.
+    const SceneDesc& scene_desc() const { return scripts_ ? scripts_->scene() : assets_->scene(); }
+    // A texture by name: a text this output set anew, the media cover, else the shared one;
+    // a file a made layer names is read now.
+    const SceneTexture& texture_of(const std::string& name);
+    std::optional<Vec2> picture_size_of(const std::string& name);
     // Sets a text object anew with the string its script wrote.
     void update_text(int id, double time);
     ScriptFrame script_frame(const FrameInputs& inputs) const;

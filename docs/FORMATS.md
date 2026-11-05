@@ -376,9 +376,19 @@ and alphas patch their uniforms, a changed `visible` rebuilds the plan, a change
 set anew. A script that throws is logged once and left alone; a call that runs past 250 ms
 is interrupted. `we-inspect <item> --scripts` runs a scene's scripts for two seconds
 without a GPU and prints what they wrote. The corpus (1266 scripts in 36 items) loads and
-runs clean except `thisScene.createLayer` (audio visualisers that spawn their bars: open),
-and `createAnimationLayer`. Scripts on particle instance overrides (`rate`, `size`,
-`colorn`...) apply to the running system without restarting it; only `count` needs a new one.
+runs clean; `createAnimationLayer` and `setParent` are still refused. Scripts on particle
+instance overrides (`rate`, `size`, `colorn`...) apply to the running system without
+restarting it; only `count` needs a new one.
+
+Layers scripts make: `thisScene.createLayer('models/bar.json')` or a configuration object
+(`name`, `origin`, `angles`, `scale`, `alignment`, `parent`...; without a model it is a
+transform layer). A script from a Workshop asset names its files as the asset did and the
+item keeps them under `workshop/<id>/`, so the path is tried there too (`__workshopId`).
+`sortLayer(layer, index)` moves it in the draw order, `destroyLayer` takes it out. The host
+keeps its own copy of the scene description for this (the shared one stays as parsed), the
+new layer's textures are read and its shader variant compiled on the spot, and the plan is
+rebuilt. A layer's `alignment` (center, top, bottom, left, right, topleft...) puts its
+origin on the quad's centre, an edge or a corner; the visualisers set it on their bars.
 
 ## 12. Text objects (M5)
 

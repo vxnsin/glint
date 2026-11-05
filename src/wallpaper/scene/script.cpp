@@ -15,6 +15,7 @@
 #include "core/log.hpp"
 #include "core/paths.hpp"
 #include "wallpaper/scene/script_prelude.hpp"
+#include "wallpaper/scene/vfs.hpp"
 
 namespace glint::scene {
 
@@ -40,6 +41,7 @@ struct ScriptHost::Script {
 namespace {
 
 constexpr int kind_image = 0, kind_particle = 1, kind_group = 2, kind_scene = 3, kind_sound = 4;
+constexpr std::size_t made_layers_max = 2048;  // layers scripts may create per scene
 
 // A script property's stored value: like a bound field, it may follow a project property,
 // with a condition, and the value it falls back to may itself be bound.
@@ -148,9 +150,10 @@ const char* module_source(std::string_view name) {
 
 struct ScriptHost::Impl {
     ScriptHost& host;
-    const SceneDesc& scene;
+    SceneDesc& scene;
     const Project& project;
     std::string label;
+    const Vfs* vfs = nullptr;
     JSRuntime* rt = nullptr;
     JSContext* ctx = nullptr;
     JSValue glint = JS_UNDEFINED;  // the prelude's __glint
@@ -174,8 +177,85 @@ struct ScriptHost::Impl {
     std::vector<std::vector<AnimationLayerState>> layer_states;
     std::vector<int> script_of_cell;  // the script bound to a cell's field, -1 if none
 
-    Impl(ScriptHost& h, const SceneDesc& s, const Project& p, std::string l)
+    Impl(ScriptHost& h, SceneDesc& s, const Project& p, std::string l)
         : host(h), scene(s), project(p), label(std::move(l)) {}
+
+    // --- layers scripts make ---
+
+    // A new image layer from a scene.json-like object; the pair the layer object needs.
+    std::optional<std::pair<int, int>> create_layer(const json& config,
+                                                    const std::string& workshop) {
+        if (vfs == nullptr) {
+            warn_once("createLayer: no file system to load from");
+            return std::nullopt;
+        }
+        json object = config.is_object() ? config : json::object();
+        if (object.contains("image") && object["image"].is_string()) {
+            // A script from a Workshop asset names its files as the asset did; the item
+            // holds them under workshop/<id>/.
+            std::string path = object["image"].get<std::string>();
+            if (!vfs->exists(path) && !workshop.empty()) {
+                auto slash = path.find('/');
+                if (slash != std::string::npos) {
+                    std::string moved = path.substr(0, slash + 1) + "workshop/" + workshop + "/" +
+                                        path.substr(slash + 1);
+                    if (vfs->exists(moved)) object["image"] = moved;
+                }
+            }
+            if (!vfs->exists(object["image"].get<std::string>())) {
+                warn_once("createLayer: " + path + " not found");
+                return std::nullopt;
+            }
+        }
+        if (scene.images.size() >= scene.images.capacity()) {
+            warn_once("createLayer: no room for more layers");
+            return std::nullopt;
+        }
+        int id = 1;
+        for (const ImageObject& im : scene.images) id = std::max(id, im.id + 1);
+        for (const ParticleObject& po : scene.particles) id = std::max(id, po.id + 1);
+        for (const GroupObject& g : scene.groups) id = std::max(id, g.id + 1);
+        object["id"] = id;
+        if (!object.contains("origin")) object["origin"] = "0 0 0";
+        if (!object.contains("scale")) object["scale"] = "1 1 1";
+        if (!object.contains("angles")) object["angles"] = "0 0 0";
+        ImageObject image;
+        bound_keys_begin(scene.bound_count);
+        parse_image_object(*vfs, object, image, host.warnings_);
+        scene.bound_count = bound_keys_end();
+        host.cells_.resize(static_cast<std::size_t>(scene.bound_count));
+        scene.images.push_back(std::move(image));
+        int index = static_cast<int>(scene.images.size()) - 1;
+        scene.order.push_back({ObjectRef::Kind::image, index});
+        ++host.structure_;
+        return std::pair{kind_image, index};
+    }
+
+    bool sort_layer(int kind, int index, int to) {
+        if (kind != kind_image && kind != kind_particle) return false;
+        auto want = kind == kind_image ? ObjectRef::Kind::image : ObjectRef::Kind::particle;
+        auto it = std::ranges::find_if(
+            scene.order, [&](const ObjectRef& r) { return r.kind == want && r.index == index; });
+        if (it == scene.order.end()) return false;
+        ObjectRef ref = *it;
+        scene.order.erase(it);
+        to = std::clamp(to, 0, static_cast<int>(scene.order.size()));
+        scene.order.insert(scene.order.begin() + to, ref);
+        ++host.structure_;
+        return true;
+    }
+
+    bool destroy_layer(int kind, int index) {
+        if (kind != kind_image && kind != kind_particle) return false;
+        auto want = kind == kind_image ? ObjectRef::Kind::image : ObjectRef::Kind::particle;
+        auto it = std::ranges::find_if(
+            scene.order, [&](const ObjectRef& r) { return r.kind == want && r.index == index; });
+        if (it == scene.order.end()) return false;
+        scene.order.erase(it);
+        if (kind == kind_image) scene.images[static_cast<std::size_t>(index)].destroyed = true;
+        ++host.structure_;
+        return true;
+    }
 
     void warn_once(const std::string& text) {
         int& count = warned[text];
@@ -265,6 +345,7 @@ struct ScriptHost::Impl {
             if (name == "id") return im.id;
             if (name == "name") return im.name;
             if (name == "parallaxDepth") return vec_text(im.parallax_depth);
+            if (name == "alignment") return im.alignment;
             if (name == "perspective") return im.perspective;
             if (name == "solid") return false;
             if (name == "effectCount") return im.effects.size();
@@ -332,7 +413,27 @@ struct ScriptHost::Impl {
 
     bool field_set(int kind, int index, std::string_view name, json value) {
         const Bound* b = field_bound(kind, index, name);
-        if (b == nullptr) return false;
+        if (b == nullptr) {
+            // Plain fields of the host's own scene copy.
+            if (kind == kind_image && index >= 0 &&
+                static_cast<std::size_t>(index) < scene.images.size()) {
+                ImageObject& im = scene.images[static_cast<std::size_t>(index)];
+                if (name == "alignment" && value.is_string()) {
+                    im.alignment = value.get<std::string>();
+                    ++host.structure_;
+                    return true;
+                }
+                if (name == "name" && value.is_string()) {
+                    im.name = value.get<std::string>();
+                    return true;
+                }
+                if (name == "parallaxDepth") {
+                    im.parallax_depth = parse_vec2(value, im.parallax_depth);
+                    return true;
+                }
+            }
+            return false;
+        }
         bool visible = name == "visible";
         json before = b->key >= 0 && host.cells_[static_cast<std::size_t>(b->key)].set
                           ? host.cells_[static_cast<std::size_t>(b->key)].value
@@ -889,6 +990,27 @@ JSValue native_script_properties(JSContext* ctx, JSValueConst, int argc, JSValue
     return to_js(ctx, resolved);
 }
 
+JSValue native_create_layer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 2) return JS_UNDEFINED;
+    ScriptHost::Impl& impl = impl_of(ctx);
+    json config = json::parse(string_of(ctx, argv[0]), nullptr, false);
+    if (config.is_discarded()) return JS_UNDEFINED;
+    auto made = impl.create_layer(config, string_of(ctx, argv[1]));
+    if (!made) return JS_UNDEFINED;
+    return pair(ctx, made->first, made->second);
+}
+
+JSValue native_sort_layer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 3) return JS_FALSE;
+    return JS_NewBool(ctx, impl_of(ctx).sort_layer(int_of(ctx, argv[0]), int_of(ctx, argv[1]),
+                                                   int_of(ctx, argv[2])));
+}
+
+JSValue native_destroy_layer(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
+    if (argc < 2) return JS_FALSE;
+    return JS_NewBool(ctx, impl_of(ctx).destroy_layer(int_of(ctx, argv[0]), int_of(ctx, argv[1])));
+}
+
 JSValue native_store(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     if (argc < 3) return JS_UNDEFINED;
     ScriptHost::Impl& impl = impl_of(ctx);
@@ -927,9 +1049,13 @@ JSModuleDef* load_module(JSContext* ctx, const char* name, void*) {
 
 }  // namespace
 
-ScriptHost::ScriptHost(const SceneDesc& scene, const Project& project, std::string label,
-                       std::string storage_id)
-    : impl_(std::make_unique<Impl>(*this, scene, project, std::move(label))) {
+ScriptHost::ScriptHost(const SceneDesc& source, const Project& project, std::string label,
+                       std::string storage_id, const Vfs* vfs)
+    : scene_(source), impl_(std::make_unique<Impl>(*this, scene_, project, std::move(label))) {
+    impl_->vfs = vfs;
+    // Scripts and draws point into the image list; layers made at run time must not move it.
+    scene_.images.reserve(scene_.images.size() + made_layers_max);
+    const SceneDesc& scene = scene_;
     cells_.assign(static_cast<std::size_t>(std::max(scene.bound_count, 0)), {});
 
     // The scripts: every bound field with one, on layers, effects and texts.
@@ -1040,6 +1166,9 @@ ScriptHost::ScriptHost(const SceneDesc& scene, const Project& project, std::stri
         {"transform", native_transform, 2},
         {"scriptProperties", native_script_properties, 1},
         {"store", native_store, 3},
+        {"createLayer", native_create_layer, 2},
+        {"sortLayer", native_sort_layer, 3},
+        {"destroyLayer", native_destroy_layer, 2},
     };
     for (const Fn& f : fns) {
         JS_SetPropertyStr(ctx, native, f.name, JS_NewCFunction(ctx, f.fn, f.name, f.length));
@@ -1091,25 +1220,37 @@ ScriptHost::ScriptHost(const SceneDesc& scene, const Project& project, std::stri
     // Each script is a module with its own thisLayer, thisObject and script properties.
     for (std::size_t s = 0; s < scripts_.size(); ++s) {
         Script& script = scripts_[s];
-        std::string source = std::format(
-                                 "const thisLayer = __glint.layer({}, {}); const thisObject = "
-                                 "__glint.object({}); const createScriptProperties = "
-                                 "__glint.properties({});\n",
-                                 script.kind == kind_scene ? kind_image : script.kind,
-                                 script.kind == kind_scene ? 0 : script.index, s, s) +
-                             script.bound->script_source;
+        std::string code = std::format(
+                               "const thisLayer = __glint.layer({}, {}); const thisObject = "
+                               "__glint.object({}); const createScriptProperties = "
+                               "__glint.properties({});\n",
+                               script.kind == kind_scene ? kind_image : script.kind,
+                               script.kind == kind_scene ? 0 : script.index, s, s) +
+                           script.bound->script_source;
         {
             // Registered before it runs: its top level reads thisLayer and thisObject.
-            JSValue args[5] = {
+            // The Workshop asset the script came from, for the files it names.
+            std::string workshop;
+            const std::string& text = script.bound->script_source;
+            if (auto at = text.find("__workshopId"); at != std::string::npos) {
+                auto q = text.find_first_of("'\"", at);
+                if (q != std::string::npos) {
+                    auto e = text.find_first_of("'\"", q + 1);
+                    if (e != std::string::npos) workshop = text.substr(q + 1, e - q - 1);
+                }
+            }
+            JSValue args[6] = {
                 JS_NewInt32(ctx, static_cast<int>(s)),
                 JS_NewInt32(ctx, script.kind == kind_scene ? kind_image : script.kind),
                 JS_NewInt32(ctx, script.kind == kind_scene ? 0 : script.index),
-                JS_NewInt32(ctx, script.effect), JS_NewString(ctx, script.field.c_str())};
-            JS_FreeValue(ctx, impl.call(register_fn, 5, args));
+                JS_NewInt32(ctx, script.effect),
+                JS_NewString(ctx, script.field.c_str()),
+                JS_NewString(ctx, workshop.c_str())};
+            JS_FreeValue(ctx, impl.call(register_fn, 6, args));
             for (JSValue& a : args) JS_FreeValue(ctx, a);
         }
         impl.arm();
-        JSValue mod = JS_Eval(ctx, source.data(), source.size(), script.label.c_str(),
+        JSValue mod = JS_Eval(ctx, code.data(), code.size(), script.label.c_str(),
                               JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
         if (JS_IsException(mod)) {
             impl.warn_once(script.label + ": " + impl.exception());

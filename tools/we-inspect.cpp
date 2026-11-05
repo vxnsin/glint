@@ -201,8 +201,8 @@ int dump_texts(const Vfs& vfs, const SceneDesc& scene, const Values& values) {
 }
 
 // The scripts for a few frames: what they wrote, and what went wrong.
-int run_scripts(const SceneDesc& scene, const Project& project, Values values) {
-    ScriptHost host(scene, project, project.title, "");
+int run_scripts(const Vfs& vfs, const SceneDesc& scene, const Project& project, Values values) {
+    ScriptHost host(scene, project, project.title, "", &vfs);
     std::printf("scripts: %zu\n", host.count());
     if (host.empty()) return 0;
     values.cells = &host.cells();
@@ -251,6 +251,10 @@ int run_scripts(const SceneDesc& scene, const Project& project, Values values) {
         show(owner, "origin", g.origin);
         show(owner, "scale", g.scale);
         show(owner, "visible", g.visible);
+    }
+    if (host.scene().images.size() > scene.images.size()) {
+        std::printf("  layers made by scripts: %zu\n",
+                    host.scene().images.size() - scene.images.size());
     }
     for (const auto& w : host.warnings()) std::printf("  warning: %s\n", w.c_str());
     return 0;
@@ -337,7 +341,7 @@ int dump_item(const std::filesystem::path& folder, bool shaders, bool texts = fa
     for (const auto& warning : scene.warnings) std::printf("  warning: %s\n", warning.c_str());
     if (shaders) return compile_all(vfs, scene, true);
     if (texts) return dump_texts(vfs, scene, values);
-    if (scripts) return run_scripts(scene, project, values);
+    if (scripts) return run_scripts(vfs, scene, project, values);
     return 0;
 }
 
