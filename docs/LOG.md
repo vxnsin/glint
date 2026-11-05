@@ -332,6 +332,29 @@ its own, which brings the scene's water back).
 - Sound objects that start silent wait for SceneScript (M5).
 - The interactive CLI menus (#49) are not built yet.
 
+## Validation, target sharing and the fps cap (2026-11-05)
+
+With `vulkan-validation-layers` installed, `GLINT_VALIDATION=1` and synchronization
+validation on (`khronos_validation.validate_sync = true` in a `vk_layer_settings.txt`), a sweep
+over a picture, the 4K video, six scenes, a property change, a crossfade and covering an
+output reported four kinds of error and no hazard. All four are fixed: a scene's zero
+vertex buffer was destroyed while a frame could still read it; the swapchain and its
+semaphores were destroyed while the queue was still presenting (teardown and resize now wait
+for the queue); a fragment stage's varying with no vertex output became an undefined
+pipeline input (it is now a zero global). A second sweep after the fixes is clean.
+
+Scene targets now share images: a target's image goes to the next target of the same size
+once the frame is done with it, composites are only planned for readers that are drawn, and
+`_rt_imageLayerComposite_<id>_b` is `_a` under another name. Astronaut dropped from 843 to
+631 MiB on both outputs, Frieren from 452 to 404; the other scenes were unchanged, since each
+of their objects has a layer of its own size. Screenshots before and after match.
+
+The `fps` option caps the frames drawn: Hyprland's frame callback follows a commit within a
+few milliseconds and says nothing about the vblank, so the cap runs on a timerfd with a grid
+of the period. Counted over ten seconds on Frieren: 15 gives 150 frames, 24 gives 240, 20
+gives 201, 30 gives 301, 45 gives 451. At 10 fps the daemon sits at 1.8 % CPU and 172
+wakeups per second.
+
 ## M4, video (2026-11-05)
 
 Measured on 3784694220, a 3840x2160 h264 video at 30 fps (7.5 s, so every window below spans
@@ -368,8 +391,8 @@ and the decoder ran as fast as it could (the 42 % and 203 % measured then were t
 
 ### Left out
 
-- The `fps` cap is accepted and ignored; a video draws on every frame callback and changes
-  its picture at its own rate.
+- A video draws on every frame of the output (or of the `fps` cap) and changes its picture
+  at its own rate; it does not pace the output to the video's rate.
 - Video textures inside scenes (TEXB0004 with the video flag) are not decoded yet.
 - 10-bit (P010) import is written but untested; none of the videos is 10-bit.
 - NVDEC and Vulkan Video decode are not done; this machine has neither need.

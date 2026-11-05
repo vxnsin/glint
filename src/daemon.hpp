@@ -103,6 +103,13 @@ private:
         std::int64_t last_frame_ns = 0;
         std::string error;  // last load error, for status
 
+        // The fps cap: when the compositor's frame callback comes before the next frame is
+        // due, this timer wakes the loop at the due time instead.
+        UniqueFd timer;
+        int timer_id = -1;
+        bool timer_armed = false;
+        std::int64_t cap_due_ns = 0;  // the next draw on the cap's grid; 0 without a cap
+
         bool dirty = true;         // something changed that is not on screen yet
         bool resized = true;       // the swapchain needs the new size
         std::uint32_t paused = 0;  // this output's own reasons; see reasons()
@@ -122,6 +129,8 @@ private:
     Screen* screen(std::string_view name);
     std::uint32_t reasons(const Screen& screen) const;
     bool drawable(const Screen& screen) const;
+    // False, with the timer armed, while the fps cap holds the next frame back.
+    bool due(Screen& screen);
     void render(Screen& screen);
     void before_poll();
     void after_poll();

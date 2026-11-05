@@ -52,6 +52,7 @@ struct Options {
     float linear[3] = {0, 0, 0};      // the same colour, linear
     std::string transition = "fade";  // "fade" or "none"
     int duration_ms = 300;
+    int fps = 0;  // cap on frames drawn per second; 0: the output's rate
     nlohmann::json properties;  // scene: values to start with, by property name
     float volume = 0;           // scene and video sound, 0 to 1; silent unless asked for
     bool mute = false;

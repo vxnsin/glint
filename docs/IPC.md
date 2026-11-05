@@ -95,7 +95,10 @@ the assignment goes back to what it was. Successful `set` and `unset` are writte
 A folder with a `project.json` of type `scene` is a Wallpaper Engine scene; the CLI also takes
 a bare Workshop id and looks in Steam's Workshop folder. Every file is decoded as a still
 picture with FFmpeg (JPEG, PNG, WebP, and the first frame of anything else FFmpeg reads). Options in M1: `scaling`, `color`, `transition` (`fade`
-or `none`), `duration` (milliseconds, default 300); `fps` is accepted and ignored.
+or `none`), `duration` (milliseconds, default 300), `fps` (a cap on the frames drawn per
+second, 0 for the output's own rate; a timer holds the next frame back when the
+compositor's frame callback comes early, so the rate holds exactly, e.g. 24 on a 60 Hz
+output alternates two and three vblanks).
 
 `unset` on an output with its own entry falls back to `*` if there is one, else to the
 background colour (black).

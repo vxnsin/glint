@@ -2,6 +2,7 @@
 
 #include <signal.h>
 #include <sys/signalfd.h>
+#include <sys/timerfd.h>
 #include <sys/sysmacros.h>
 
 #include <algorithm>
@@ -166,7 +167,7 @@ int Daemon::run() {
 // present calls into the Wayland connection.
 void Daemon::before_poll() {
     for (auto& entry : screens_) {
-        if (drawable(*entry)) render(*entry);
+        if (drawable(*entry) && due(*entry)) render(*entry);
     }
     emit_states();
     // Fullscreen windows matter only while something animates (or when asked to for tests).
@@ -251,6 +252,50 @@ bool Daemon::drawable(const Screen& entry) const {
     // the next draw waits for it.
     return entry.dirty && reasons(entry) == 0 && !entry.output->frame_pending() &&
            entry.output->configured();
+}
+
+bool Daemon::due(Screen& entry) {
+    int fps = entry.current ? entry.current->options().fps : 0;
+    if (entry.incoming && entry.incoming->ready() && entry.fade_start_ns != 0) {
+        int f = entry.incoming->options().fps;
+        if (f > 0 && (fps == 0 || f > fps)) fps = f;  // a fade runs at the faster of the two
+    }
+    if (fps <= 0) {
+        entry.cap_due_ns = 0;
+        return true;
+    }
+    // Draws are due on a grid of the period, so the rate holds exactly over time whatever
+    // the timer's lateness; the grid restarts when a draw is a whole period late (after a
+    // pause). Hyprland's frame callback follows the commit within a few milliseconds and
+    // says nothing about the vblank, so it is no clock to go by: the draws land on whatever
+    // vblank follows them, and 24 on a 60 Hz output alternates two and three vblanks.
+    auto period_ns = static_cast<std::int64_t>(1e9 / fps);
+    std::int64_t now = clock::now_ns();
+    if (entry.cap_due_ns == 0 || now >= entry.cap_due_ns + period_ns) entry.cap_due_ns = now;
+    if (now + 500'000 >= entry.cap_due_ns) {
+        entry.cap_due_ns += period_ns;
+        return true;
+    }
+    if (entry.timer.get() < 0) {
+        entry.timer.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC));
+        if (entry.timer.get() < 0) return true;
+        Screen* raw = &entry;
+        entry.timer_id = loop_.add(entry.timer.get(), POLLIN, [raw](short) {
+            std::uint64_t expirations = 0;
+            [[maybe_unused]] ssize_t n =
+                ::read(raw->timer.get(), &expirations, sizeof(expirations));
+            raw->timer_armed = false;
+            // The loop's next before_poll draws the frame.
+        });
+    }
+    if (!entry.timer_armed) {
+        itimerspec spec{};
+        spec.it_value.tv_sec = static_cast<time_t>(entry.cap_due_ns / 1'000'000'000);
+        spec.it_value.tv_nsec = static_cast<long>(entry.cap_due_ns % 1'000'000'000);
+        ::timerfd_settime(entry.timer.get(), TFD_TIMER_ABSTIME, &spec, nullptr);
+        entry.timer_armed = true;
+    }
+    return false;
 }
 
 void Daemon::render(Screen& entry) {
@@ -532,6 +577,9 @@ void Daemon::output_removed(wl::Output& output) {
         finish(entry->request, "output removed");
     }
     bool had = screen(output) != nullptr;
+    if (Screen* entry = screen(output); entry != nullptr && entry->timer_id >= 0) {
+        loop_.remove(entry->timer_id);
+    }
     std::erase_if(screens_, [&](const auto& entry) { return entry->output == &output; });
     if (had && server_) {
         server_->broadcast("outputs",

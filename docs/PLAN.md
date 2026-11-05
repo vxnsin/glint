@@ -373,8 +373,7 @@ and properties to be useful. Built on 2026-11-05 except the menus and per-output
 M4, video: FFmpeg on a worker, pacing to the video's rate under the output's cap, loop,
 speed, pause, audio over the M3 path, then VA-API with dma-buf import, measured against
 software decode. Video textures inside scenes use the same decoder. Replaces mpvpaper.
-Built on 2026-11-05 except video textures in scenes and the `fps` cap; `docs/LOG.md` has the
-measurements.
+Built on 2026-11-05 except video textures in scenes; `docs/LOG.md` has the measurements.
 
 M5, the rest of scenes: particles as compute shaders, text objects with FreeType and
 HarfBuzz, puppet warp, lights, camera paths and shake, bloom, SceneScript on QuickJS-ng,

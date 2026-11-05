@@ -64,6 +64,9 @@ public:
     // Asks for a wl_surface.frame callback with the next commit (the present does it).
     void request_frame();
     bool frame_pending() const { return frame_ != nullptr; }
+    // When the last frame callback came (CLOCK_MONOTONIC ns): the compositor had shown the
+    // frame before it by then. 0 before the first.
+    std::int64_t frame_done_ns() const { return frame_done_ns_; }
 
     // Viewport destination and opaque region for the current size. Pending state: it takes
     // effect with the next commit, which is the next present.
@@ -104,6 +107,7 @@ private:
     wp_viewport* viewport_ = nullptr;
     wp_fractional_scale_v1* fractional_ = nullptr;
     wl_callback* frame_ = nullptr;
+    std::int64_t frame_done_ns_ = 0;
     bool configured_ = false;
     std::uint32_t logical_width_ = 0, logical_height_ = 0;
     std::uint32_t scale120_ = 120;    // in use

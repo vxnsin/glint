@@ -1,3 +1,4 @@
+#include <cmath>
 #include "core/state.hpp"
 
 #include <fstream>
@@ -43,6 +44,7 @@ nlohmann::json options_json(const Options& options) {
         {"transition", options.transition},
         {"duration", options.duration_ms},
     };
+    if (options.fps > 0) json["fps"] = options.fps;
     if (options.volume > 0) json["volume"] = options.volume;
     if (options.speed != 1) json["speed"] = options.speed;
     if (options.hwdec != "auto") json["hwdec"] = options.hwdec;
@@ -105,8 +107,11 @@ std::string parse_options(const nlohmann::json& json, Options& options) {
         } else if (key == "loop") {
             // Videos loop; accepted for the protocol.
         } else if (key == "fps") {
-            // Accepted for every kind; a still picture has no use for it.
-            if (!value.is_number()) return "fps is a number";
+            // For every kind; a still picture has no use for it.
+            if (!value.is_number() || value.get<double>() < 0 || value.get<double>() > 1000) {
+                return "fps is a number, 0 to 1000";
+            }
+            options.fps = static_cast<int>(std::lround(value.get<double>()));
         } else {
             return "unknown option " + key;
         }

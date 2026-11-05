@@ -1,5 +1,7 @@
 #include "wayland/display.hpp"
 
+#include "core/clock.hpp"
+
 #include <errno.h>
 #include <linux/input-event-codes.h>
 #include <unistd.h>
@@ -143,6 +145,7 @@ struct OutputListeners {
         auto* self = static_cast<Output*>(data);
         wl_callback_destroy(callback);
         if (self->frame_ == callback) self->frame_ = nullptr;
+        self->frame_done_ns_ = clock::now_ns();
         self->display_.listener().output_frame(*self, time_ms);
     }
 
