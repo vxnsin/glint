@@ -438,3 +438,25 @@ together; the hair and breathing move. A posed puppet costs about 8 % CPU on thi
 
 Not done: attachments following the animated bone (objects hung on a puppet stay at the
 rest-pose point), bone physics, morphs (MDMP).
+
+### Shaders, second pass
+
+With the generated sources of failing passes dumped (`GLINT_SHADER_DUMP=<dir> we-inspect
+<item> --shaders`), four classes fell: compound assignments that truncate (`vec2 /= vec4`),
+`%` on floats, a comparison multiplied by a float, and `mix`/`max` with an int or a scalar on
+one side. The survey over all 107 items now compiles 3053 of 3079 passes (26 left, in 20
+effects), up from 3031.
+
+### Groups, and a sweep over every scene
+
+Objects with no picture of their own ("Transform" nodes) are parents to other objects in a
+quarter of the scenes; glint had placed their children as if the group sat at the origin.
+They are read as groups now, their transform and visibility reach their children
+(`disablepropagation` stops the visibility), and objects hung on a puppet's attachment follow
+the animated bone. 3163060610 went from a stack of shifted layers to the classroom it is.
+
+A sweep set each of the 97 scene items rated Everyone on one output for four seconds, with
+Roxy on the other: no crash, no validation error, every scene loaded (the slowest in 0.5 s
+from the caches). What the warnings list: 26 shader passes that do not compile, effect
+`copy`/`swap` commands (motionblur, not done), and two puppets whose .mdl is cut off at
+exactly 1 MiB inside their package, drawn flat.

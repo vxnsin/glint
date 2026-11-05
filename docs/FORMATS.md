@@ -248,13 +248,16 @@ Found on the corpus:
 - An `#endif` too many (or too few) passes in Wallpaper Engine; glint drops stray ones and
   closes open blocks at the end.
 - HLSL's implicit conversions: a scalar into a vector, a vector into a shorter one, bool into
-  float, float into int. glint wraps the right-hand side of initialised declarations and
-  plain assignments in a constructor of the target type (types from the stage's globals and
-  each function's parameters and locals), and an `if` condition in `bool()`. `max`, `min`
-  and `pow` get overloads that take a scalar on either side of a vector.
-- Over the 107 scene items installed on the author's machine, 3031 of 3079 passes compile.
-  What is left is mostly arithmetic between mismatched vectors (`vec3 * vec2`) and `%` on
-  floats, which need real type information to rewrite.
+  float, float into int. glint wraps the right-hand side of initialised declarations, plain
+  assignments and compound assignments (`x /= v`) in a constructor of the target type (types
+  from the stage's globals and each function's parameters and locals), and an `if` condition
+  in `bool()`. A parenthesised comparison next to `*` becomes `float(...)`. `max`, `min`,
+  `pow` and `mix` get overloads that take a scalar (or an int) on either side of a vector,
+  and `%` goes through an overload set so it works on floats (HLSL's fmod).
+- Over the 107 scene items installed on the author's machine, 3053 of 3079 passes compile.
+  What is left is a long tail: `mix` with other mixed widths, `texture` with the wrong
+  coordinate width, a comparison used where a bool is expected, a float into an int local,
+  two varyings sharing a location.
 
 Built-in uniforms glint provides: `g_ModelMatrix`, `g_ViewProjectionMatrix`,
 `g_ModelViewProjectionMatrix`, `g_ModelViewProjectionMatrixInverse`, `g_EffectTextureProjectionMatrix`,

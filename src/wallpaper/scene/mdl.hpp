@@ -67,8 +67,11 @@ struct Mesh {
     // The rest pose's local transforms.
     void rest_pose(std::vector<math::Mat4>& locals) const;
 
-    // Where an attachment sits in the mesh's space in the rest pose (x, y); false if unknown.
-    bool attachment_position(const std::string& name, float& x, float& y) const;
+    // Where an attachment sits in the mesh's space under a pose (locals as pose() gives
+    // them; the rest pose when empty): the bone's global transform times the attachment's.
+    // False if there is no such attachment.
+    bool attachment_matrix(const std::string& name, const std::vector<math::Mat4>& locals,
+                           math::Mat4& out) const;
 };
 
 // Returns an error message or empty.

@@ -255,9 +255,11 @@ math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting, d
             const ImageObject& owner = scene.images[i];
             if (!image.attachment.empty() && owner.puppet) {
                 if (const Mesh* mesh = assets_->mesh(owner.puppet_path)) {
-                    float ax = 0, ay = 0;
-                    if (mesh->attachment_position(image.attachment, ax, ay)) {
-                        return parent * math::Mat4::translate(ax, ay, 0) * local;
+                    std::vector<math::Mat4> locals;
+                    pose_of(owner, *mesh, time, locals);
+                    math::Mat4 attach;
+                    if (mesh->attachment_matrix(image.attachment, locals, attach)) {
+                        return parent * attach * local;
                     }
                 }
             }
@@ -292,6 +294,36 @@ math::Mat4 SceneRenderer::particle_matrix(int particle, std::vector<int>& visiti
     return parent * local;
 }
 
+void SceneRenderer::pose_of(const ImageObject& object, const Mesh& mesh, double time,
+                            std::vector<math::Mat4>& locals) const {
+    std::vector<math::Mat4> layer_locals, rest;
+    mesh.rest_pose(rest);
+    bool first = true;
+    for (const AnimationLayer& layer : object.animation_layers) {
+        const Mesh::Animation* animation =
+            layer.visible ? mesh.animation(layer.animation) : nullptr;
+        if (animation == nullptr) continue;
+        double frame = Mesh::frame_at(*animation, time, layer.rate);
+        mesh.pose(*animation, frame, layer_locals);
+        if (first) {
+            locals = layer_locals;
+            first = false;
+            continue;
+        }
+        // Later layers blend in by their weight: additive ones add their change from the
+        // rest pose, the others move toward their pose.
+        float w = std::clamp(layer.blend, 0.0f, 1.0f);
+        for (std::size_t b = 0; b < locals.size() && b < layer_locals.size(); ++b) {
+            for (int k = 0; k < 16; ++k) {
+                float v = layer.additive ? layer_locals[b].m[k] - rest[b].m[k]
+                                         : layer_locals[b].m[k] - locals[b].m[k];
+                locals[b].m[k] += v * w;
+            }
+        }
+    }
+    if (first) locals = rest;
+}
+
 math::Mat4 SceneRenderer::transform_of_id(int id, std::vector<int>& visiting, double time) const {
     const SceneDesc& scene = assets_->scene();
     for (std::size_t i = 0; i < scene.images.size(); ++i) {
@@ -300,6 +332,25 @@ math::Mat4 SceneRenderer::transform_of_id(int id, std::vector<int>& visiting, do
     for (std::size_t i = 0; i < scene.particles.size(); ++i) {
         if (scene.particles[i].id == id)
             return particle_matrix(static_cast<int>(i), visiting, time);
+    }
+    for (std::size_t i = 0; i < scene.groups.size(); ++i) {
+        const GroupObject& group = scene.groups[i];
+        if (group.id != id) continue;
+        Vec3 origin = parse_vec3(group.origin.at(values_, time), {0, 0, 0});
+        Vec3 scale = parse_vec3(group.scale.at(values_, time), {1, 1, 1});
+        Vec3 angles = parse_vec3(group.angles.at(values_, time), {0, 0, 0});
+        math::Mat4 local = math::Mat4::translate(origin[0], origin[1], origin[2]) *
+                           math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
+                           math::Mat4::rotate_x(angles[0]) *
+                           math::Mat4::scale(scale[0], scale[1], scale[2]);
+        if (group.parent < 0) return local;
+        // Groups come after the images and particles in the cycle guard.
+        int key = static_cast<int>(scene.images.size() + scene.particles.size() + i);
+        if (std::ranges::find(visiting, key) != visiting.end()) return local;
+        visiting.push_back(key);
+        math::Mat4 parent = transform_of_id(group.parent, visiting, time);
+        visiting.pop_back();
+        return parent * local;
     }
     return {};
 }
@@ -452,6 +503,15 @@ void SceneRenderer::build(VkExtent2D extent) {
             int next = -1;
             for (std::size_t k = 0; k < scene.images.size(); ++k) {
                 if (scene.images[k].id == im.parent) next = static_cast<int>(k);
+            }
+            // Hung on a bone of a puppet that an animation moves.
+            if (next >= 0 && !im.attachment.empty() &&
+                scene.images[static_cast<std::size_t>(next)].puppet) {
+                for (const AnimationLayer& layer :
+                     scene.images[static_cast<std::size_t>(next)].animation_layers) {
+                    if (layer.visible) moving_[i] = true;
+                }
+                if (moving_[i]) break;
             }
             o = next;
         }
@@ -1020,36 +1080,12 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
     if (skinned_capacity_ > 0 && skinned_vertices_[frame_]) {
         const SceneDesc& scene = assets_->scene();
         auto* out = reinterpret_cast<float*>(skinned_vertices_[frame_].mapped());
-        std::vector<math::Mat4> locals, layer_locals, rest, skin;
+        std::vector<math::Mat4> locals, skin;
         for (Draw& draw : draws_) {
             if (draw.skin == nullptr) continue;
             const Mesh& mesh = *draw.skin;
             const ImageObject& object = scene.images[static_cast<std::size_t>(draw.plan->object)];
-            mesh.rest_pose(rest);
-            bool first = true;
-            for (const AnimationLayer& layer : object.animation_layers) {
-                const Mesh::Animation* animation =
-                    layer.visible ? mesh.animation(layer.animation) : nullptr;
-                if (animation == nullptr) continue;
-                double frame = Mesh::frame_at(*animation, inputs.time, layer.rate);
-                mesh.pose(*animation, frame, layer_locals);
-                if (first) {
-                    locals = layer_locals;
-                    first = false;
-                    continue;
-                }
-                // Later layers blend in by their weight: additive ones add their change from
-                // the rest pose, the others move toward their pose.
-                float w = std::clamp(layer.blend, 0.0f, 1.0f);
-                for (std::size_t b = 0; b < locals.size() && b < layer_locals.size(); ++b) {
-                    for (int k = 0; k < 16; ++k) {
-                        float v = layer.additive ? layer_locals[b].m[k] - rest[b].m[k]
-                                                 : layer_locals[b].m[k] - locals[b].m[k];
-                        locals[b].m[k] += v * w;
-                    }
-                }
-            }
-            if (first) locals = rest;
+            pose_of(object, mesh, inputs.time, locals);
             mesh.skin_matrices(locals, skin);
             const std::vector<float>& base = draw.skin_base;
             float* dst = out + static_cast<std::size_t>(draw.skin_offset) * 5;

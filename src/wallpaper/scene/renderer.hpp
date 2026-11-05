@@ -129,6 +129,9 @@ private:
     math::Mat4 particle_matrix(int particle, std::vector<int>& visiting, double time) const;
     // The transform of whatever object has this id, identity if none.
     math::Mat4 transform_of_id(int id, std::vector<int>& visiting, double time) const;
+    // A puppet's pose at a time from its animation layers (the rest pose without any).
+    void pose_of(const ImageObject& object, const Mesh& mesh, double time,
+                 std::vector<math::Mat4>& locals) const;
     void transition(VkCommandBuffer cmd, Image& image, VkImageLayout layout);
 
     gpu::Context& gpu_;

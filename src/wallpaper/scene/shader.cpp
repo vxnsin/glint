@@ -21,7 +21,7 @@ namespace glint::scene {
 namespace {
 
 // Bump when the rewriting changes, so cached SPIR-V from older rules is not reused.
-constexpr const char* rewrite_version = "glint-shader-5";
+constexpr const char* rewrite_version = "glint-shader-6";
 
 // HLSL habits of the dialect, as macros the preprocessor applies.
 constexpr const char* compat = R"(#define GLSL 1
@@ -55,6 +55,7 @@ constexpr const char* compat = R"(#define GLSL 1
 #define CAST4(x) (vec4(x))
 #define CAST3X3(x) (mat3(x))
 #define max glint_max
+#define mix glint_mix
 #define min glint_min
 #define pow glint_pow
 #define sample glint_sample
@@ -85,6 +86,17 @@ std::string overload_helpers() {
             out += T + " glint_" + f + "(float a, " + T + " b) { return " + f + "(b, a); }\n";
         }
     }
+    for (const char* f : {"max", "min"}) {
+        // int against float, as HLSL allows.
+        out += std::string("float glint_") + f + "(float a, int b) { return " + f +
+               "(a, float(b)); }\n";
+        out += std::string("float glint_") + f + "(int a, float b) { return " + f +
+               "(float(a), b); }\n";
+        for (const char* t : types) {
+            std::string T = t;
+            out += T + " glint_" + f + "(" + T + " a, int b) { return " + f + "(a, float(b)); }\n";
+        }
+    }
     out += "float glint_pow(float a, float b) { return pow(a, b); }\n";
     for (const char* t : types) {
         std::string T = t;
@@ -92,6 +104,24 @@ std::string overload_helpers() {
         out += T + " glint_pow(" + T + " a, float b) { return pow(a, " + T + "(b)); }\n";
         out += T + " glint_pow(float a, " + T + " b) { return pow(" + T + "(a), b); }\n";
     }
+    // mix with a scalar on one side, which HLSL's lerp allows.
+    out += "float glint_mix(float a, float b, float t) { return mix(a, b, t); }\n";
+    for (const char* t : types) {
+        std::string T = t;
+        out += T + " glint_mix(" + T + " a, " + T + " b, float t) { return mix(a, b, t); }\n";
+        out += T + " glint_mix(" + T + " a, " + T + " b, " + T + " t) { return mix(a, b, t); }\n";
+        out +=
+            T + " glint_mix(" + T + " a, float b, float t) { return mix(a, " + T + "(b), t); }\n";
+        out +=
+            T + " glint_mix(float a, " + T + " b, float t) { return mix(" + T + "(a), b, t); }\n";
+    }
+    // % on floats: HLSL's fmod.
+    out += "int glint_mod(int a, int b) { return a % b; }\n";
+    out += "uint glint_mod(uint a, uint b) { return a % b; }\n";
+    out += "uint glint_mod(uint a, int b) { return a % uint(b); }\n";
+    out += "float glint_mod(float a, float b) { return a - b * trunc(a / b); }\n";
+    out += "float glint_mod(float a, int b) { return glint_mod(a, float(b)); }\n";
+    out += "float glint_mod(int a, float b) { return glint_mod(float(a), b); }\n";
     return out;
 }
 
@@ -122,6 +152,13 @@ void hlsl_conversions(std::string& body, std::map<std::string, std::string> glob
     static const std::regex declaration(
         R"(^(\s*)((?:const\s+)?)(float|int|uint|bool|[biu]?vec[234])\s+(\w+)\s*=\s*(.+);\s*$)");
     static const std::regex assignment(R"(^(\s*)(\w+)\s*=\s*([^=].*);\s*$)");
+    static const std::regex compound(R"(^(\s*)(\w+)\s*([-+*/])=\s*(.*);\s*$)");
+    // (a < b) * x and x * (a < b): a comparison used as a number.
+    static const std::regex compare_times(R"(\(([^()]*?(?:<=|>=|==|!=|<|>)[^()]*?)\)(\s*\*))");
+    static const std::regex times_compare(R"((\*\s*)\(([^()]*?(?:<=|>=|==|!=|<|>)[^()]*?)\))");
+    // a % b on anything: an overload set sorts out ints and floats.
+    static const std::regex modulo(
+        R"(((?:[\w.]+|\([^()]*\))(?:\[[^\]]*\])?)\s*%\s*((?:[\w.]+|\([^()]*\))(?:\[[^\]]*\])?))");
     static const std::regex function(R"(^\s*(\w+)\s+(\w+)\s*\(([^)]*)\)\s*\{?\s*$)");
     static const std::regex parameter(R"((?:in|out|inout|const|\s)*\b(\w+)\s+(\w+)\s*$)");
     std::istringstream in(body);
@@ -157,6 +194,26 @@ void hlsl_conversions(std::string& body, std::map<std::string, std::string> glob
             if (convertible(type) && !top_level_comma(m[3].str())) {
                 line = m[1].str() + name + " = " + type + "(" + m[3].str() + ");";
             }
+        } else if (depth > 0 && std::regex_match(line, m, compound)) {
+            // x /= a vec4 with a vec2 x: HLSL truncates, GLSL wants the constructor.
+            std::string name = m[2].str();
+            auto it = locals.find(name);
+            std::string type = it != locals.end() ? it->second : "";
+            if (type.empty()) {
+                if (auto g = globals.find(name); g != globals.end()) type = g->second;
+            }
+            if (convertible(type) && type != "float" && type != "int" && type != "uint" &&
+                !top_level_comma(m[4].str())) {
+                line = m[1].str() + name + " " + m[3].str() + "= " + type + "(" + m[4].str() + ");";
+            }
+        }
+        if (line.find('%') != std::string::npos && line.find("%=") == std::string::npos &&
+            line.find('#') == std::string::npos) {
+            line = std::regex_replace(line, modulo, "glint_mod($1, $2)");
+        }
+        if (line.find('*') != std::string::npos) {
+            line = std::regex_replace(line, compare_times, "float($1)$2");
+            line = std::regex_replace(line, times_compare, "$1float($2)");
         }
         // if (x) with a float x: HLSL's truthiness.
         for (std::size_t at = line.find("if"); at != std::string::npos;

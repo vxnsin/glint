@@ -164,6 +164,7 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
     image.color_blend_mode = static_cast<int>(number(object, "colorBlendMode", 0));
     image.parallax_depth = parse_vec2(object.value("parallaxDepth", json()), {1, 1});
     image.copy_background = boolean(object, "copybackground", false);
+    image.disable_propagation = boolean(object, "disablepropagation", false);
     image.perspective = boolean(object, "perspective", false);
 
     if (object.contains("animationlayers") && object["animationlayers"].is_array()) {
@@ -487,10 +488,25 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
             if (!sound.files.empty()) out.sounds.push_back(std::move(sound));
         } else if (object.contains("light")) {
             ++out.skipped["light"];
-        } else if (object.contains("model")) {
+        } else if (object.contains("model") && object["model"].is_string()) {
             ++out.skipped["model"];
+        } else if (object.contains("camera") || object.contains("fov")) {
+            ++out.skipped["camera"];
         } else {
-            ++out.skipped["other"];
+            // A transform node: nothing drawn, but children hang from it.
+            GroupObject group;
+            group.id = object.value("id", next_id);
+            group.name = str(object, "name");
+            if (object.contains("parent") && object["parent"].is_number()) {
+                group.parent = object["parent"].get<int>();
+            }
+            group.origin = parse_bound(object.value("origin", json("0 0 0")));
+            group.scale = parse_bound(object.value("scale", json("1 1 1")));
+            group.angles = parse_bound(object.value("angles", json("0 0 0")));
+            group.visible =
+                object.contains("visible") ? parse_bound(object["visible"]) : Bound{true};
+            group.disable_propagation = boolean(object, "disablepropagation", false);
+            out.groups.push_back(std::move(group));
         }
         ++next_id;
     }

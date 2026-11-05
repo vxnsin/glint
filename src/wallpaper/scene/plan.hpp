@@ -86,6 +86,10 @@ Vec2 object_size(const ImageObject& image, const SceneGeneral& general, const Va
 Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize& texture_size,
                 bool everything = false, const TextureInfoFn& texture_info = {});
 
+// Whether an object is shown: its own visible, and its ancestors' (groups and images)
+// unless an ancestor has disablepropagation. id is the object's own id.
+bool visible_with_parents(const SceneDesc& scene, int id, const Values& values);
+
 // A stable key for a shader request, for caches.
 std::string request_key(const ShaderRequest& request);
 

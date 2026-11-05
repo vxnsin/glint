@@ -142,6 +142,7 @@ struct ImageObject {
     Vec2 parallax_depth{1, 1};
     bool copy_background = false;
     bool perspective = false;
+    bool disable_propagation = false;  // its visibility does not reach its children
 
     // From the model json.
     std::string model_path;
@@ -194,6 +195,17 @@ struct SceneGeneral {
     bool perspective = false;  // no orthogonalprojection: a 3D scene
 };
 
+// A group: an object without a picture that others hang from (a "Transform" node). Its
+// transform applies to its children, and so does its visibility unless disablepropagation.
+struct GroupObject {
+    int id = 0;
+    std::string name;
+    int parent = -1;
+    Bound origin, scale, angles;
+    Bound visible;
+    bool disable_propagation = false;
+};
+
 // The objects in drawing order, across kinds.
 struct ObjectRef {
     enum class Kind { image, particle } kind;
@@ -204,9 +216,10 @@ struct SceneDesc {
     SceneGeneral general;
     std::vector<ImageObject> images;  // in drawing order among images
     std::vector<ParticleObject> particles;
+    std::vector<GroupObject> groups;
     std::vector<ObjectRef> order;  // images and particles as scene.json lists them
     std::vector<SoundObject> sounds;
-    // Objects of kinds a later milestone draws: text, light, model.
+    // Objects of kinds a later milestone draws: text, light, model, camera.
     std::map<std::string, int> skipped;
     std::vector<std::string> warnings;
 };

@@ -66,6 +66,48 @@ std::string request_key(const ShaderRequest& request) {
     return key;
 }
 
+bool visible_with_parents(const SceneDesc& scene, int id, const Values& values) {
+    // Walks up by id over every kind; a cycle or an unknown parent ends the walk.
+    int current = id;
+    for (int guard = 0; current >= 0 && guard < 64; ++guard) {
+        bool own = true, propagate = true;
+        int parent = -1;
+        bool found = false;
+        for (const ImageObject& o : scene.images) {
+            if (o.id != current) continue;
+            own = o.visible.resolve_bool(values, true);
+            propagate = !o.disable_propagation;
+            parent = o.parent;
+            found = true;
+            break;
+        }
+        if (!found) {
+            for (const ParticleObject& o : scene.particles) {
+                if (o.id != current) continue;
+                own = o.visible.resolve_bool(values, true);
+                parent = o.parent;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            for (const GroupObject& o : scene.groups) {
+                if (o.id != current) continue;
+                own = o.visible.resolve_bool(values, true);
+                propagate = !o.disable_propagation;
+                parent = o.parent;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return true;
+        if (!own && (current == id || propagate)) return false;
+        if (!own && !propagate) return true;
+        current = parent;
+    }
+    return true;
+}
+
 Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize& texture_size,
                 bool everything, const TextureInfoFn& texture_info) {
     Plan plan;
@@ -152,7 +194,7 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
     // (or whatever the material names), the quads written every frame by the simulation.
     auto particle_draws = [&](int index) {
         const ParticleObject& object = scene.particles[static_cast<std::size_t>(index)];
-        if (!everything && !object.visible.resolve_bool(values, true)) return;
+        if (!everything && !visible_with_parents(scene, object.id, values)) return;
         int child = -1;
         auto add = [&](const ParticleDesc& desc, auto& self) -> void {
             int which = child++;
@@ -189,7 +231,7 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
 
     auto image_draws = [&](std::size_t index) {
         const ImageObject& image = scene.images[index];
-        if (!everything && !image.visible.resolve_bool(values, true)) return;
+        if (!everything && !visible_with_parents(scene, image.id, values)) return;
         if (image.material.passes.empty()) {
             plan.warnings.push_back(image.name + ": no material");
             return;

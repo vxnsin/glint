@@ -275,20 +275,23 @@ void Mesh::skin_matrices(const std::vector<math::Mat4>& locals,
     for (std::size_t b = 0; b < n; ++b) out[b] = global_pose[b] * global_rest[b].inverse();
 }
 
-bool Mesh::attachment_position(const std::string& name, float& x, float& y) const {
+bool Mesh::attachment_matrix(const std::string& name, const std::vector<math::Mat4>& locals,
+                             math::Mat4& out) const {
     for (const Attachment& a : attachments) {
         if (a.name != name) continue;
-        // Rest pose: the bone chain's translations plus the attachment's (the rigs seen have
-        // no rotation in the rest pose).
-        x = a.matrix[12];
-        y = a.matrix[13];
-        int bone = a.bone;
-        for (int guard = 0; bone >= 0 && bone < static_cast<int>(bones.size()) && guard < 256;
-             ++guard) {
-            x += bones[static_cast<std::size_t>(bone)].matrix[12];
-            y += bones[static_cast<std::size_t>(bone)].matrix[13];
+        math::Mat4 global;
+        // The chain from the root down to the bone.
+        std::vector<int> chain;
+        for (int bone = a.bone, guard = 0;
+             bone >= 0 && bone < static_cast<int>(bones.size()) && guard < 256; ++guard) {
+            chain.push_back(bone);
             bone = bones[static_cast<std::size_t>(bone)].parent;
         }
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            auto b = static_cast<std::size_t>(*it);
+            global = global * (b < locals.size() ? locals[b] : matrix_of(bones[b].matrix));
+        }
+        out = global * matrix_of(a.matrix);
         return true;
     }
     return false;

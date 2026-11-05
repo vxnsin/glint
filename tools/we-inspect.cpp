@@ -7,6 +7,7 @@
 //   we-inspect <item> --shaders  compile every pass of the scene
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -72,6 +73,23 @@ int compile_all(const Vfs& vfs, const SceneDesc& scene, bool verbose) {
             ++failed;
             std::printf("  FAIL %s (%s)\n%s\n", what.c_str(), request.name.c_str(),
                         shader.error.c_str());
+            // GLINT_SHADER_DUMP=<dir>: the generated sources of what failed, to read the
+            // error's line numbers against.
+            if (const char* dir = std::getenv("GLINT_SHADER_DUMP"); dir != nullptr) {
+                std::string base = request.name;
+                for (char& c : base) {
+                    if (c == '/' || c == ' ') c = '_';
+                }
+                std::string path = std::string(dir) + "/" + base + "-" + std::to_string(failed);
+                if (FILE* f = std::fopen((path + ".vert").c_str(), "w")) {
+                    std::fputs(compiler.last_vertex_source().c_str(), f);
+                    std::fclose(f);
+                }
+                if (FILE* f = std::fopen((path + ".frag").c_str(), "w")) {
+                    std::fputs(compiler.last_fragment_source().c_str(), f);
+                    std::fclose(f);
+                }
+            }
         }
     };
     for (const auto& image : scene.images) {
