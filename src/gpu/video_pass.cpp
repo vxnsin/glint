@@ -20,7 +20,8 @@ struct Push {
     std::uint32_t encode;
     std::uint32_t bt709;
     std::uint32_t full_range;
-    std::uint32_t pad[3];
+    std::uint32_t interleaved;
+    std::uint32_t pad[2];
 };
 
 VkShaderModule module(VkDevice device, const std::uint32_t* code, std::size_t bytes) {
@@ -224,11 +225,13 @@ void VideoPass::draw(const Target& target, const Frame& frame, Scaling scaling,
     push.encode = target.encode_srgb ? 1u : 0u;
     push.bt709 = frame.bt709 ? 1u : 0u;
     push.full_range = frame.full_range ? 1u : 0u;
+    push.interleaved = frame.interleaved ? 1u : 0u;
 
     VkDescriptorImageInfo planes[] = {
         {sampler_, frame.y, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {sampler_, frame.u, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {sampler_, frame.v, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+        {sampler_, frame.v != VK_NULL_HANDLE ? frame.v : frame.u,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     };
     VkWriteDescriptorSet writes[3];
     for (std::uint32_t i = 0; i < 3; ++i) {

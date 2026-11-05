@@ -19,10 +19,11 @@ public:
     VideoPass& operator=(const VideoPass&) = delete;
 
     struct Frame {
-        VkImageView y, u, v;
+        VkImageView y, u, v;  // v unused when interleaved
         std::uint32_t width, height;
         bool bt709 = true;
         bool full_range = false;
+        bool interleaved = false;
     };
     void draw(const Target& target, const Frame& frame, Scaling scaling, const float color[3],
               float opacity);

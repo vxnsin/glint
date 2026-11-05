@@ -86,6 +86,7 @@ if(GLINT_PLATFORM)
         src/gpu/blit.cpp
         src/gpu/buffer.cpp
         src/gpu/context.cpp
+        src/gpu/dmabuf.cpp
         src/gpu/pictures.cpp
         src/gpu/staging.cpp
         src/gpu/surface.cpp

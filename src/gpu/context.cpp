@@ -200,15 +200,26 @@ std::string Context::init(wl_display* display, std::optional<dev_t> main_device)
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
         .pNext = &features12,
     };
-    const char* extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-                                VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+    std::vector<const char*> extensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                                           VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME};
+    // Importing decoded video frames as dma-bufs, without a copy, when the driver can.
+    {
+        auto available = device_extensions(physical_);
+        const char* dmabuf[] = {VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+                                VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+                                VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+                                VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME};
+        dmabuf_ =
+            std::ranges::all_of(dmabuf, [&](const char* e) { return has_extension(available, e); });
+        if (dmabuf_) extensions.insert(extensions.end(), std::begin(dmabuf), std::end(dmabuf));
+    }
     VkDeviceCreateInfo device_info{
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .pNext = &features,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_info,
-        .enabledExtensionCount = 2,
-        .ppEnabledExtensionNames = extensions,
+        .enabledExtensionCount = static_cast<std::uint32_t>(extensions.size()),
+        .ppEnabledExtensionNames = extensions.data(),
     };
     if (VkResult r = vkCreateDevice(physical_, &device_info, nullptr, &device_); r != VK_SUCCESS) {
         return failed("vkCreateDevice", r);
@@ -257,8 +268,9 @@ std::string Context::init(wl_display* display, std::optional<dev_t> main_device)
     }
 
     load_pipeline_cache();
-    log::info("vulkan: {} (score {}), queue family {}, timestamps {}", device_name_, best->score,
-              queue_family_, timestamp_period_ > 0 ? "yes" : "no");
+    log::info("vulkan: {} (score {}), queue family {}, timestamps {}, dma-buf import {}",
+              device_name_, best->score, queue_family_, timestamp_period_ > 0 ? "yes" : "no",
+              dmabuf_ ? "yes" : "no");
     return {};
 }
 

@@ -38,6 +38,8 @@ public:
     VkPipelineCache pipeline_cache() const { return pipeline_cache_; }
     const std::string& device_name() const { return device_name_; }
     std::uint32_t max_image_dimension() const { return max_image_dimension_; }
+    // dma-buf import with DRM format modifiers (decoded video frames without a copy).
+    bool dmabuf() const { return dmabuf_; }
 
     // Nanoseconds per timestamp tick; 0 if the queue has no timestamps.
     double timestamp_period() const { return timestamp_period_; }
@@ -86,6 +88,7 @@ private:
     std::string device_name_;
     std::uint32_t max_image_dimension_ = 4096;
     double timestamp_period_ = 0;
+    bool dmabuf_ = false;
 
     struct Deferred {
         std::uint64_t value;

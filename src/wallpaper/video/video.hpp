@@ -2,9 +2,11 @@
 
 #include <array>
 #include <memory>
+#include <unordered_map>
 
 #include "audio/player.hpp"
 #include "gpu/buffer.hpp"
+#include "gpu/dmabuf.hpp"
 #include "gpu/vulkan.hpp"
 #include "wallpaper/video/decoder.hpp"
 #include "wallpaper/wallpaper.hpp"
@@ -14,7 +16,8 @@ VK_DEFINE_HANDLE(VmaAllocation)
 namespace glint::video {
 
 // A video wallpaper: frames decoded on the decoder's thread, the frame due at the wallpaper's
-// clock uploaded as three planes, drawn like a picture. Loops; speed and pause; the sound
+// clock uploaded as three planes, or with VA-API imported as dma-bufs without a copy, drawn
+// like a picture. Loops; speed and pause; the sound
 // track plays only when a volume is set.
 class Video final : public Wallpaper {
 public:
@@ -27,7 +30,7 @@ public:
 
     void load(std::function<void(std::string error)> done) override;
     bool ready() const override {
-        return decoder_ != nullptr && planes_[0].image != VK_NULL_HANDLE;
+        return decoder_ != nullptr && (prime_ || planes_[0].image != VK_NULL_HANDLE);
     }
     void prepare(const Frame& frame, VkCommandBuffer cmd, VkExtent2D extent) override;
     bool render(const Frame& frame, const gpu::Target& target, float opacity) override;
@@ -49,6 +52,7 @@ private:
     };
     void make_planes(std::uint32_t width, std::uint32_t height);
     void upload(const Picture& picture, VkCommandBuffer cmd);
+    void show(Picture& picture, VkCommandBuffer cmd);  // a dma-buf frame
     void start_sound();
 
     std::filesystem::path path_;
@@ -59,6 +63,15 @@ private:
     std::array<gpu::Buffer, 2> staging_;
     std::uint32_t slot_ = 0;
     std::optional<Picture> first_;  // taken on the worker, uploaded with the first frame
+
+    // dma-buf frames: the decoder's surfaces imported once each, by buffer.
+    struct Imported {
+        std::unique_ptr<gpu::DmabufImage> y, uv;
+    };
+    bool prime_ = false;
+    std::unordered_map<std::uint64_t, Imported> imports_;
+    const Imported* shown_ = nullptr;
+    std::shared_ptr<void> shown_hold_;  // keeps the decoder off the surface on screen
     bool paused_ = false;
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 

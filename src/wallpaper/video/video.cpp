@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <vk_mem_alloc.h>
 
+#include <cstdlib>
 #include <cstring>
 
 #include "core/log.hpp"
@@ -47,6 +48,7 @@ Video::~Video() {
     player_.reset();
     decoder_.reset();
     gpu::Context& gpu = services_.gpu;
+    if (shown_hold_) gpu.defer([hold = std::move(shown_hold_)]() mutable { hold.reset(); });
     for (Plane& p : planes_) {
         if (p.image == VK_NULL_HANDLE) continue;
         gpu.defer([&gpu, i = p.image, a = p.allocation, v = p.view] {
@@ -72,9 +74,10 @@ void Video::load(std::function<void(std::string error)> done) {
     Result* raw = result.get();
     std::filesystem::path path = path_;
     std::string hwdec = options_.hwdec;
+    bool prime = services_.gpu.dmabuf() && std::getenv("GLINT_VIDEO_COPY") == nullptr;
     services_.workers.post(
-        [raw, path, hwdec] {
-            raw->decoder = Decoder::open(path, hwdec, raw->error);
+        [raw, path, hwdec, prime] {
+            raw->decoder = Decoder::open(path, hwdec, prime, raw->error);
             if (!raw->decoder) return;
             if (!raw->decoder->wait_first()) {
                 raw->error = "no frame in the video";
@@ -92,9 +95,13 @@ void Video::load(std::function<void(std::string error)> done) {
             decoder_ = std::move(result->decoder);
             first_ = std::move(result->first);
             const Info& info = decoder_->info();
-            make_planes(first_->width, first_->height);
+            prime_ = first_->prime.has_value();
+            if (!prime_) make_planes(first_->width, first_->height);
             log::info("video {}: {}x{} {} at {:.2f} fps, {}", path_.filename().string(), info.width,
-                      info.height, info.codec, info.fps, info.hardware ? "VA-API" : "software");
+                      info.height, info.codec, info.fps,
+                      prime_          ? "VA-API, dma-buf"
+                      : info.hardware ? "VA-API, copied"
+                                      : "software");
             start_sound();
             done({});
         });
@@ -175,21 +182,110 @@ void Video::upload(const Picture& picture, VkCommandBuffer cmd) {
     buffer.flush(0, VK_WHOLE_SIZE);
 }
 
+void Video::show(Picture& picture, VkCommandBuffer cmd) {
+    const Prime& prime = *picture.prime;
+    auto it = imports_.find(prime.key);
+    if (it == imports_.end()) {
+        if (imports_.size() >= 32) {
+            // More surfaces than a pool holds: the decoder made new ones. Start over.
+            shown_ = nullptr;
+            imports_.clear();
+        }
+        std::uint32_t cw = (picture.width + 1) / 2, ch = (picture.height + 1) / 2;
+        gpu::DmabufPlane y{prime.planes[0].fd,
+                           prime.modifier,
+                           prime.planes[0].offset,
+                           prime.planes[0].pitch,
+                           picture.width,
+                           picture.height,
+                           prime.deep ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM};
+        gpu::DmabufPlane uv{prime.planes[1].fd,
+                            prime.modifier,
+                            prime.planes[1].offset,
+                            prime.planes[1].pitch,
+                            cw,
+                            ch,
+                            prime.deep ? VK_FORMAT_R16G16_UNORM : VK_FORMAT_R8G8_UNORM};
+        std::string error;
+        Imported imported;
+        imported.y = gpu::DmabufImage::import(services_.gpu, y, error);
+        if (imported.y) imported.uv = gpu::DmabufImage::import(services_.gpu, uv, error);
+        if (!imported.y || !imported.uv) {
+            log::warn("video: cannot import the frame ({}), copying instead", error);
+            prime_ = false;
+            decoder_->stop_prime();
+            make_planes(picture.width, picture.height);
+            return;
+        }
+        it = imports_.emplace(prime.key, std::move(imported)).first;
+    }
+    // Written by the video decoder outside Vulkan: taken over from the foreign queue.
+    VkImageMemoryBarrier2 barriers[2];
+    VkImage images[] = {it->second.y->image(), it->second.uv->image()};
+    for (int i = 0; i < 2; ++i) {
+        barriers[i] = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+            .srcAccessMask = VK_ACCESS_2_NONE,
+            .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+            .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
+            .dstQueueFamilyIndex = services_.gpu.queue_family(),
+            .image = images[i],
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+    }
+    VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 2,
+        .pImageMemoryBarriers = barriers,
+    };
+    vkCmdPipelineBarrier2(cmd, &dependency);
+    shown_ = &it->second;
+    // The surface shown before stays held until the GPU is done sampling it.
+    if (shown_hold_) {
+        services_.gpu.defer([hold = std::move(shown_hold_)]() mutable { hold.reset(); });
+    }
+    shown_hold_ = std::move(picture.hold);
+}
+
 void Video::prepare(const Frame& frame, VkCommandBuffer cmd, VkExtent2D) {
     if (!decoder_) return;
+    auto present = [&](Picture& picture) {
+        if (picture.prime && prime_) {
+            show(picture, cmd);
+            return;
+        }
+        if (picture.prime) return;  // left over from before the switch to copies
+        if (prime_) {
+            // The decoder gave up on dma-bufs by itself.
+            prime_ = false;
+            make_planes(picture.width, picture.height);
+        }
+        upload(picture, cmd);
+    };
     if (first_) {
-        upload(*first_, cmd);
+        present(*first_);
         first_.reset();
     }
     double time = frame.time * static_cast<double>(options_.speed);
-    if (auto picture = decoder_->take(time)) upload(*picture, cmd);
+    if (auto picture = decoder_->take(time)) present(*picture);
 }
 
 bool Video::render(const Frame&, const gpu::Target& target, float opacity) {
-    if (!planes_[0].sampled) return false;
     const Info& info = decoder_->info();
-    gpu::VideoPass::Frame f{planes_[0].view,   planes_[1].view, planes_[2].view, planes_[0].width,
-                            planes_[0].height, info.bt709,      info.full_range};
+    gpu::VideoPass::Frame f{};
+    if (prime_) {
+        if (shown_ == nullptr) return false;
+        f = {shown_->y->view(), shown_->uv->view(), VK_NULL_HANDLE,  info.width,
+             info.height,       info.bt709,         info.full_range, true};
+    } else {
+        if (!planes_[0].sampled) return false;
+        f = {planes_[0].view,   planes_[1].view, planes_[2].view, planes_[0].width,
+             planes_[0].height, info.bt709,      info.full_range};
+    }
     services_.video.draw(target, f, options_.scaling, options_.linear, opacity);
     return true;
 }

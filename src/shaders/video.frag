@@ -1,6 +1,7 @@
 #version 450
 
-// A video frame from its three 8-bit planes (Y at full size, U and V at half), placed by its
+// A video frame from its three 8-bit planes (Y at full size, U and V at half), or from two
+// (Y, and U and V interleaved, as VA-API hands them out), placed by its
 // scaling mode like picture.frag, with the background colour around it. The planes hold
 // gamma-encoded values; they are converted to RGB, then to linear for the sRGB swapchain.
 
@@ -17,6 +18,7 @@ layout(push_constant) uniform Push {
     uint encode;      // 1: the target is not sRGB, encode here
     uint bt709;       // the colour matrix, else BT.601
     uint full_range;  // 0: video range (16 to 235)
+    uint interleaved; // plane_u holds U in red and V in green
 } push;
 
 layout(location = 0) out vec4 out_color;
@@ -32,8 +34,15 @@ vec3 encode_srgb(vec3 c) {
 void main() {
     vec2 uv = (gl_FragCoord.xy - push.offset) / push.size;
     float y = texture(plane_y, uv).r;
-    float u = texture(plane_u, uv).r - 0.5;
-    float v = texture(plane_v, uv).r - 0.5;
+    float u, v;
+    if (push.interleaved != 0u) {
+        vec2 c = texture(plane_u, uv).rg;
+        u = c.r - 0.5;
+        v = c.g - 0.5;
+    } else {
+        u = texture(plane_u, uv).r - 0.5;
+        v = texture(plane_v, uv).r - 0.5;
+    }
     if (push.full_range == 0u) {
         y = (y - 16.0 / 255.0) * (255.0 / 219.0);
         u *= 255.0 / 224.0;

@@ -4,10 +4,13 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_drm.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 }
+
+#include <sys/stat.h>
 
 #include <cstring>
 
@@ -18,6 +21,57 @@ namespace glint::video {
 namespace {
 
 constexpr std::size_t queue_depth = 4;
+
+constexpr std::uint32_t fourcc(char a, char b, char c, char d) {
+    return static_cast<std::uint32_t>(a) | static_cast<std::uint32_t>(b) << 8 |
+           static_cast<std::uint32_t>(c) << 16 | static_cast<std::uint32_t>(d) << 24;
+}
+constexpr std::uint32_t drm_r8 = fourcc('R', '8', ' ', ' ');
+constexpr std::uint32_t drm_gr88 = fourcc('G', 'R', '8', '8');
+constexpr std::uint32_t drm_r16 = fourcc('R', '1', '6', ' ');
+constexpr std::uint32_t drm_gr1616 = fourcc('G', 'R', '3', '2');
+constexpr std::uint32_t drm_nv12 = fourcc('N', 'V', '1', '2');
+constexpr std::uint32_t drm_p010 = fourcc('P', '0', '1', '0');
+
+// The two planes out of the descriptor, whether the exporter wrote them as separate layers
+// (R8 + GR88) or as one layer with two planes (NV12). False for anything else.
+bool describe(const AVDRMFrameDescriptor& d, Prime& prime) {
+    struct Found {
+        const AVDRMPlaneDescriptor* plane;
+        std::uint32_t format;
+    };
+    Found found[2];
+    int count = 0;
+    for (int l = 0; l < d.nb_layers; ++l) {
+        const AVDRMLayerDescriptor& layer = d.layers[l];
+        for (int p = 0; p < layer.nb_planes; ++p) {
+            if (count == 2) return false;
+            found[count++] = {&layer.planes[p], layer.format};
+        }
+    }
+    if (count != 2) return false;
+    std::uint32_t f0 = found[0].format, f1 = found[1].format;
+    if ((f0 == drm_r8 && f1 == drm_gr88) || (f0 == drm_nv12 && f1 == drm_nv12)) {
+        prime.deep = false;
+    } else if ((f0 == drm_r16 && f1 == drm_gr1616) || (f0 == drm_p010 && f1 == drm_p010)) {
+        prime.deep = true;
+    } else {
+        return false;
+    }
+    for (int i = 0; i < 2; ++i) {
+        const AVDRMPlaneDescriptor& plane = *found[i].plane;
+        if (plane.object_index < 0 || plane.object_index >= d.nb_objects) return false;
+        const AVDRMObjectDescriptor& object = d.objects[plane.object_index];
+        if (i > 0 && object.format_modifier != prime.modifier) return false;
+        prime.modifier = object.format_modifier;
+        prime.planes[i] = {object.fd, static_cast<std::uint64_t>(plane.offset),
+                           static_cast<std::uint64_t>(plane.pitch)};
+    }
+    struct stat st{};
+    if (::fstat(prime.planes[0].fd, &st) != 0) return false;
+    prime.key = static_cast<std::uint64_t>(st.st_ino);
+    return true;
+}
 
 AVPixelFormat pick_vaapi(AVCodecContext*, const AVPixelFormat* formats) {
     for (const AVPixelFormat* f = formats; *f != AV_PIX_FMT_NONE; ++f) {
@@ -59,7 +113,7 @@ Decoder::~Decoder() {
 }
 
 std::unique_ptr<Decoder> Decoder::open(const std::filesystem::path& path, const std::string& hwdec,
-                                       std::string& error) {
+                                       bool prime, std::string& error) {
     av_log_set_level(AV_LOG_ERROR);
     std::unique_ptr<Decoder> self(new Decoder());
     self->state_ = std::make_unique<State>();
@@ -85,7 +139,11 @@ std::unique_ptr<Decoder> Decoder::open(const std::filesystem::path& path, const 
         av_hwdevice_ctx_create(&s.device, AV_HWDEVICE_TYPE_VAAPI, nullptr, nullptr, 0) == 0) {
         s.codec->hw_device_ctx = av_buffer_ref(s.device);
         s.codec->get_format = pick_vaapi;
+        // Handed out as dma-bufs, the queue and the frame on screen hold surfaces beyond what
+        // decoding needs.
+        if (prime) s.codec->extra_hw_frames = static_cast<int>(queue_depth) + 3;
         info.hardware = true;
+        self->prime_.store(prime);
     } else if (hwdec == "vaapi") {
         log::warn("video: VA-API not available, decoding in software");
     }
@@ -122,6 +180,13 @@ bool Decoder::wait_first() {
     std::unique_lock lock(mutex_);
     wake_.wait(lock, [this] { return !queue_.empty() || failed_ || stopping_.load(); });
     return !queue_.empty();
+}
+
+void Decoder::stop_prime() {
+    std::lock_guard lock(mutex_);
+    prime_.store(false);
+    queue_.clear();
+    wake_.notify_all();
 }
 
 void Decoder::set_paused(bool paused) {
@@ -164,6 +229,36 @@ bool Decoder::decode_one() {
         av_packet_unref(s.packet);
     }
 
+    double pts = s.frame->best_effort_timestamp != AV_NOPTS_VALUE
+                     ? static_cast<double>(s.frame->best_effort_timestamp) * s.time_base
+                     : s.last_pts + s.frame_duration;
+    s.last_pts = pts;
+
+    if (s.frame->format == AV_PIX_FMT_VAAPI && prime_.load()) {
+        // Mapped, not copied: the mapping holds the surface until the picture is dropped.
+        AVFrame* mapped = av_frame_alloc();
+        mapped->format = AV_PIX_FMT_DRM_PRIME;
+        Prime prime;
+        if (av_hwframe_map(mapped, s.frame, AV_HWFRAME_MAP_READ) == 0 &&
+            describe(*reinterpret_cast<const AVDRMFrameDescriptor*>(mapped->data[0]), prime)) {
+            Picture p;
+            p.time = loop_offset_ + pts;
+            p.width = static_cast<std::uint32_t>(s.frame->width);
+            p.height = static_cast<std::uint32_t>(s.frame->height);
+            p.prime = prime;
+            p.hold = std::shared_ptr<AVFrame>(mapped, [](AVFrame* f) { av_frame_free(&f); });
+            av_frame_unref(s.frame);
+            std::lock_guard lock(mutex_);
+            if (!prime_.load()) return true;  // switched off meanwhile; the frame is dropped
+            queue_.push_back(std::move(p));
+            wake_.notify_all();
+            return true;
+        }
+        av_frame_free(&mapped);
+        log::warn("video: cannot export the frame as a dma-buf, copying instead");
+        prime_.store(false);
+    }
+
     AVFrame* source = s.frame;
     if (s.frame->format == AV_PIX_FMT_VAAPI) {
         av_frame_unref(s.software);
@@ -171,10 +266,6 @@ bool Decoder::decode_one() {
         source = s.software;
     }
     Picture p;
-    double pts = s.frame->best_effort_timestamp != AV_NOPTS_VALUE
-                     ? static_cast<double>(s.frame->best_effort_timestamp) * s.time_base
-                     : s.last_pts + s.frame_duration;
-    s.last_pts = pts;
     p.time = loop_offset_ + pts;
     p.width = static_cast<std::uint32_t>(source->width);
     p.height = static_cast<std::uint32_t>(source->height);
