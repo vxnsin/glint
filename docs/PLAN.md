@@ -376,7 +376,9 @@ HarfBuzz, puppet warp, lights, camera paths and shake, bloom, SceneScript on Qui
 and `.mdl` models last.
 
 M6, the platform: the NVIDIA pass, web wallpapers as an optional module, a D-Bus bridge if
-asked for, power policy (battery fps cap, idle after n minutes), `glint inspect` for
+asked for, the power policy and window rules from `src/policy` wired to UPower and the
+toplevels (battery fps cap, idle after n minutes, free after n minutes covered, pause and
+mute rules by app_id or title), `glint inspect` for
 library UIs, `glint doctor` and `glint install`.
 
 M7, the app: glint-app with library, per-output assignment, the settings panel, status,

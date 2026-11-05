@@ -42,6 +42,19 @@ set(GLINT_WARNINGS
 )
 target_compile_options(glint PRIVATE ${GLINT_WARNINGS})
 
+# Window rules and the power policy are plain logic and build everywhere, with their tests.
+add_library(glint_policy STATIC
+    src/policy/power.cpp
+    src/policy/rules.cpp
+)
+target_include_directories(glint_policy PUBLIC src)
+target_compile_options(glint_policy PRIVATE ${GLINT_WARNINGS})
+
+enable_testing()
+add_executable(glint-policy-tests tests/policy.cpp)
+target_link_libraries(glint-policy-tests PRIVATE glint_policy)
+target_compile_options(glint-policy-tests PRIVATE ${GLINT_WARNINGS})
+add_test(NAME policy COMMAND glint-policy-tests)
 
 if(GLINT_PLATFORM)
     include(cmake/Dependencies.cmake)
