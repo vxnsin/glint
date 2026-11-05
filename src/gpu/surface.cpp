@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <memory>
 
 #include "core/log.hpp"
 #include "gpu/context.hpp"
@@ -100,6 +101,7 @@ bool Surface::resize(std::uint32_t width, std::uint32_t height) {
     // Everything in flight on the old swapchain finishes first; resizes are rare.
     for (const Slot& slot : slots_) context_.wait(slot.value);
 
+    can_capture_ = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
     extent_ = {std::clamp(width, caps.minImageExtent.width, caps.maxImageExtent.width),
                std::clamp(height, caps.minImageExtent.height, caps.maxImageExtent.height)};
     VkCompositeAlphaFlagBitsKHR alpha =
@@ -115,7 +117,9 @@ bool Surface::resize(std::uint32_t width, std::uint32_t height) {
         .imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
         .imageExtent = extent_,
         .imageArrayLayers = 1,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageUsage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            (can_capture_ ? static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_TRANSFER_SRC_BIT) : 0u),
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR,
         .compositeAlpha = alpha,
@@ -158,7 +162,8 @@ bool Surface::resize(std::uint32_t width, std::uint32_t height) {
     return true;
 }
 
-bool Surface::begin(const float clear[4], const FrameUniforms& uniforms, Target& target) {
+bool Surface::begin(const float clear[4], const FrameUniforms& uniforms, Target& target,
+                    const std::function<void(VkCommandBuffer, VkExtent2D)>& before) {
     if (swapchain_ == VK_NULL_HANDLE || recording_) return false;
     VkDevice device = context_.device();
     Slot& slot = slots_[slot_];
@@ -199,6 +204,8 @@ bool Surface::begin(const float clear[4], const FrameUniforms& uniforms, Target&
         vkCmdResetQueryPool(cmd, queries_, slot_ * 2, 2);
         vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_NONE, queries_, slot_ * 2);
     }
+
+    if (before) before(cmd, extent_);
 
     VkImageMemoryBarrier2 to_attachment{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -258,13 +265,47 @@ bool Surface::end() {
     VkCommandBuffer cmd = slot.cmd;
     vkCmdEndRendering(cmd);
 
+    // A screenshot: the image goes through a host buffer on its way to the compositor.
+    std::shared_ptr<Buffer> readback;
+    VkImageLayout before_present = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    if (capture_ && can_capture_) {
+        VkDeviceSize bytes = static_cast<VkDeviceSize>(extent_.width) * extent_.height * 4;
+        readback = std::make_shared<Buffer>(context_.allocator(), bytes,
+                                            VK_BUFFER_USAGE_TRANSFER_DST_BIT, true);
+        VkImageMemoryBarrier2 to_copy{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .image = images_[image_],
+            .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+        };
+        VkDependencyInfo copy_dependency{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &to_copy,
+        };
+        vkCmdPipelineBarrier2(cmd, &copy_dependency);
+        VkBufferImageCopy region{
+            .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .imageExtent = {extent_.width, extent_.height, 1},
+        };
+        vkCmdCopyImageToBuffer(cmd, images_[image_], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               readback->get(), 1, &region);
+        before_present = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    }
+
     VkImageMemoryBarrier2 to_present{
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask =
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
         .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
         .dstStageMask = VK_PIPELINE_STAGE_2_NONE,
         .dstAccessMask = VK_ACCESS_2_NONE,
-        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .oldLayout = before_present,
         .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
         .image = images_[image_],
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
@@ -285,6 +326,17 @@ bool Surface::end() {
     Context::Wait wait{slot.acquired, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT};
     VkSemaphore rendered = rendered_[image_];
     slot.value = context_.submit(cmd, {&wait, 1}, {&rendered, 1});
+    if (readback) {
+        context_.wait(slot.value);
+        Capture capture;
+        capture.width = extent_.width;
+        capture.height = extent_.height;
+        capture.format = format_;
+        capture.pixels.assign(readback->mapped(), readback->mapped() + readback->size());
+        auto done = std::move(capture_);
+        capture_ = {};
+        done(std::move(capture));
+    }
 
     VkPresentInfoKHR present{
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -52,13 +53,26 @@ public:
 
     // begin() acquires an image and starts rendering with a clear to colour; nullopt-like
     // false when the swapchain is out of date (call resize again) or not ready.
-    bool begin(const float clear[4], const FrameUniforms& uniforms, Target& target);
+    // before records offscreen work into the frame's command buffer ahead of the swapchain
+    // pass (scene layers); it gets the output's pixel size.
+    bool begin(const float clear[4], const FrameUniforms& uniforms, Target& target,
+               const std::function<void(VkCommandBuffer, VkExtent2D)>& before = {});
     // Ends rendering, submits and presents.
     bool end();
 
     VkFormat format() const { return format_; }
     VkExtent2D extent() const { return extent_; }
     std::uint32_t image_count() const { return static_cast<std::uint32_t>(images_.size()); }
+
+    // Hands the next presented frame back as pixels (glint screenshot). The frame waits for
+    // the GPU once, so it costs a millisecond or two more than usual.
+    struct Capture {
+        std::vector<std::byte> pixels;  // tightly packed, 4 bytes per pixel
+        std::uint32_t width = 0, height = 0;
+        VkFormat format = VK_FORMAT_UNDEFINED;
+    };
+    void capture_next(std::function<void(Capture)> done) { capture_ = std::move(done); }
+    bool capture_pending() const { return static_cast<bool>(capture_); }
 
     // GPU time of the latest finished frame in milliseconds, -1 if not known yet.
     double gpu_ms();
@@ -88,6 +102,8 @@ private:
     std::uint32_t image_ = 0;
     bool recording_ = false;
     VkQueryPool queries_ = VK_NULL_HANDLE;
+    std::function<void(Capture)> capture_;
+    bool can_capture_ = false;
     double gpu_ms_ = -1;
     std::uint32_t last_timed_slot_ = 0;
 };

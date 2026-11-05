@@ -1,5 +1,6 @@
 #include "wallpaper/scene/scene.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <sstream>
 
@@ -133,6 +134,9 @@ void parse_effect(const Vfs& vfs, const json& entry, Effect& effect,
             f.scale = number(fbo, "scale", 1);
             if (f.scale <= 0) f.scale = 1;
             f.format = str(fbo, "format", "rgba8888");
+            f.width = static_cast<std::uint32_t>(std::max(0.0f, number(fbo, "width", 0)));
+            f.height = static_cast<std::uint32_t>(std::max(0.0f, number(fbo, "height", 0)));
+            f.repeat = str(fbo, "uvs") == "repeat";
             effect.fbos.push_back(std::move(f));
         }
     }
@@ -165,7 +169,8 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
         image.autosize = boolean(*model, "autosize", false);
         image.fullscreen = boolean(*model, "fullscreen", false);
         image.passthrough = boolean(*model, "passthrough", false);
-        image.puppet = model->contains("puppet");
+        image.puppet_path = str(*model, "puppet");
+        image.puppet = !image.puppet_path.empty();
         image.model_size = {number(*model, "width", 0), number(*model, "height", 0)};
         std::string material = str(*model, "material");
         if (!material.empty()) parse_material(vfs, material, image.material, warnings);

@@ -1,0 +1,490 @@
+#include "wallpaper/scene/assets.hpp"
+
+#include <vk_mem_alloc.h>
+
+#include <algorithm>
+#include <cstring>
+#include <set>
+
+#include "core/clock.hpp"
+#include "core/log.hpp"
+#include "gpu/context.hpp"
+#include "gpu/texture.hpp"
+#include "wallpaper/image/decode.hpp"
+#include "wallpaper/scene/tex.hpp"
+
+namespace glint::scene {
+
+namespace {
+
+constexpr std::uint32_t binding_count = 16;  // block, eight slots, other samplers
+
+VkFormat format_of(const Tex& tex) {
+    switch (tex.format) {
+        case 0: return VK_FORMAT_R8G8B8A8_UNORM;
+        case 1:
+        case 2: return VK_FORMAT_BC2_UNORM_BLOCK;
+        case 4: return VK_FORMAT_BC3_UNORM_BLOCK;
+        case 7: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case 8: return VK_FORMAT_R8G8_UNORM;
+        case 9: return VK_FORMAT_R8_UNORM;
+        default: return VK_FORMAT_UNDEFINED;
+    }
+}
+
+VkShaderModule module(VkDevice device, const std::vector<std::uint32_t>& code) {
+    VkShaderModuleCreateInfo info{
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = code.size() * 4,
+        .pCode = code.data(),
+    };
+    VkShaderModule result = VK_NULL_HANDLE;
+    vkCreateShaderModule(device, &info, nullptr, &result);
+    return result;
+}
+
+VkPipelineColorBlendAttachmentState blend_state(const std::string& blending) {
+    VkPipelineColorBlendAttachmentState s{
+        .blendEnable = VK_TRUE,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
+        .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    };
+    if (blending == "normal" || blending == "disabled" || blending == "opaque") {
+        s.blendEnable = VK_FALSE;
+    } else if (blending == "additive") {
+        s.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        s.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        s.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    } else if (blending == "premultiplied" || blending == "translucentpremultiplied") {
+        s.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    }
+    return s;
+}
+
+}  // namespace
+
+std::string texture_path(const std::string& name) {
+    if (name.ends_with(".tex")) return name;
+    return "materials/" + name + ".tex";
+}
+
+std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item,
+                                               const std::filesystem::path& assets,
+                                               const std::filesystem::path& shader_cache,
+                                               gpu::Context& gpu, gpu::StagingRing& staging,
+                                               std::string& error) {
+    std::int64_t start = clock::now_ns();
+    std::shared_ptr<SceneAssets> self(new SceneAssets(gpu, staging, Vfs(item, assets)));
+    if (std::string e = self->vfs_.open_package(); !e.empty()) {
+        error = "scene.pkg: " + e;
+        return nullptr;
+    }
+    auto project_file = self->vfs_.read("project.json");
+    if (!project_file) {
+        error = "no project.json";
+        return nullptr;
+    }
+    if (std::string e = parse_project(project_file->text(), self->project_); !e.empty()) {
+        error = e;
+        return nullptr;
+    }
+    if (self->project_.type != "scene") {
+        error = "a " + self->project_.type + " item, not a scene";
+        return nullptr;
+    }
+    if (std::string e = load_scene(self->vfs_, self->project_.file, self->scene_); !e.empty()) {
+        error = e;
+        return nullptr;
+    }
+    self->warnings_ = self->scene_.warnings;
+    if (assets.empty()) self->warnings_.push_back("Wallpaper Engine's assets folder not found");
+
+    // Every texture any material or effect names, read and decoded now.
+    Values values = default_values(self->project_);
+    auto no_size = [](const std::string&) -> std::optional<Vec2> { return std::nullopt; };
+    Plan all = build_plan(self->scene_, values, no_size, true);
+    std::set<std::string> names;
+    for (const PlanDraw& draw : all.draws) {
+        for (const PlanTexture& t : draw.textures) {
+            if (t.kind == PlanTexture::Kind::file) names.insert(t.file);
+        }
+    }
+    for (const std::string& name : names) self->read_texture(name);
+
+    // Puppet meshes, drawn in their rest pose until bones arrive in M5.
+    for (const ImageObject& image : self->scene_.images) {
+        if (image.puppet_path.empty() || self->meshes_.contains(image.puppet_path)) continue;
+        auto file = self->vfs_.read(image.puppet_path);
+        Mesh mesh;
+        std::string e = file ? parse_mdl(file->bytes(), mesh) : "not found";
+        if (!e.empty()) {
+            self->warnings_.push_back(image.puppet_path + ": " + e + ", drawn flat");
+            continue;
+        }
+        self->meshes_[image.puppet_path] = std::move(mesh);
+    }
+
+    // Every shader, also those of hidden objects and effects, so a property change never
+    // waits for a compile.
+    ShaderCompiler compiler(self->vfs_, shader_cache);
+    for (const PlanDraw& draw : all.draws) {
+        if (draw.request.name.empty()) continue;
+        std::string key = request_key(draw.request);
+        if (self->programs_.contains(key)) continue;
+        SceneProgram program;
+        program.shader = compiler.compile(draw.request);
+        if (!program.shader.error.empty()) {
+            self->warnings_.push_back("shader " + draw.request.name + ": " +
+                                      program.shader.error.substr(0, 300));
+        } else if (program.shader.cached) {
+            ++self->cached_;
+        } else {
+            ++self->compiled_;
+        }
+        for (const auto& u : program.shader.uniforms) {
+            if (u.name == "g_Time" || u.name == "g_Daytime") self->animated_ = true;
+        }
+        self->programs_[key] = std::move(program);
+    }
+    self->load_ms_ = clock::ms_since(start);
+    return self;
+}
+
+void SceneAssets::read_texture(const std::string& name) {
+    std::string path = texture_path(name);
+    auto file = vfs_.read(path);
+    if (!file) {
+        warnings_.push_back("texture " + name + ": not found");
+        return;
+    }
+    Tex tex;
+    if (std::string error = parse_tex(file->bytes(), tex); !error.empty()) {
+        warnings_.push_back("texture " + name + ": " + error);
+        return;
+    }
+    if (tex.images.empty() || tex.images[0].empty()) return;
+    if (tex.video) warnings_.push_back("texture " + name + ": video textures come with M4");
+    if (tex.sprite_sheet())
+        warnings_.push_back("texture " + name + ": sprite sheet, first frame only");
+
+    PendingTexture pending;
+    pending.name = name;
+    pending.info.tex_width = tex.tex_width;
+    pending.info.tex_height = tex.tex_height;
+    pending.info.img_width = tex.img_width;
+    pending.info.img_height = tex.img_height;
+    pending.info.clamp = (tex.flags & 6u) != 0;
+    pending.info.nearest = tex.no_interpolation();
+    const auto& mips = tex.images[0];
+
+    if (tex.embedded()) {
+        // A PNG or JPEG per mip: decode the largest, make the rest on the GPU.
+        std::vector<std::byte> bytes;
+        if (!mip_bytes(mips[0], bytes)) {
+            warnings_.push_back("texture " + name + ": corrupt");
+            return;
+        }
+        image::Decoded decoded;
+        if (std::string error = image::decode_memory(bytes, tex.image_format,
+                                                     gpu_.max_image_dimension(), staging_, decoded);
+            !error.empty()) {
+            warnings_.push_back("texture " + name + ": " + error);
+            return;
+        }
+        pending.format = VK_FORMAT_R8G8B8A8_UNORM;
+        pending.span = decoded.pixels;
+        pending.levels.push_back({0, {decoded.width, decoded.height}});
+        pending.generate = true;
+        // The embedded file is the stored size; the picture is the same part of it.
+        pending.info.tex_width = decoded.width;
+        pending.info.tex_height = decoded.height;
+        pending.info.img_width = std::min(tex.img_width, decoded.width);
+        pending.info.img_height = std::min(tex.img_height, decoded.height);
+        pending_.push_back(std::move(pending));
+        return;
+    }
+
+    pending.format = format_of(tex);
+    if (pending.format == VK_FORMAT_UNDEFINED) {
+        warnings_.push_back("texture " + name + ": format " + std::to_string(tex.format));
+        return;
+    }
+    // Stored mips as they are; stop where the chain stops halving.
+    std::vector<std::vector<std::byte>> payloads;
+    std::uint32_t w = mips[0].width, h = mips[0].height;
+    for (const TexMip& mip : mips) {
+        if (mip.width != w || mip.height != h) break;
+        std::vector<std::byte> bytes;
+        if (!mip_bytes(mip, bytes)) break;
+        payloads.push_back(std::move(bytes));
+        w = std::max(1u, w / 2);
+        h = std::max(1u, h / 2);
+    }
+    if (payloads.empty()) {
+        warnings_.push_back("texture " + name + ": corrupt");
+        return;
+    }
+    VkDeviceSize total = 0;
+    for (const auto& p : payloads) total += (p.size() + 15) / 16 * 16;
+    pending.span = staging_.allocate(total);
+    if (pending.span.data == nullptr) {
+        warnings_.push_back("texture " + name + ": out of staging memory");
+        return;
+    }
+    VkDeviceSize offset = 0;
+    w = mips[0].width;
+    h = mips[0].height;
+    for (const auto& p : payloads) {
+        std::memcpy(pending.span.data + offset, p.data(), p.size());
+        pending.levels.push_back({offset, {w, h}});
+        offset += (p.size() + 15) / 16 * 16;
+        w = std::max(1u, w / 2);
+        h = std::max(1u, h / 2);
+    }
+    pending_.push_back(std::move(pending));
+}
+
+bool SceneAssets::finish() {
+    VkDevice device = gpu_.device();
+    for (PendingTexture& p : pending_) {
+        std::vector<gpu::Texture::Level> levels;
+        for (const auto& [offset, size] : p.levels)
+            levels.push_back({offset, size.first, size.second});
+        p.info.texture = gpu::Texture::upload(gpu_, staging_, p.span, p.format, levels, p.generate);
+        if (p.info.texture) {
+            textures_[p.name] = p.info;
+        } else {
+            warnings_.push_back("texture " + p.name + ": upload failed");
+        }
+    }
+    pending_.clear();
+
+    // A white pixel for every slot nothing is bound to.
+    auto span = staging_.allocate(4);
+    if (span.data != nullptr) {
+        std::memset(span.data, 0xff, 4);
+        gpu::Texture::Level level{0, 1, 1};
+        white_.texture = gpu::Texture::upload(gpu_, staging_, span, VK_FORMAT_R8G8B8A8_UNORM,
+                                              {&level, 1}, false);
+    }
+
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    bindings.push_back({0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+    for (std::uint32_t i = 1; i < binding_count; ++i) {
+        bindings.push_back({i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+    }
+    VkDescriptorSetLayoutCreateInfo set_info{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
+        .bindingCount = static_cast<std::uint32_t>(bindings.size()),
+        .pBindings = bindings.data(),
+    };
+    vkCreateDescriptorSetLayout(device, &set_info, nullptr, &set_layout_);
+    VkPipelineLayoutCreateInfo layout_info{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &set_layout_,
+    };
+    vkCreatePipelineLayout(device, &layout_info, nullptr, &layout_);
+
+    for (int i = 0; i < 4; ++i) {
+        bool clamp = (i & 1) != 0;
+        bool nearest = (i & 2) != 0;
+        VkSamplerAddressMode mode =
+            clamp ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        VkSamplerCreateInfo info{
+            .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+            .magFilter = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+            .minFilter = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+            .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+            .addressModeU = mode,
+            .addressModeV = mode,
+            .addressModeW = mode,
+            .maxLod = VK_LOD_CLAMP_NONE,
+        };
+        vkCreateSampler(device, &info, nullptr, &samplers_[i]);
+    }
+
+    for (auto& [key, program] : programs_) {
+        if (!program.shader.error.empty()) continue;
+        program.vertex = module(device, program.shader.vertex);
+        program.fragment = module(device, program.shader.fragment);
+    }
+    return true;
+}
+
+SceneAssets::~SceneAssets() {
+    VkDevice device = gpu_.device();
+    // Pipelines and modules may still be in use by frames in flight.
+    std::vector<VkPipeline> pipelines;
+    std::vector<VkShaderModule> modules;
+    for (auto& [key, program] : programs_) {
+        for (auto& [blend, pipeline] : program.pipelines) pipelines.push_back(pipeline);
+        if (program.vertex != VK_NULL_HANDLE) modules.push_back(program.vertex);
+        if (program.fragment != VK_NULL_HANDLE) modules.push_back(program.fragment);
+    }
+    std::vector<VkSampler> samplers(std::begin(samplers_), std::end(samplers_));
+    gpu::Context& gpu = gpu_;
+    gpu.defer([&gpu, device, pipelines, modules, samplers, layout = layout_, set = set_layout_] {
+        for (VkPipeline p : pipelines) vkDestroyPipeline(device, p, nullptr);
+        for (VkShaderModule m : modules) vkDestroyShaderModule(device, m, nullptr);
+        for (VkSampler s : samplers) {
+            if (s != VK_NULL_HANDLE) vkDestroySampler(device, s, nullptr);
+        }
+        if (layout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, layout, nullptr);
+        if (set != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, set, nullptr);
+        (void)gpu;
+    });
+    for (PendingTexture& p : pending_) staging_.abandon(p.span);
+}
+
+const SceneTexture& SceneAssets::texture(const std::string& name) const {
+    if (auto it = textures_.find(name); it != textures_.end()) return it->second;
+    return white_;
+}
+
+std::optional<Vec2> SceneAssets::picture_size(const std::string& name) const {
+    if (auto it = textures_.find(name); it != textures_.end()) {
+        return Vec2{static_cast<float>(it->second.img_width),
+                    static_cast<float>(it->second.img_height)};
+    }
+    for (const auto& p : pending_) {
+        if (p.name == name) {
+            return Vec2{static_cast<float>(p.info.img_width),
+                        static_cast<float>(p.info.img_height)};
+        }
+    }
+    return std::nullopt;
+}
+
+const Mesh* SceneAssets::mesh(const std::string& path) const {
+    auto it = meshes_.find(path);
+    return it != meshes_.end() ? &it->second : nullptr;
+}
+
+SceneProgram* SceneAssets::program(const ShaderRequest& request) {
+    auto it = programs_.find(request_key(request));
+    if (it == programs_.end() || !it->second.shader.error.empty()) return nullptr;
+    return &it->second;
+}
+
+VkSampler SceneAssets::sampler(bool clamp, bool nearest) const {
+    return samplers_[(clamp ? 1 : 0) | (nearest ? 2 : 0)];
+}
+
+std::uint64_t SceneAssets::memory() const {
+    std::uint64_t total = 0;
+    for (const auto& [name, t] : textures_) total += t.texture ? t.texture->memory() : 0;
+    return total;
+}
+
+VkPipeline SceneAssets::pipeline(SceneProgram& program, const std::string& blending,
+                                 VkFormat format) {
+    std::string key = blending + "|" + std::to_string(static_cast<int>(format));
+    if (auto it = program.pipelines.find(key); it != program.pipelines.end()) return it->second;
+
+    VkPipelineShaderStageCreateInfo stages[] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_VERTEX_BIT,
+         .module = program.vertex,
+         .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .module = program.fragment,
+         .pName = "main"},
+    };
+    // One interleaved vertex stream: position (3 floats) and texcoord (2 floats). Inputs the
+    // shader declares beyond those read a stream of zeros.
+    VkVertexInputBindingDescription bindings[] = {
+        {0, 5 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX},
+        {1, 0, VK_VERTEX_INPUT_RATE_VERTEX},
+    };
+    std::vector<VkVertexInputAttributeDescription> attributes;
+    bool zeros = false;
+    for (const auto& [name, location] : program.shader.attributes) {
+        if (name == "a_Position") {
+            attributes.push_back({location, 0, VK_FORMAT_R32G32B32_SFLOAT, 0});
+        } else if (name == "a_TexCoord") {
+            attributes.push_back({location, 0, VK_FORMAT_R32G32_SFLOAT, 3 * sizeof(float)});
+        } else {
+            attributes.push_back({location, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 0});
+            zeros = true;
+        }
+    }
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = zeros ? 2u : 1u,
+        .pVertexBindingDescriptions = bindings,
+        .vertexAttributeDescriptionCount = static_cast<std::uint32_t>(attributes.size()),
+        .pVertexAttributeDescriptions = attributes.data(),
+    };
+    VkPipelineInputAssemblyStateCreateInfo assembly{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    };
+    VkPipelineViewportStateCreateInfo viewport{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    };
+    VkPipelineRasterizationStateCreateInfo raster{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_NONE,
+        .lineWidth = 1.0f,
+    };
+    VkPipelineMultisampleStateCreateInfo multisample{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+    VkPipelineColorBlendAttachmentState attachment = blend_state(blending);
+    VkPipelineColorBlendStateCreateInfo blend{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &attachment,
+    };
+    VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = dynamic_states,
+    };
+    VkPipelineRenderingCreateInfo rendering{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+        .colorAttachmentCount = 1,
+        .pColorAttachmentFormats = &format,
+    };
+    VkGraphicsPipelineCreateInfo info{
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .pNext = &rendering,
+        .stageCount = 2,
+        .pStages = stages,
+        .pVertexInputState = &vertex_input,
+        .pInputAssemblyState = &assembly,
+        .pViewportState = &viewport,
+        .pRasterizationState = &raster,
+        .pMultisampleState = &multisample,
+        .pColorBlendState = &blend,
+        .pDynamicState = &dynamic,
+        .layout = layout_,
+    };
+    VkPipeline result = VK_NULL_HANDLE;
+    if (VkResult r = vkCreateGraphicsPipelines(gpu_.device(), gpu_.pipeline_cache(), 1, &info,
+                                               nullptr, &result);
+        r != VK_SUCCESS) {
+        log::warn("scene pipeline {}: {}", program.shader.hash, gpu::result_name(r));
+        result = VK_NULL_HANDLE;
+    }
+    program.pipelines[key] = result;
+    return result;
+}
+
+}  // namespace glint::scene

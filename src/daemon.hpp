@@ -15,12 +15,14 @@
 #include "core/loop.hpp"
 #include "core/state.hpp"
 #include "core/worker.hpp"
+#include "gpu/blit.hpp"
 #include "gpu/context.hpp"
 #include "gpu/pictures.hpp"
 #include "gpu/staging.hpp"
 #include "gpu/surface.hpp"
 #include "ipc/server.hpp"
 #include "wallpaper/image/textures.hpp"
+#include "wallpaper/scene/scene_wallpaper.hpp"
 #include "wallpaper/wallpaper.hpp"
 #include "wayland/display.hpp"
 
@@ -91,7 +93,11 @@ private:
         std::shared_ptr<Request> request;     // the set that brought incoming
         std::int64_t fade_start_ns = 0;       // 0: incoming not ready yet
         int fade_ms = 0;                      // crossfade length, 0 for a straight swap
-        std::string error;                    // last load error, for status
+        std::int64_t current_origin_ns = 0;   // when the current wallpaper's clock started
+        std::int64_t incoming_origin_ns = 0;
+        std::int64_t paused_at_ns = 0;
+        std::int64_t last_frame_ns = 0;
+        std::string error;  // last load error, for status
 
         bool dirty = true;         // something changed that is not on screen yet
         bool resized = true;       // the swapchain needs the new size
@@ -139,6 +145,8 @@ private:
     std::unique_ptr<gpu::Pictures> pictures_;
     std::unique_ptr<Workers> workers_;
     std::unique_ptr<image::Textures> textures_;
+    std::unique_ptr<gpu::Blit> blit_;
+    std::unique_ptr<scene::SceneCache> scenes_;
     std::unique_ptr<Services> services_;
     std::vector<std::unique_ptr<Screen>> screens_;
 

@@ -13,7 +13,9 @@
 #include "core/version.hpp"
 #include "gpu/texture.hpp"
 #include "ipc/protocol.hpp"
+#include "wallpaper/image/decode.hpp"
 #include "wallpaper/image/image.hpp"
+#include "wallpaper/scene/scene_wallpaper.hpp"
 
 namespace glint {
 
@@ -65,7 +67,9 @@ Daemon::~Daemon() {
     screens_.clear();
     workers_.reset();
     textures_.reset();
+    scenes_.reset();
     services_.reset();
+    blit_.reset();
     pictures_.reset();
     if (gpu_) gpu_->drain();
     staging_.reset();
@@ -115,8 +119,10 @@ int Daemon::run() {
     pictures_ = std::make_unique<gpu::Pictures>(*gpu_);
     workers_ = std::make_unique<Workers>(loop_, 2);
     textures_ = std::make_unique<image::Textures>(*gpu_, *staging_, *workers_);
-    services_ =
-        std::make_unique<Services>(Services{*gpu_, *pictures_, *staging_, *workers_, *textures_});
+    blit_ = std::make_unique<gpu::Blit>(*gpu_);
+    scenes_ = std::make_unique<scene::SceneCache>(*gpu_, *staging_, *workers_);
+    services_ = std::make_unique<Services>(
+        Services{*gpu_, *pictures_, *staging_, *workers_, *textures_, *scenes_, *blit_});
 
     server_ = std::make_unique<ipc::Server>(
         loop_, [this](const nlohmann::json& request, ipc::Server::Reply reply) {
@@ -255,15 +261,35 @@ void Daemon::render(Screen& entry) {
         entry.current ? entry.current.get() : (fading ? entry.incoming.get() : nullptr);
     if (base != nullptr) std::copy_n(base->options().linear, 3, clear);
 
+    // Each wallpaper's own clock, pauses excluded.
+    if (entry.current && entry.current_origin_ns == 0) entry.current_origin_ns = start;
+    if (fading && entry.incoming_origin_ns == 0) entry.incoming_origin_ns = start;
+    double delta = entry.last_frame_ns != 0
+                       ? std::min(static_cast<double>(start - entry.last_frame_ns) / 1e9, 0.25)
+                       : 0.0;
+    entry.last_frame_ns = start;
+    auto seconds = [start](std::int64_t origin) {
+        return origin != 0 ? static_cast<double>(start - origin) / 1e9 : 0.0;
+    };
+    Frame current_frame{seconds(entry.current_origin_ns), delta, entry.frames};
+    Frame incoming_frame{seconds(entry.incoming_origin_ns), delta, entry.frames};
+
+    // A wallpaper that wants the cursor gets pointer input on its surface.
+    output.set_pointer_input(entry.current ? entry.current->wants_cursor()
+                                           : (fading && entry.incoming->wants_cursor()));
+
     gpu::Target target{};
-    if (!entry.surface->begin(clear, uniforms, target)) {
+    auto offscreen = [&](VkCommandBuffer cmd, VkExtent2D extent) {
+        if (entry.current) entry.current->prepare(current_frame, cmd, extent);
+        if (fading) entry.incoming->prepare(incoming_frame, cmd, extent);
+    };
+    if (!entry.surface->begin(clear, uniforms, target, offscreen)) {
         // Out of date: recreate with the next draw.
         entry.resized = true;
         return;
     }
-    Frame frame{.time = 0, .delta = 0, .index = entry.frames};
-    if (entry.current) entry.current->render(frame, target, 1.0f);
-    if (fading) entry.incoming->render(frame, target, t);
+    if (entry.current) entry.current->render(current_frame, target, 1.0f);
+    if (fading) entry.incoming->render(incoming_frame, target, t);
 
     bool fade_done = fading && t >= 1.0f;
     bool more = (fading && !fade_done) || (entry.current && entry.current->wants_frames()) ||
@@ -288,6 +314,8 @@ void Daemon::render(Screen& entry) {
     }
     if (fade_done) {
         entry.current = std::move(entry.incoming);
+        entry.current_origin_ns = entry.incoming_origin_ns;
+        entry.incoming_origin_ns = 0;
         entry.fade_start_ns = 0;
     }
     log::debug("{}: frame {} in {:.2f} ms CPU{}", output.name(), entry.frames, entry.cpu_ms,
@@ -359,8 +387,10 @@ void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<
     // If a crossfade is running, the incoming one is far enough: it becomes the current one.
     if (entry.incoming && entry.incoming->ready() && entry.fade_start_ns != 0) {
         entry.current = std::move(entry.incoming);
+        entry.current_origin_ns = entry.incoming_origin_ns;
         entry.fade_start_ns = 0;
     }
+    entry.incoming_origin_ns = 0;
     entry.incoming = std::move(wallpaper);
     entry.request = std::move(request);
     entry.error.clear();
@@ -392,8 +422,10 @@ void Daemon::loaded(Screen& entry, Wallpaper* wallpaper, const std::string& erro
     entry.fade_ms = fade ? std::max(wallpaper->options().duration_ms, 0) : 0;
     entry.fade_start_ns = clock::now_ns();
     entry.dirty = true;
-    // A paused output takes the new wallpaper without drawing; the request is done now.
-    if (reasons(entry) != 0 && entry.request) {
+    // A paused output takes the new wallpaper without drawing, and one still waiting for the
+    // compositor's frame callback (it is covered, say) draws when the compositor asks: the
+    // request is done now for both, or it could wait for minutes.
+    if ((reasons(entry) != 0 || entry.output->frame_pending()) && entry.request) {
         finish(entry.request, {});
         entry.request.reset();
     }
@@ -482,6 +514,17 @@ void Daemon::pause_changed(Screen& entry, std::uint32_t before) {
     std::uint32_t now = reasons(entry);
     if ((before == 0) == (now == 0)) return;
     log::info("{}: {}", entry.output->name(), now != 0 ? "paused" : "running");
+    std::int64_t at = clock::now_ns();
+    if (now != 0) {
+        entry.paused_at_ns = at;
+    } else if (entry.paused_at_ns != 0) {
+        // The clocks stand still while paused.
+        std::int64_t gap = at - entry.paused_at_ns;
+        if (entry.current_origin_ns != 0) entry.current_origin_ns += gap;
+        if (entry.incoming_origin_ns != 0) entry.incoming_origin_ns += gap;
+        entry.last_frame_ns = 0;
+        entry.paused_at_ns = 0;
+    }
     if (now != 0) {
         if (entry.current) entry.current->pause();
         // A set waiting for its first frame will not get one while paused.
@@ -721,6 +764,32 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
             return reply.error(error);
         }
         reply.ok();
+    } else if (op == "screenshot") {
+        Screen* entry = screen(output);
+        if (entry == nullptr) return reply.error("screenshot needs an output");
+        if (!request.contains("path") || !request["path"].is_string()) {
+            return reply.error("screenshot needs a path");
+        }
+        if (reasons(*entry) != 0) return reply.error("the output is paused, nothing is drawn");
+        std::filesystem::path path = request["path"].get<std::string>();
+        bool bgra = entry->surface->format() == VK_FORMAT_B8G8R8A8_SRGB ||
+                    entry->surface->format() == VK_FORMAT_B8G8R8A8_UNORM;
+        Workers* workers = workers_.get();
+        entry->surface->capture_next([reply, path, bgra, workers](gpu::Surface::Capture c) mutable {
+            auto shot = std::make_shared<gpu::Surface::Capture>(std::move(c));
+            auto error = std::make_shared<std::string>();
+            workers->post(
+                [shot, error, path, bgra] {
+                    *error = image::write_png(path, shot->pixels, shot->width, shot->height, bgra);
+                },
+                [reply, shot, error, path]() mutable {
+                    if (!error->empty()) return reply.error(*error);
+                    reply.ok({{"path", path.string()},
+                              {"width", shot->width},
+                              {"height", shot->height}});
+                });
+        });
+        entry->dirty = true;  // a still output draws once more for it
     } else if (op == "props" || op == "inspect") {
         reply.error(op + " comes with milestone M2 (scenes)");
     } else if (op == "audio" || op == "cursor") {

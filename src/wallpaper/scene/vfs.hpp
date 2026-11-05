@@ -11,7 +11,8 @@
 #include <vector>
 
 // The files a Wallpaper Engine item sees: its own folder, then its scene.pkg, then the
-// assets/ folder of the Wallpaper Engine install. Paths are relative and use "/".
+// assets/ folder of the Wallpaper Engine install, then each assets/effects/<name>/ folder
+// (an effect keeps its materials and shaders there). Paths are relative and use "/".
 namespace glint::scene {
 
 // A scene.pkg, memory-mapped. Entries are views into the mapping.
@@ -87,6 +88,7 @@ public:
 private:
     std::filesystem::path item_;
     std::filesystem::path assets_;
+    std::vector<std::filesystem::path> effect_roots_;
     std::unique_ptr<Package> package_;
 };
 

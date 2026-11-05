@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -121,7 +122,14 @@ File& File::operator=(File&& other) noexcept {
 }
 
 Vfs::Vfs(std::filesystem::path item, std::filesystem::path assets)
-    : item_(std::move(item)), assets_(std::move(assets)) {}
+    : item_(std::move(item)), assets_(std::move(assets)) {
+    std::error_code ec;
+    if (assets_.empty()) return;
+    for (const auto& entry : std::filesystem::directory_iterator(assets_ / "effects", ec)) {
+        if (entry.is_directory(ec)) effect_roots_.push_back(entry.path());
+    }
+    std::ranges::sort(effect_roots_);
+}
 
 std::string Vfs::open_package(std::string_view name) {
     auto path = item_ / name;
@@ -140,6 +148,9 @@ Vfs::Source Vfs::locate(std::string_view path) const {
     if (!assets_.empty() && std::filesystem::is_regular_file(assets_ / path, ec)) {
         return Source::assets;
     }
+    for (const auto& root : effect_roots_) {
+        if (std::filesystem::is_regular_file(root / path, ec)) return Source::assets;
+    }
     return Source::none;
 }
 
@@ -149,7 +160,19 @@ std::optional<File> Vfs::read(std::string_view path) const {
         case Source::none: return std::nullopt;
         case Source::package: return File(*package_->find(path));
         case Source::folder: disk = item_ / path; break;
-        case Source::assets: disk = assets_ / path; break;
+        case Source::assets: {
+            std::error_code ec;
+            disk = assets_ / path;
+            if (!std::filesystem::is_regular_file(disk, ec)) {
+                for (const auto& root : effect_roots_) {
+                    if (std::filesystem::is_regular_file(root / path, ec)) {
+                        disk = root / path;
+                        break;
+                    }
+                }
+            }
+            break;
+        }
     }
     std::ifstream in(disk, std::ios::binary | std::ios::ate);
     if (!in) return std::nullopt;

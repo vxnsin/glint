@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 
 #include "gpu/staging.hpp"
@@ -20,5 +21,14 @@ struct Decoded {
 // message or empty.
 std::string decode(const std::filesystem::path& path, std::uint32_t max_dimension,
                    gpu::StagingRing& staging, Decoded& out);
+
+// The same for a whole PNG (image_format 13) or JPEG (2) in memory, as embedded in .tex
+// files. Worker thread.
+std::string decode_memory(std::span<const std::byte> data, int image_format,
+                          std::uint32_t max_dimension, gpu::StagingRing& staging, Decoded& out);
+
+// Writes BGRA or RGBA pixels as a PNG file. Returns an error message or empty.
+std::string write_png(const std::filesystem::path& path, std::span<const std::byte> pixels,
+                      std::uint32_t width, std::uint32_t height, bool bgra);
 
 }  // namespace glint::image

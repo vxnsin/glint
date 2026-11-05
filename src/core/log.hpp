@@ -11,6 +11,7 @@ namespace glint::log {
 enum class Level { debug, info, warn, error };
 
 void set_level(Level level);
+bool enabled(Level level);
 void write(Level level, std::string_view message);
 
 template <typename... Args>

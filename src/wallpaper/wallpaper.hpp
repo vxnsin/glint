@@ -4,11 +4,13 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "gpu/pictures.hpp"
+#include "gpu/vulkan.hpp"
 
 // The interface every wallpaper kind implements (image, video, scene, later web).
 // One instance per output; the daemon owns it and calls these from the main thread.
@@ -27,6 +29,14 @@ namespace image {
 class Textures;
 }
 
+namespace scene {
+class SceneCache;
+}
+
+namespace gpu {
+class Blit;
+}
+
 enum class Kind { image, video, scene, web };
 std::string_view kind_name(Kind kind);
 
@@ -37,6 +47,7 @@ struct Options {
     float linear[3] = {0, 0, 0};      // the same colour, linear
     std::string transition = "fade";  // "fade" or "none"
     int duration_ms = 300;
+    nlohmann::json properties;  // scene: values to start with, by property name
 };
 
 // Parses "fill", "fit", ...; false if unknown.
@@ -52,6 +63,8 @@ struct Services {
     gpu::StagingRing& staging;
     Workers& workers;
     image::Textures& textures;
+    scene::SceneCache& scenes;
+    gpu::Blit& blit;
 };
 
 struct OutputInfo {
@@ -102,6 +115,10 @@ public:
 
     virtual void resize(const OutputInfo&) {}
 
+    // Records offscreen work for the frame (scene layers and effects) before the output's own
+    // rendering starts; extent is the output's pixel size.
+    virtual void prepare(const Frame&, VkCommandBuffer, VkExtent2D) {}
+
     // Draws into the target, which is already cleared to the background colour, at an
     // opacity (below 1 during a crossfade). Returns false when nothing was drawn.
     virtual bool render(const Frame& frame, const gpu::Target& target, float opacity) = 0;
@@ -120,6 +137,8 @@ public:
     // Returns the names that changed; a shader recompile, if one is needed, runs in the
     // background and the old pipeline keeps drawing until it is ready.
     virtual std::vector<std::string> set_property(std::string_view, std::string_view) { return {}; }
+    // Back to the project's defaults; returns the names that changed.
+    virtual std::vector<std::string> reset_properties() { return {}; }
     virtual bool wants_cursor() const { return false; }
     virtual void cursor(const Cursor&) {}
     // 64 bands per channel, as Wallpaper Engine's g_AudioSpectrum64*. Only scenes use it.
@@ -131,7 +150,7 @@ public:
 std::string check_path(const std::filesystem::path& path);
 
 // Picks the kind from the path: a file is decoded as a picture (video comes in M4), a
-// directory with project.json is a scene (M2). Returns null with an error otherwise.
+// directory with a scene project.json is a scene. Returns null with an error otherwise.
 std::unique_ptr<Wallpaper> make_wallpaper(const std::filesystem::path& path, const Options& options,
                                           Services& services, std::string& error);
 

@@ -52,6 +52,7 @@ if(GLINT_PLATFORM)
         src/core/paths.cpp
         src/core/state.cpp
         src/core/worker.cpp
+        src/gpu/blit.cpp
         src/gpu/buffer.cpp
         src/gpu/context.cpp
         src/gpu/pictures.cpp
@@ -64,6 +65,9 @@ if(GLINT_PLATFORM)
         src/wallpaper/image/decode.cpp
         src/wallpaper/image/image.cpp
         src/wallpaper/image/textures.cpp
+        src/wallpaper/scene/assets.cpp
+        src/wallpaper/scene/renderer.cpp
+        src/wallpaper/scene/scene_wallpaper.cpp
         src/wayland/display.cpp
     )
     target_link_libraries(glint PRIVATE glint::platform glint_scene)
@@ -71,6 +75,8 @@ if(GLINT_PLATFORM)
 
     # The Wallpaper Engine readers, shared by the daemon, we-inspect and the tests.
     add_library(glint_scene STATIC
+        src/wallpaper/scene/mdl.cpp
+        src/wallpaper/scene/plan.cpp
         src/wallpaper/scene/project.cpp
         src/wallpaper/scene/scene.cpp
         src/wallpaper/scene/shader.cpp

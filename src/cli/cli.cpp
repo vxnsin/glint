@@ -5,7 +5,9 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <nlohmann/json.hpp>
@@ -126,6 +128,9 @@ void print_text(const std::string& op, const json& result) {
     } else if (op == "set") {
         std::printf("%s, %s ms\n", result.value("kind", "?").c_str(),
                     number(result["load_ms"], 1).c_str());
+    } else if (op == "screenshot") {
+        std::printf("%s, %dx%d\n", result.value("path", "?").c_str(), result.value("width", 0),
+                    result.value("height", 0));
     } else if (op == "version") {
         std::printf("glint %s (protocol %d), Vulkan %s on %s\n",
                     result.value("version", "?").c_str(), result.value("protocol", 0),
@@ -161,8 +166,20 @@ int run(int argc, char** argv) {
         if (args.size() < 3) return usage_error("set <output|*> <path> [key=value ...]");
         request["output"] = std::string(args[1]);
         std::error_code ec;
-        request["path"] =
-            std::filesystem::absolute(std::string(args[2]), ec).lexically_normal().string();
+        std::string target(args[2]);
+        // A bare Workshop id names a folder in Steam's Workshop for Wallpaper Engine.
+        bool id = !target.empty() &&
+                  std::ranges::all_of(target, [](char c) { return c >= '0' && c <= '9'; });
+        if (id && !std::filesystem::exists(target, ec)) {
+            const char* home = std::getenv("HOME");
+            const char* data = std::getenv("XDG_DATA_HOME");
+            std::filesystem::path base =
+                data != nullptr && data[0] == '/'
+                    ? std::filesystem::path(data)
+                    : std::filesystem::path(home != nullptr ? home : "/") / ".local/share";
+            target = (base / "Steam/steamapps/workshop/content/431960" / target).string();
+        }
+        request["path"] = std::filesystem::absolute(target, ec).lexically_normal().string();
         json options = json::object();
         for (std::size_t i = 3; i < args.size(); ++i) {
             auto eq = args[i].find('=');
@@ -187,6 +204,11 @@ int run(int argc, char** argv) {
         if (args.size() > 3) return usage_error("pause|resume [output] [reason]");
         request["output"] = args.size() >= 2 ? std::string(args[1]) : "*";
         if (args.size() == 3) request["reason"] = std::string(args[2]);
+    } else if (op == "screenshot") {
+        if (args.size() != 3) return usage_error("screenshot <output> <file.png>");
+        request["output"] = std::string(args[1]);
+        std::error_code ec;
+        request["path"] = std::filesystem::absolute(std::string(args[2]), ec).string();
     } else if (op == "subscribe") {
         json events = json::array();
         for (std::size_t i = 1; i < args.size(); ++i) events.push_back(std::string(args[i]));

@@ -74,8 +74,10 @@ struct EffectPass {
 
 struct EffectFbo {
     std::string name;
-    float scale = 1;  // the fbo is the layer size divided by this
+    float scale = 1;                      // the fbo is the layer size divided by this
+    std::uint32_t width = 0, height = 0;  // a fixed size instead, when set
     std::string format;
+    bool repeat = false;  // "uvs": "repeat"
 };
 
 // One effect on one image object: the effect file plus the object's overrides per pass.
@@ -110,7 +112,8 @@ struct ImageObject {
     bool autosize = false;
     bool fullscreen = false;
     bool passthrough = false;
-    bool puppet = false;  // M5: drawn as a flat quad until then
+    bool puppet = false;      // drawn as its mesh in the rest pose; bones move it in M5
+    std::string puppet_path;  // the .mdl
     Vec2 model_size{0, 0};
 
     Material material;

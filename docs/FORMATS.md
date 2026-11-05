@@ -254,9 +254,22 @@ from the object (cursor-following ones from `g_PointerPosition`).
 
 ## 10. Puppet, animation, model (M5)
 
-- `puppet` in a model json: a mesh with bones (`.json` with `bones`, `weights`, `vertices`,
-  `indices`), animations with keyframes, bone physics (spring, gravity, limits). Object
-  `animationlayers` blend them.
+- `puppet` in a model json names a `.mdl` (`models/x_puppet.mdl`): the mesh, its bones and
+  their animations. The picture of a puppet is an atlas of the parts, so drawn as a flat
+  quad it shows the parts scattered; the mesh puts them together.
+- MDLV0023, read from the three puppets of 3426865175 (all three end their blocks where the
+  next begins): `char[9] "MDLV0023"`, three u32 (`0x01800009 1 1`), the material path
+  NUL-terminated, seven u32 of zero, a u32 of flags (`0x0180000f`), u32 byte size of the
+  vertices, the vertices at 80 bytes (position 3 floats in picture pixels with y up, normal
+  3, tangent 4, bone indices 4 x u32, weights 4, uv 2), u32 byte size of the indices, u16
+  triangles. Then a block that starts `01 01 00 00 00` (not read yet), `MDLS0004` (the
+  skeleton: per bone a parent, a 4x4 rest matrix and a JSON string), `MDAT0001`,
+  `MDLA0006` (animations).
+- Until bones arrive in M5, glint draws the mesh in its rest pose with the centre of its
+  bounding box on the object's origin. On the small puppet of the corpus that is exactly
+  where the flat picture sits (one picture pixel per unit); on the two large ones it puts
+  the figures together as in the preview. The exact placement from the skeleton is open.
+- Object `animationlayers` blend the animations; bone physics (spring, gravity, limits).
 - `.mdl` (3D models, compiled from obj/fbx): header `MDLV0001`, meshes with vertex
   streams, skeleton (`MDLS`), animations (`MDLA`), morph (`MDMP`), attachments (`MDAT`).
   Layout to be confirmed on real files; last in the plan.

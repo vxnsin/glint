@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 
 #include "gpu/staging.hpp"
 #include "gpu/vulkan.hpp"
@@ -16,9 +17,21 @@ class Context;
 // GPU is done with every frame submitted before it.
 class Texture {
 public:
-    // Records and submits the upload of tightly packed RGBA8 pixels (sRGB) from a staging span:
-    // copy into mip 0, then each further level blitted from the one above, all on the GPU.
-    // The texture can be drawn from in any later submit on the same queue.
+    // One stored mip level inside a staging span.
+    struct Level {
+        VkDeviceSize offset;  // from the start of the span
+        std::uint32_t width, height;
+    };
+
+    // Records and submits the upload of pixels in a staging span. With generate set, only
+    // levels[0] is used and the rest of the mip chain is blitted on the GPU (not for block
+    // compressed formats); otherwise every given level is copied as it is. The texture can be
+    // drawn from in any later submit on the same queue.
+    static std::shared_ptr<Texture> upload(Context& context, StagingRing& staging,
+                                           StagingRing::Span& span, VkFormat format,
+                                           std::span<const Level> levels, bool generate);
+
+    // Tightly packed RGBA8 sRGB pixels with a generated mip chain (still pictures).
     static std::shared_ptr<Texture> upload_rgba(Context& context, StagingRing& staging,
                                                 StagingRing::Span& span, std::uint32_t width,
                                                 std::uint32_t height);
@@ -31,6 +44,7 @@ public:
     std::uint32_t height() const { return height_; }
     std::uint32_t levels() const { return levels_; }
     VkDeviceSize memory() const { return memory_; }
+    VkFormat format() const { return format_; }
 
 private:
     explicit Texture(Context& context) : context_(context) {}
@@ -41,6 +55,7 @@ private:
     VkImageView view_ = VK_NULL_HANDLE;
     std::uint32_t width_ = 0, height_ = 0, levels_ = 1;
     VkDeviceSize memory_ = 0;
+    VkFormat format_ = VK_FORMAT_UNDEFINED;
 };
 
 }  // namespace glint::gpu

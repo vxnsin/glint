@@ -24,6 +24,10 @@ void set_level(Level level) {
     current = level;
 }
 
+bool enabled(Level level) {
+    return level >= current;
+}
+
 void write(Level level, std::string_view message) {
     if (level < current) return;
     std::fprintf(stderr, "glint: %s: %.*s\n", prefix(level), static_cast<int>(message.size()),

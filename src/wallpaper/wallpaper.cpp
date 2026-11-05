@@ -2,10 +2,14 @@
 
 #include <unistd.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <fstream>
 #include <system_error>
 
 #include "wallpaper/image/image.hpp"
+#include "wallpaper/scene/scene_wallpaper.hpp"
 
 namespace glint {
 
@@ -73,9 +77,19 @@ std::string check_path(const std::filesystem::path& path) {
     auto status = std::filesystem::status(path, ec);
     if (ec || !std::filesystem::exists(status)) return "no such file";
     if (std::filesystem::is_directory(status)) {
-        return std::filesystem::exists(path / "project.json", ec)
-                   ? "Wallpaper Engine projects come with milestone M2"
-                   : "not a picture or a Wallpaper Engine project";
+        auto project = path / "project.json";
+        if (!std::filesystem::exists(project, ec)) {
+            return "not a picture or a Wallpaper Engine project";
+        }
+        std::ifstream in(project);
+        auto json = nlohmann::json::parse(in, nullptr, false);
+        std::string type = json.is_object() ? json.value("type", "") : "";
+        std::ranges::transform(type, type.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (type == "scene") return {};
+        if (type == "video") return "Wallpaper Engine videos come with milestone M4";
+        if (type == "web") return "web wallpapers come with milestone M6";
+        return "a Wallpaper Engine " + (type.empty() ? std::string("item") : type) +
+               " glint does not show";
     }
     if (::access(path.c_str(), R_OK) != 0) return "not readable";
     return {};
@@ -85,6 +99,10 @@ std::unique_ptr<Wallpaper> make_wallpaper(const std::filesystem::path& path, con
                                           Services& services, std::string& error) {
     error = check_path(path);
     if (!error.empty()) return nullptr;
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) {
+        return std::make_unique<scene::Scene>(path, options, services);
+    }
     // Videos (M4) are recognised by the decoder later; for now every file is a picture.
     return std::make_unique<image::Image>(path, options, services);
 }

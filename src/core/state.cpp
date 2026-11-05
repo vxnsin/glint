@@ -37,12 +37,16 @@ std::filesystem::path file() {
 }
 
 nlohmann::json options_json(const Options& options) {
-    return {
+    nlohmann::json json = {
         {"scaling", scaling_name(options.scaling)},
         {"color", options.color},
         {"transition", options.transition},
         {"duration", options.duration_ms},
     };
+    if (options.properties.is_object() && !options.properties.empty()) {
+        json["properties"] = options.properties;
+    }
+    return json;
 }
 
 std::string parse_options(const nlohmann::json& json, Options& options) {
@@ -68,6 +72,9 @@ std::string parse_options(const nlohmann::json& json, Options& options) {
                 return "duration is milliseconds, 0 to 10000";
             }
             options.duration_ms = value.get<int>();
+        } else if (key == "properties") {
+            if (!value.is_object()) return "properties is an object";
+            options.properties = value;
         } else if (key == "fps") {
             // Accepted for every kind; a still picture has no use for it.
             if (!value.is_number()) return "fps is a number";
