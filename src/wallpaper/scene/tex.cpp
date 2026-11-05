@@ -84,6 +84,8 @@ std::string parse_tex(std::span<const std::byte> data, Tex& out) {
         if (!in.value(video)) return "truncated header";
         out.video = video != 0;
     }
+    // Older files mark a video (a GIF turned mp4) with bit 5 of the header flags instead.
+    if ((out.flags & 32u) != 0) out.video = true;
 
     for (std::int32_t image = 0; image < image_count; ++image) {
         std::int32_t mip_count = 0;
@@ -105,7 +107,7 @@ std::string parse_tex(std::span<const std::byte> data, Tex& out) {
             // The bytes a mip of this size takes in the format; an embedded file (PNG, JPEG)
             // and a video (TEXB0004's flag, or bit 5 of the header flags in older files)
             // are read by their own decoders and checked there.
-            if (!out.embedded() && !out.video && (out.flags & 32u) == 0) {
+            if (!out.embedded() && !out.video) {
                 std::uint64_t expect = 0;
                 auto blocks = [](std::int32_t n) {
                     return static_cast<std::uint64_t>((n + 3) / 4);
