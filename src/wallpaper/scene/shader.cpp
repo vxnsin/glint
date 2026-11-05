@@ -21,7 +21,7 @@ namespace glint::scene {
 namespace {
 
 // Bump when the rewriting changes, so cached SPIR-V from older rules is not reused.
-constexpr const char* rewrite_version = "glint-shader-4";
+constexpr const char* rewrite_version = "glint-shader-5";
 
 // HLSL habits of the dialect, as macros the preprocessor applies.
 constexpr const char* compat = R"(#define GLSL 1
@@ -618,12 +618,19 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
     for (const auto& d : stages[1].inputs) {
         std::string location = std::to_string(varying_locations[d.name]);
         auto vt = vertex_types.find(d.name);
+        if (vt == vertex_types.end()) {
+            // Nothing feeds it: a global, zero, instead of an input the pipeline would
+            // leave undefined.
+            fragment_globals += d.type + " " + d.name + d.array + ";\n";
+            if (d.array.empty()) fragment_prologue += "    " + d.name + " = " + d.type + "(0);\n";
+            continue;
+        }
         if (!d.array.empty()) {
             fragment_io +=
                 "layout(location = " + location + ") in " + d.type + " " + d.name + d.array + ";\n";
             continue;
         }
-        if (vt == vertex_types.end() || vt->second == d.type) {
+        if (vt->second == d.type) {
             fragment_io +=
                 "layout(location = " + location + ") in " + d.type + " glint_in_" + d.name + ";\n";
             fragment_globals += d.type + " " + d.name + ";\n";

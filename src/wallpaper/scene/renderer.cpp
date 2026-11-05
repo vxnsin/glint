@@ -146,6 +146,8 @@ SceneRenderer::SceneRenderer(gpu::Context& gpu, gpu::Blit& blit,
 
 SceneRenderer::~SceneRenderer() {
     release();
+    auto zeros = std::make_shared<gpu::Buffer>(std::move(zeros_));
+    gpu_.defer([zeros]() mutable { zeros.reset(); });
 }
 
 void SceneRenderer::set_values(const Values& values) {

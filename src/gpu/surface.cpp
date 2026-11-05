@@ -54,9 +54,11 @@ Surface::Surface(Context& context, wl_display* display, wl_surface* surface) : c
 }
 
 Surface::~Surface() {
-    // Wait for this surface's frames; the swapchain must not be destroyed while presenting.
+    // Wait for this surface's frames, and for the presents, which the timeline does not
+    // cover: the swapchain and its semaphores must not go while the queue presents.
     for (const Slot& slot : slots_) context_.wait(slot.value);
     VkDevice device = context_.device();
+    vkQueueWaitIdle(context_.queue());
     destroy_swapchain(swapchain_);
     for (VkSemaphore s : rendered_) vkDestroySemaphore(device, s, nullptr);
     for (Slot& slot : slots_) {
@@ -98,8 +100,10 @@ bool Surface::resize(std::uint32_t width, std::uint32_t height) {
         encode_srgb_ = !is_srgb(format_);
     }
 
-    // Everything in flight on the old swapchain finishes first; resizes are rare.
+    // Everything in flight on the old swapchain finishes first, presents included; resizes
+    // are rare.
     for (const Slot& slot : slots_) context_.wait(slot.value);
+    if (swapchain_ != VK_NULL_HANDLE) vkQueueWaitIdle(context_.queue());
 
     can_capture_ = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
     extent_ = {std::clamp(width, caps.minImageExtent.width, caps.maxImageExtent.width),
