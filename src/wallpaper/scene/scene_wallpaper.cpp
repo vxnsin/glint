@@ -127,6 +127,10 @@ void Scene::prepare(const Frame& frame, VkCommandBuffer cmd, VkExtent2D extent) 
     }
     inputs.parallax[0] = parallax_[0];
     inputs.parallax[1] = parallax_[1];
+    if (audio_) {
+        inputs.audio_left = audio_left_.data();
+        inputs.audio_right = audio_right_.data();
+    }
     renderer_->record(cmd, extent, inputs);
 }
 
@@ -141,6 +145,21 @@ bool Scene::wants_frames() const {
     if (assets_->animated()) return true;
     // A still scene draws again only while the parallax is still moving.
     return wants_cursor() && (parallax_[0] != pointer_[0] || parallax_[1] != pointer_[1]);
+}
+
+bool Scene::wants_audio() const {
+    // The project says so, or a shader reads the spectrum.
+    return assets_ && renderer_ && (assets_->project().audio || renderer_->uses_audio());
+}
+
+void Scene::audio_spectrum(const float* left, const float* right) {
+    if (left == nullptr || right == nullptr) {
+        audio_ = false;
+        return;
+    }
+    std::copy_n(left, 64, audio_left_.begin());
+    std::copy_n(right, 64, audio_right_.begin());
+    audio_ = true;
 }
 
 bool Scene::wants_cursor() const {

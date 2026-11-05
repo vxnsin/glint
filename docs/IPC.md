@@ -99,6 +99,8 @@ background colour (black).
      "picture": {"width": 2560, "height": 1440}, "wakeups": 82}}
 ```
 
+`audio` is the capture for audio-reactive scenes: `capture` says whether it runs (only
+while a shown, running wallpaper wants the spectrum), `peak` the strongest band now.
 `fps` counts the frames presented in the last second, so a still picture reads 0. `frame_ms`
 is the CPU time of the last frame, `gpu_ms` its GPU time from timestamp queries, `load_ms`
 the time of the last `set` on this output. `wakeups` counts the daemon's returns from

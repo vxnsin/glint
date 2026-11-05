@@ -75,6 +75,7 @@ if(GLINT_PLATFORM)
     include(cmake/Dependencies.cmake)
     target_sources(glint PRIVATE
         src/daemon.cpp
+        src/audio/capture.cpp
         src/cli/cli.cpp
         src/core/loop.cpp
         src/core/paths.cpp
@@ -98,7 +99,7 @@ if(GLINT_PLATFORM)
         src/wallpaper/scene/scene_wallpaper.cpp
         src/wayland/display.cpp
     )
-    target_link_libraries(glint PRIVATE glint::platform glint_scene)
+    target_link_libraries(glint PRIVATE glint::platform glint_scene glint_audio)
     add_dependencies(glint glint_shaders)
 
     # The Wallpaper Engine readers, shared by the daemon, we-inspect and the tests.

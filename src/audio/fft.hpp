@@ -27,6 +27,8 @@ private:
     std::vector<std::uint32_t> reverse_;         // bit-reversed index of every position
 };
 
-constexpr bool is_power_of_two(std::size_t n) { return n != 0 && (n & (n - 1)) == 0; }
+constexpr bool is_power_of_two(std::size_t n) {
+    return n != 0 && (n & (n - 1)) == 0;
+}
 
 }  // namespace glint::audio

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -55,6 +56,9 @@ public:
     std::vector<std::string> reset_properties() override;
     Values property_values() const;
 
+    bool wants_audio() const override;
+    void audio_spectrum(const float* left, const float* right) override;
+
     bool wants_cursor() const override;
     void cursor(const Cursor& cursor) override;
 
@@ -72,6 +76,8 @@ private:
     float pointer_[2] = {0.5f, 0.5f};
     float parallax_[2] = {0.5f, 0.5f};
     double last_time_ = 0;
+    std::array<float, 64> audio_left_{}, audio_right_{};
+    bool audio_ = false;
 };
 
 }  // namespace glint::scene

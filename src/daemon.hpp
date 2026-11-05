@@ -11,6 +11,7 @@
 #include <string_view>
 #include <vector>
 
+#include "audio/capture.hpp"
 #include "core/fd.hpp"
 #include "core/loop.hpp"
 #include "core/state.hpp"
@@ -157,6 +158,7 @@ private:
     std::uint64_t generation_ = 0;                      // bumped on every change of the assignments
     std::uint32_t paused_all_ = 0;  // reasons set for "*", on every output including new ones
     std::unique_ptr<ipc::Server> server_;
+    audio::Capture capture_;        // runs only while a shown, running scene wants audio
     bool force_toplevels_ = false;  // GLINT_TRACK_TOPLEVELS=1
 
     UniqueFd signal_fd_;

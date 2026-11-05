@@ -33,8 +33,8 @@ using Bands = std::array<float, band_count>;
 
 struct SpectrumOptions {
     unsigned sample_rate = 48000;
-    unsigned channels = 2;  // interleaved; 1 copies the channel to both sides, more than
-                            // 2 uses the first two
+    unsigned channels = 2;     // interleaved; 1 copies the channel to both sides, more than
+                               // 2 uses the first two
     unsigned fft_size = 4096;  // a power of two; 4096 at 48 kHz is 11.7 Hz per bin
     unsigned updates_per_second = 30;
     float low_hz = 25.f;

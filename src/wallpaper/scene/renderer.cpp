@@ -500,6 +500,13 @@ void SceneRenderer::fill_block(Draw& draw) {
             draw.dynamics.push_back({Dynamic::What::pointer, u.offset});
         } else if (n == "g_PointerPositionLast") {
             draw.dynamics.push_back({Dynamic::What::pointer_last, u.offset});
+        } else if (n.starts_with("g_AudioSpectrum")) {
+            // g_AudioSpectrum64Left and the like: arrays filled every frame.
+            std::string rest = n.substr(15);
+            int bands = rest.starts_with("64") ? 64 : rest.starts_with("32") ? 32 : 16;
+            draw.dynamics.push_back(
+                {Dynamic::What::audio, u.offset, bands, rest.ends_with("Right")});
+            uses_audio_ = true;
         } else if (n == "g_ParallaxPosition") {
             draw.dynamics.push_back({Dynamic::What::parallax, u.offset});
         } else if (n == "g_Screen") {
@@ -599,7 +606,7 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
                     ++i;
                 }
             };
-            if (!moved && d.what >= Dynamic::What::mvp) {
+            if (!moved && d.what >= Dynamic::What::mvp && d.what <= Dynamic::What::model_inverse) {
                 model = parallax_model(draw.plan->object, inputs);
                 mvp = projection_ * model;
                 moved = true;
@@ -621,6 +628,21 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
                 case Dynamic::What::model_inverse:
                     write_matrix(draw.block, d.offset, model.inverse());
                     break;
+                case Dynamic::What::audio: {
+                    const float* source = d.right ? inputs.audio_right : inputs.audio_left;
+                    for (int k = 0; k < d.bands; ++k) {
+                        float v = 0;
+                        if (source != nullptr) {
+                            // 32 and 16 bands are means of 2 and 4 neighbouring ones.
+                            int group = 64 / d.bands;
+                            for (int g = 0; g < group; ++g) v += source[k * group + g];
+                            v /= static_cast<float>(group);
+                        }
+                        std::size_t at = d.offset + static_cast<std::size_t>(k) * 16;
+                        if (at + 4 <= draw.block.size()) std::memcpy(draw.block.data() + at, &v, 4);
+                    }
+                    break;
+                }
             }
         }
         std::memcpy(uniforms_.mapped() + slot_base + draw.block_offset, draw.block.data(),

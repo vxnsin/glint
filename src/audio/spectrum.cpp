@@ -22,8 +22,8 @@ Spectrum::Spectrum(const SpectrumOptions& options)
       window_(options.fft_size),
       ring_left_(options.fft_size, 0.f),
       ring_right_(options.fft_size, 0.f),
-      hop_(std::max<std::size_t>(
-          1, options.sample_rate / std::max(1u, options.updates_per_second))),
+      hop_(
+          std::max<std::size_t>(1, options.sample_rate / std::max(1u, options.updates_per_second))),
       work_(options.fft_size),
       power_left_(options.fft_size / 2 + 1, 0.f),
       power_right_(options.fft_size / 2 + 1, 0.f) {
@@ -32,9 +32,9 @@ Spectrum::Spectrum(const SpectrumOptions& options)
 
     const std::size_t n = options.fft_size;
     for (std::size_t i = 0; i < n; ++i) {
-        window_[i] = 0.5f - 0.5f * static_cast<float>(std::cos(2.0 * std::numbers::pi *
-                                                                static_cast<double>(i) /
-                                                                static_cast<double>(n)));
+        window_[i] = 0.5f - 0.5f * static_cast<float>(
+                                       std::cos(2.0 * std::numbers::pi * static_cast<double>(i) /
+                                                static_cast<double>(n)));
     }
 
     const float dt = static_cast<float>(hop_) / static_cast<float>(options.sample_rate);
@@ -76,7 +76,9 @@ float Spectrum::band_low_hz(std::size_t band) const {
     return options_.low_hz * std::pow(ratio, static_cast<float>(band));
 }
 
-float Spectrum::band_high_hz(std::size_t band) const { return band_low_hz(band + 1); }
+float Spectrum::band_high_hz(std::size_t band) const {
+    return band_low_hz(band + 1);
+}
 
 float Spectrum::band_center_hz(std::size_t band) const {
     return std::sqrt(band_low_hz(band) * band_high_hz(band));

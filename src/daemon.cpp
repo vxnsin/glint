@@ -175,6 +175,26 @@ void Daemon::before_poll() {
     }
     display_.track_toplevels(animating);
 
+    // Audio capture only while a shown, running wallpaper wants the spectrum.
+    bool audio = false;
+    for (const auto& entry : screens_) {
+        if (reasons(*entry) != 0) continue;
+        if ((entry->current && entry->current->wants_audio()) ||
+            (entry->incoming && entry->incoming->ready() && entry->incoming->wants_audio())) {
+            audio = true;
+        }
+    }
+    if (audio && !capture_.running()) {
+        if (std::string error = capture_.start(); !error.empty()) {
+            log::warn("audio capture: {}", error);
+        } else {
+            log::info("audio capture started");
+        }
+    } else if (!audio && capture_.running()) {
+        capture_.stop();
+        log::info("audio capture stopped");
+    }
+
     // Free what the GPU is done with. Whatever is still in flight is waited for now, while
     // the GPU is busy for a millisecond at most, rather than needing a wakeup later.
     if (gpu_->collect()) gpu_->drain();
@@ -278,6 +298,12 @@ void Daemon::render(Screen& entry) {
     // A wallpaper that wants the cursor gets pointer input on its surface.
     output.set_pointer_input(entry.current ? entry.current->wants_cursor()
                                            : (fading && entry.incoming->wants_cursor()));
+
+    if (capture_.running()) {
+        audio::Levels levels = capture_.levels();
+        if (entry.current) entry.current->audio_spectrum(levels.left.data(), levels.right.data());
+        if (fading) entry.incoming->audio_spectrum(levels.left.data(), levels.right.data());
+    }
 
     gpu::Target target{};
     auto offscreen = [&](VkCommandBuffer cmd, VkExtent2D extent) {
@@ -655,6 +681,16 @@ nlohmann::json Daemon::status_json(Screen& entry) {
     }
     if (!entry.error.empty()) json["message"] = entry.error;
     json["wakeups"] = loop_.wakeups();
+    nlohmann::json audio = {{"capture", capture_.running()}};
+    if (capture_.running()) {
+        audio::Levels levels = capture_.levels();
+        float peak = 0;
+        for (std::size_t i = 0; i < levels.left.size(); ++i) {
+            peak = std::max({peak, levels.left[i], levels.right[i]});
+        }
+        audio["peak"] = peak;
+    }
+    json["audio"] = audio;
     return json;
 }
 
