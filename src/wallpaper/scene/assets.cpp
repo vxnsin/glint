@@ -3,6 +3,7 @@
 #include <vk_mem_alloc.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <set>
 

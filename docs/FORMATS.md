@@ -291,7 +291,8 @@ from the object (cursor-following ones from `g_PointerPosition`).
   size of the vertices, the vertices at 80 bytes (position 3 floats in picture pixels with y
   up, relative to the object's origin; normal 3; tangent 4; bone indices 4 x u32; weights 4;
   uv 2), u32 byte size of the indices, u16 triangles.
-- `MDLS0001` to `MDLS0004`: u32 end offset, u32 bone count, per bone five bytes, i32 parent
+- `MDLS0001` to `MDLS0004`: u32 end offset, u32 bone count, per bone its name
+  NUL-terminated (empty in most rigs, "eye", "halo" and the like in Arona's), u32 1, i32 parent
   (-1 for the root), u32 64, the 4x4 rest matrix relative to the parent (column-major), a
   NUL-terminated JSON string with the physics settings (`a`, `lamin`, `lamax`, `rax`, `ray`,
   `raz`, `s`, `tm`, `tp`). More per-bone data follows up to the end offset (further matrices
@@ -304,7 +305,9 @@ from the object (cursor-following ones from `g_PointerPosition`).
   `mirror` or `single`), f32 fps, u32 length in frames, u32 zero, u32 track count; per track
   (one per bone, in bone order) u32 zero, u32 byte size, then length + 1 keyframes of nine
   floats: translation, rotation (radians about x, y, z) and scale, the bone's transform
-  relative to its parent. After the tracks a few zero bytes (0, 0, 5, 6, 30, 31 by version)
+  relative to its parent. Like an object's `angles`, z turns clockwise on the canvas (so it
+  is negated on glint's y-up canvas); with the other sign Yosuga's hair strands bend against
+  their curve and their thin triangle strips fold into one-pixel lines. After the tracks a few zero bytes (0, 0, 5, 6, 30, 31 by version)
   and a u32 count of events, each f32 time and a JSON string (`{"frame": 105, "name":
   "changeAnimation"}`). The last track in every file read so far ends exactly at the end
   offset.

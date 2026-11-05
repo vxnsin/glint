@@ -575,7 +575,13 @@ void SceneRenderer::build(VkExtent2D extent) {
             }
             draw.extra["g_RenderVar1"] = {fw, fh, frames, ratio};
         }
-        if (p.crop && p.textures[0].kind == PlanTexture::Kind::file) {
+        // A puppet's layer holds the whole stored texture, padding included: its mesh uvs
+        // index the stored texture and reach past the picture's edge (a few texels of
+        // padding), which a cropped layer would answer with its last row, a thin streak.
+        bool puppet_object =
+            p.object >= 0 && scene.images[static_cast<std::size_t>(p.object)].puppet &&
+            assets_->mesh(scene.images[static_cast<std::size_t>(p.object)].puppet_path) != nullptr;
+        if (p.crop && !puppet_object && p.textures[0].kind == PlanTexture::Kind::file) {
             const SceneTexture& t = assets_->texture(p.textures[0].file);
             u1 = static_cast<float>(t.img_width) / static_cast<float>(t.tex_width);
             v1 = static_cast<float>(t.img_height) / static_cast<float>(t.tex_height);
@@ -599,14 +605,9 @@ void SceneRenderer::build(VkExtent2D extent) {
         } else if (mesh != nullptr && !p.request.name.empty()) {
             // The rest mesh: its positions are already relative to the object's origin. Its
             // uvs index the picture; drawn from a layer they are scaled to the layer's crop.
+            // The mesh uvs index the stored texture, and so does its layer (see the copy
+            // above), so they pass unchanged.
             float su = 1, sv = 1;
-            if (p.textures[0].kind == PlanTexture::Kind::target &&
-                !object.material.passes.empty() && !object.material.passes[0].textures.empty() &&
-                object.material.passes[0].textures[0]) {
-                const SceneTexture& t = assets_->texture(*object.material.passes[0].textures[0]);
-                su = static_cast<float>(t.tex_width) / static_cast<float>(t.img_width);
-                sv = static_cast<float>(t.tex_height) / static_cast<float>(t.img_height);
-            }
             std::size_t base = vertices.size();
             for (std::size_t i = 0; i < mesh->vertices.size(); i += 5) {
                 vertices.push_back(mesh->vertices[i]);
@@ -676,7 +677,8 @@ void SceneRenderer::build(VkExtent2D extent) {
             if (t.kind == PlanTexture::Kind::file) {
                 const SceneTexture& tex = assets_->texture(t.file);
                 if (tex.texture) draw.views[i] = tex.texture->view();
-                draw.samplers[i] = assets_->sampler(tex.clamp, tex.nearest);
+                draw.samplers[i] = assets_->sampler(
+                    tex.clamp, tex.nearest || std::getenv("GLINT_NEAREST") != nullptr);
             } else if (t.kind == PlanTexture::Kind::target) {
                 const TargetUse& use = targets_[static_cast<std::size_t>(t.target)];
                 draw.views[i] = use.image->view;

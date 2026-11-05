@@ -460,3 +460,28 @@ Roxy on the other: no crash, no validation error, every scene loaded (the slowes
 from the caches). What the warnings list: 26 shader passes that do not compile, effect
 `copy`/`swap` commands (motionblur, not done), and two puppets whose .mdl is cut off at
 exactly 1 MiB inside their package, drawn flat.
+
+### The Blue Archive scenes and Yosuga's hair
+
+Three scenes the user pointed at, each a general fault:
+
+- Stargazing Arona (2901582518): the puppet showed no face. Its bone list names every bone
+  ("eye", "halo", "ribbon"), a field the parser had taken for five fixed bytes; every other
+  rig in the corpus has empty names, which is why it had passed. The haze over the scene was
+  the bokeh particles at full count: their `count` is bound to the "bokeh" slider (0.2), and
+  instance overrides bound to properties were not resolved. The cursor trail now follows the
+  cursor: emitters sit at their control point, which the simulation had ignored. Its "Held"
+  mode (only while the mouse button is down, through a script) stays open.
+- Arona in the classroom (2919051696): the window showed static. It is the rain on the glass,
+  up to 15600 refracting drops; the genericparticle shader reads the scene behind them from
+  `g_Texture3`, whose annotated default `_rt_FullFrameBuffer` glint had never bound (nor any
+  sampler default). With the framebuffer bound the drops are faint, as in Wallpaper Engine.
+  The album cover stays a white placeholder: media integration needs MPRIS and text.
+- Yosuga (2857144643): one-pixel lines through the hair. The strands are long thin triangle
+  strips posed by their bones; with the keyframe rotation applied counter-clockwise they
+  bent against their curve and some triangles folded into lines. Bone z rotations are
+  clockwise like object angles; with the sign fixed the right tail hangs as in the preview.
+
+Found on the way and fixed: alphafade defaults (particles popped out), the `rope`
+renderer (one ribbon through all particles, used by cursor trails), and a puppet's layer
+now holds the whole stored texture because mesh uvs run a little past the picture.
