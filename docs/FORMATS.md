@@ -297,7 +297,14 @@ from the object (cursor-following ones from `g_PointerPosition`).
   is that atlas, and an animation's keyframes put the parts together. Drawn in the rest pose
   a puppet shows its parts scattered (a face off to the side, say).
 - Header, MDLV0013 to MDLV0023: `char[9] "MDLVnnnn\0"`, three u32 (`0x01800009 1 1`), the
-  material path NUL-terminated, seven u32 of zero, a u32 of flags (`0x0180000f`), u32 byte
+  material path NUL-terminated, then by version: seven u32 (the first sometimes an id, the
+  rest zero), u32 flags and u32 byte size (MDLV0021 on); or u32 0, u32 flags `0x01800009`,
+  u32 byte size (MDLV0016); or u32 0, u32 byte size (MDLV0013). The vertex stride goes with
+  the flags: 80 bytes for `0x0180000f` (position, normal, tangent, bones, weights, uv), 52
+  for `0x01800009` and the flagless MDLV0013 (position, bones, weights, uv), 84 for
+  `0x0181000e`; in every layout the uv is the last two floats, the weights the four before,
+  the bone indices the four before those. Unknown flags are tried against the strides that
+  divide the block and keep the uvs in range. Then the usual: seven u32 of zero, a u32 of flags (`0x0180000f`), u32 byte
   size of the vertices, the vertices at 80 bytes (position 3 floats in picture pixels with y
   up, relative to the object's origin; normal 3; tangent 4; bone indices 4 x u32; weights 4;
   uv 2), u32 byte size of the indices, u16 triangles.

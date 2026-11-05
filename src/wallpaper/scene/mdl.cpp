@@ -65,31 +65,86 @@ std::string parse_mdl(std::span<const std::byte> data, Mesh& out) {
     if (data.size() < 9 || std::memcmp(data.data(), "MDLV", 4) != 0) return "not an .mdl file";
     std::size_t offset = 9 + 12;
     if (!read_string(data, offset, out.material)) return "no material path";
-    offset += 28;
-    std::uint32_t flags = 0, vertex_size = 0, index_size = 0;
-    if (!read(data, offset, flags) || !read(data, offset, vertex_size)) return "truncated";
-    if (vertex_size % vertex_bytes != 0 || offset + vertex_size > data.size()) {
-        return "unexpected vertex layout (flags " + std::to_string(flags) + ")";
+    // What follows the material differs by version. Usual (MDLV0021 on): seven u32, the
+    // first sometimes an id and the rest zero, u32 flags (0x0180000f), u32 byte size,
+    // vertices of 80 bytes (position, normal, tangent, four bone indices, four weights,
+    // uv). MDLV0016: u32 0, u32 flags (0x01800009), u32 byte size, vertices of 52 bytes
+    // (position, bones, weights, uv). MDLV0013: u32 0, u32 byte size, the same 52-byte
+    // vertices. Flags 0x0181000e come with 84-byte vertices (one float more in the middle).
+    // In every layout the uv is the last two floats, the weights the four before, the bone
+    // indices the four before those.
+    std::uint32_t head[7] = {};
+    std::size_t peek = offset;
+    for (std::uint32_t& h : head) {
+        if (!read(data, peek, h)) return "truncated";
     }
-    std::size_t count = vertex_size / vertex_bytes;
+    std::uint32_t flags = 0, vertex_size = 0, index_size = 0;
+    bool zeros = true;
+    for (int i = 1; i < 7; ++i) zeros = zeros && head[i] == 0;
+    if (zeros) {
+        offset = peek;
+        if (!read(data, offset, flags) || !read(data, offset, vertex_size)) return "truncated";
+    } else if (head[0] == 0 && (head[1] & 0xff000000u) == 0x01000000u) {
+        flags = head[1];
+        vertex_size = head[2];
+        offset += 12;
+    } else if (head[0] == 0) {
+        vertex_size = head[1];
+        offset += 8;
+    } else {
+        return "unexpected header (" + std::to_string(head[0]) + ")";
+    }
+    std::size_t stride = 0;
+    switch (flags) {
+        case 0: stride = 52; break;
+        case 0x01800009u: stride = 52; break;
+        case 0x0180000fu: stride = 80; break;
+        case 0x0181000eu: stride = 84; break;
+        default: break;
+    }
+    if (stride == 0 || vertex_size % stride != 0) {
+        // Unknown flags: the stride that divides the block and keeps the uvs in range.
+        stride = 0;
+        for (std::size_t candidate : {80u, 52u, 84u, 56u, 60u, 64u, 68u, 72u, 76u, 88u, 92u, 96u}) {
+            if (vertex_size % candidate != 0 || offset + vertex_size > data.size()) continue;
+            bool plausible = true;
+            std::size_t n = std::min<std::size_t>(vertex_size / candidate, 64);
+            for (std::size_t i = 0; i < n && plausible; ++i) {
+                float uv[2];
+                std::memcpy(uv, data.data() + offset + i * candidate + candidate - 8, sizeof(uv));
+                plausible = uv[0] >= -0.01f && uv[0] <= 1.01f && uv[1] >= -0.01f && uv[1] <= 1.01f;
+            }
+            if (plausible) {
+                stride = candidate;
+                break;
+            }
+        }
+        if (stride == 0) {
+            return "unexpected vertex layout (flags " + std::to_string(flags) + ")";
+        }
+    }
+    if (offset + vertex_size > data.size()) return "truncated vertices";
+    std::size_t count = vertex_size / stride;
     out.vertices.resize(count * 5);
     out.bone_indices.resize(count);
     out.bone_weights.resize(count);
+    std::size_t floats = stride / 4;
     for (std::size_t i = 0; i < count; ++i) {
-        const std::byte* v = data.data() + offset + i * vertex_bytes;
-        float f[20];
-        std::memcpy(f, v, sizeof(f));
+        const std::byte* v = data.data() + offset + i * stride;
+        float f[32] = {};
+        std::memcpy(f, v, std::min<std::size_t>(stride, sizeof(f)));
         out.vertices[i * 5 + 0] = f[0];
         out.vertices[i * 5 + 1] = f[1];
         out.vertices[i * 5 + 2] = f[2];
-        out.vertices[i * 5 + 3] = f[18];
-        out.vertices[i * 5 + 4] = f[19];
+        out.vertices[i * 5 + 3] = f[floats - 2];
+        out.vertices[i * 5 + 4] = f[floats - 1];
         std::uint32_t bones[4];
-        std::memcpy(bones, v + 40, sizeof(bones));
+        std::memcpy(bones, v + (floats - 10) * 4, sizeof(bones));
         for (int k = 0; k < 4; ++k) {
             out.bone_indices[i][static_cast<std::size_t>(k)] =
                 static_cast<std::uint8_t>(std::min<std::uint32_t>(bones[k], 255));
-            out.bone_weights[i][static_cast<std::size_t>(k)] = f[14 + k];
+            out.bone_weights[i][static_cast<std::size_t>(k)] =
+                f[floats - 6 + static_cast<std::size_t>(k)];
         }
     }
     offset += vertex_size;

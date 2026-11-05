@@ -627,3 +627,11 @@ it were pixels). Nine items carry such textures. They now go through the video w
 decoder into an RGBA picture per frame (docs/FORMATS.md, 14); the GIF windows of the
 terminal scene move and the 4K background shows. The decoder is opened on the loading
 worker with its first frame ready, so the first draw has a picture.
+
+### Older puppets
+
+Four items' puppets were drawn flat: their .mdl files are older or newer versions with a
+different header and vertex stride (52 bytes without normal and tangent, 84 with one float
+more), which the reader had taken for the usual 80. The layouts are told apart by their
+flags now (docs/FORMATS.md, 10), with a search over plausible strides for flags not seen
+before. Lucy and her cat, and Gojo, are puppets again.
