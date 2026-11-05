@@ -21,7 +21,7 @@ namespace glint::scene {
 namespace {
 
 // Bump when the rewriting changes, so cached SPIR-V from older rules is not reused.
-constexpr const char* rewrite_version = "glint-shader-2";
+constexpr const char* rewrite_version = "glint-shader-3";
 
 // HLSL habits of the dialect, as macros the preprocessor applies.
 constexpr const char* compat = R"(#define GLSL 1
@@ -145,6 +145,31 @@ void read_annotations(std::string_view text, Annotations& out) {
             if (j.is_object()) out.by_uniform[m[1].str()] = j;
         }
     }
+}
+
+// Wallpaper Engine tolerates an #endif too many (a Workshop shader of 3510729512 has one) and,
+// presumably, one too few; glslang does not. Stray #endif lines go, missing ones are added.
+void balance_conditionals(std::string& text) {
+    static const std::regex open(R"(^\s*#\s*(if|ifdef|ifndef)\b)");
+    static const std::regex close(R"(^\s*#\s*endif\b)");
+    std::istringstream in(text);
+    std::string out, line;
+    int depth = 0;
+    while (std::getline(in, line)) {
+        if (std::regex_search(line, open)) {
+            ++depth;
+        } else if (std::regex_search(line, close)) {
+            if (depth == 0) {
+                out += "// " + line + " (unmatched, dropped)\n";
+                continue;
+            }
+            --depth;
+        }
+        out += line;
+        out += '\n';
+    }
+    while (depth-- > 0) out += "#endif\n";
+    text = std::move(out);
 }
 
 const TBuiltInResource* resources() {
@@ -311,6 +336,7 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
         if (!resolve_includes(vfs_, file->text(), seen, sources[i], result.error)) {
             return result;
         }
+        balance_conditionals(sources[i]);
         read_annotations(sources[i], annotations);
     }
 
@@ -434,12 +460,22 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
     for (const auto& d : stages[0].outputs) vertex_types[d.name] = d.type;
     std::string vertex_io, fragment_io, fragment_globals, fragment_prologue;
     std::uint32_t attribute = 0;
+    // HLSL lets a shader write to its inputs; GLSL does not. Inputs arrive under another name
+    // and are copied into a global of the shader's name at the top of main.
+    std::string vertex_globals, vertex_prologue;
     for (const auto& d : stages[0].inputs) {
         result.attributes[d.name] = attribute;
-        vertex_io += "layout(location = " + std::to_string(attribute) + ") in " + d.type + " " +
-                     d.name + d.array + ";\n";
+        std::string where = "layout(location = " + std::to_string(attribute) + ") in ";
+        if (d.array.empty()) {
+            vertex_io += where + d.type + " glint_in_" + d.name + ";\n";
+            vertex_globals += d.type + " " + d.name + ";\n";
+            vertex_prologue += "    " + d.name + " = glint_in_" + d.name + ";\n";
+        } else {
+            vertex_io += where + d.type + " " + d.name + d.array + ";\n";
+        }
         attribute += locations_of(d.type);
     }
+    vertex_io += vertex_globals;
     for (const auto& d : stages[0].outputs) {
         vertex_io += "layout(location = " + std::to_string(varying_locations[d.name]) + ") out " +
                      d.type + " " + d.name + d.array + ";\n";
@@ -447,9 +483,16 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
     for (const auto& d : stages[1].inputs) {
         std::string location = std::to_string(varying_locations[d.name]);
         auto vt = vertex_types.find(d.name);
-        if (vt == vertex_types.end() || vt->second == d.type || !d.array.empty()) {
+        if (!d.array.empty()) {
             fragment_io +=
                 "layout(location = " + location + ") in " + d.type + " " + d.name + d.array + ";\n";
+            continue;
+        }
+        if (vt == vertex_types.end() || vt->second == d.type) {
+            fragment_io +=
+                "layout(location = " + location + ") in " + d.type + " glint_in_" + d.name + ";\n";
+            fragment_globals += d.type + " " + d.name + ";\n";
+            fragment_prologue += "    " + d.name + " = glint_in_" + d.name + ";\n";
             continue;
         }
         auto width = [](const std::string& t) {
@@ -476,6 +519,16 @@ CompiledShader ShaderCompiler::compile(const ShaderRequest& request) {
             value += ")";
         }
         fragment_prologue += "    " + d.name + " = " + value + ";\n";
+    }
+    if (!vertex_prologue.empty()) {
+        static const std::regex vertex_main(R"(void\s+main\s*\(\s*(void)?\s*\)\s*\{)");
+        std::smatch m;
+        if (!std::regex_search(stages[0].body, m, vertex_main)) {
+            result.error = "vertex stage has no main()";
+            return result;
+        }
+        auto at = static_cast<std::size_t>(m.position(0) + m.length(0));
+        stages[0].body.insert(at, "\n" + vertex_prologue);
     }
     if (!fragment_prologue.empty()) {
         static const std::regex main_open(R"(void\s+main\s*\(\s*(void)?\s*\)\s*\{)");
