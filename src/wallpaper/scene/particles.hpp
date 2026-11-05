@@ -94,7 +94,10 @@ public:
     // texture_ratio is the sprite's height over its width, which the shader multiplies the
     // quad height by; a rope trail's length is corrected for it.
     std::uint32_t write(ParticleVertex* out, std::uint32_t capacity, float texture_ratio) const;
-    std::uint32_t capacity() const { return static_cast<std::uint32_t>(max_); }
+    // Quads at most: one per particle, or the ribbon's segments for a rope trail.
+    std::uint32_t capacity() const {
+        return static_cast<std::uint32_t>(max_) * (rope_samples_ > 1 ? rope_samples_ - 1 : 1);
+    }
     const ParticleDesc& desc() const { return *desc_; }
 
     // The children are drawn as systems of their own with their materials.
@@ -132,7 +135,19 @@ private:
     std::vector<Emitter> emitters_;
     std::vector<std::unique_ptr<ParticleSystem>> children_;
     std::vector<Vec3> control_points_;
-    float rope_length_ = 0;  // a rope renderer's length, 0 for sprites and sprite trails
+    // A rope trail: every particle keeps the last rope_samples_ of its positions, one every
+    // rope_interval_ seconds, and is drawn as a ribbon through them as wide as its size.
+    // Parallel to particles_, so a removal swaps both.
+    float rope_length_ = 0;  // seconds of path the ribbon covers; 0 for sprites
+    std::uint32_t rope_samples_ = 0;
+    float rope_interval_ = 0;
+    std::vector<Vec3> history_;
+    std::vector<std::uint32_t> history_count_;
+    std::vector<float> history_since_;
+    void remember(std::size_t index, float dt);
+    void write_rope(const Particle& p, std::size_t index, float alpha, float size, Vec3 color,
+                    float frame, ParticleVertex* out, std::uint32_t& count,
+                    std::uint32_t capacity) const;
     double time_ = 0;
     bool warmed_ = false;
     bool event_child_ = false;

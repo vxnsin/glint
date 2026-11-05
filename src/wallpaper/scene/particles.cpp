@@ -367,7 +367,17 @@ ParticleSystem::ParticleSystem(std::shared_ptr<const ParticleDesc> desc,
     for (const ParticleModule& m : desc_->initializers) initializers_.push_back(compile(m));
     for (const ParticleModule& m : desc_->operators) operators_.push_back(compile(m));
     for (const ParticleModule& r : desc_->renderers) {
-        if (r.name == "rope" || r.name == "ropetrail") rope_length_ = num(r.json, "length", 1);
+        if (r.name == "ropetrail") {
+            rope_length_ = std::clamp(num(r.json, "length", 1), 0.05f, 10.0f);
+            rope_samples_ = static_cast<std::uint32_t>(
+                std::clamp(static_cast<int>(num(r.json, "segments", 16)), 2, 32));
+            rope_interval_ = rope_length_ / static_cast<float>(rope_samples_ - 1);
+        }
+    }
+    if (rope_samples_ > 1) {
+        history_.resize(max_ * rope_samples_);
+        history_count_.assign(max_, 0);
+        history_since_.assign(max_, 0);
     }
     control_points_.resize(std::max<std::size_t>(desc_->control_points.size(), 8), {0, 0, 0});
     for (std::size_t i = 0; i < desc_->control_points.size(); ++i) {
@@ -428,6 +438,14 @@ void ParticleSystem::simulate(double dt_d, const ParticleEnv&) {
         if (p.age >= p.life) {
             event("eventdeath", p);
             p = particles_.back();
+            if (rope_samples_ > 1) {
+                std::size_t last = particles_.size() - 1;
+                std::copy_n(history_.begin() + static_cast<std::ptrdiff_t>(last * rope_samples_),
+                            rope_samples_,
+                            history_.begin() + static_cast<std::ptrdiff_t>(i * rope_samples_));
+                history_count_[i] = history_count_[last];
+                history_since_[i] = history_since_[last];
+            }
             particles_.pop_back();
             continue;
         }
@@ -492,8 +510,32 @@ void ParticleSystem::simulate(double dt_d, const ParticleEnv&) {
                 default: break;
             }
         }
+        if (rope_samples_ > 1) remember(i, dt);
         ++i;
     }
+}
+
+void ParticleSystem::remember(std::size_t index, float dt) {
+    const Particle& p = particles_[index];
+    Vec3* samples = history_.data() + index * rope_samples_;
+    std::uint32_t& count = history_count_[index];
+    float& since = history_since_[index];
+    if (count == 0) {
+        samples[0] = p.position;
+        count = 1;
+        since = 0;
+        return;
+    }
+    since += dt;
+    if (since < rope_interval_) {
+        samples[0] = p.position;  // the head follows the particle between samples
+        return;
+    }
+    since = 0;
+    std::uint32_t n = std::min(count + 1, rope_samples_);
+    for (std::uint32_t k = n - 1; k > 0; --k) samples[k] = samples[k - 1];
+    samples[0] = p.position;
+    count = n;
 }
 
 void ParticleSystem::emit(Emitter& e, double dt, const Vec3* at) {
@@ -594,6 +636,11 @@ void ParticleSystem::spawn(const Module& emitter, const Vec3* at) {
     p.color = p.color * over_.color * over_.brightness;
     p.alpha *= over_.alpha;
     particles_.push_back(p);
+    if (rope_samples_ > 1) {
+        std::size_t index = particles_.size() - 1;
+        history_count_[index] = 0;
+        history_since_[index] = 0;
+    }
     event("eventspawn", particles_.back());
 }
 
@@ -636,7 +683,8 @@ std::uint32_t ParticleSystem::write(ParticleVertex* out, std::uint32_t capacity,
                                     float texture_ratio) const {
     using Kind = Module::Kind;
     std::uint32_t count = 0;
-    bool trail = desc_->sprite_trail() || rope_length_ > 0;
+    bool trail = desc_->sprite_trail();
+    (void)texture_ratio;
     constexpr float two_pi = 2 * std::numbers::pi_v<float>;
     for (const Particle& p : particles_) {
         if (count >= capacity) break;
@@ -699,6 +747,11 @@ std::uint32_t ParticleSystem::write(ParticleVertex* out, std::uint32_t capacity,
         float frame = desc_->animationmode == "randomframe"
                           ? p.frame
                           : std::fmod(life * desc_->sequencemultiplier, 1.0f);
+        if (rope_samples_ > 1) {
+            write_rope(p, static_cast<std::size_t>(&p - particles_.data()), alpha, size, color,
+                       frame, out, count, capacity);
+            continue;
+        }
         ParticleVertex v{};
         v.position[0] = position[0];
         v.position[1] = position[1];
@@ -712,12 +765,6 @@ std::uint32_t ParticleSystem::write(ParticleVertex* out, std::uint32_t capacity,
         v.rotation[0] = p.rotation[0];
         v.rotation[1] = p.rotation[1];
         Vec3 velocity = p.velocity;
-        if (rope_length_ > 0) {
-            // A rope trails its velocity times the length; the sprite-trail shader makes
-            // the quad size times the velocity it is given, times the texture ratio.
-            float k = rope_length_ / std::max(size * std::max(texture_ratio, 1e-3f), 1e-3f);
-            velocity = velocity * k;
-        }
         if (trail && length(velocity) < 1e-3f) velocity[1] = 1e-3f;
         v.velocity[0] = velocity[0];
         v.velocity[1] = velocity[1];
@@ -733,6 +780,57 @@ std::uint32_t ParticleSystem::write(ParticleVertex* out, std::uint32_t capacity,
         ++count;
     }
     return count;
+}
+
+void ParticleSystem::write_rope(const Particle& p, std::size_t index, float alpha, float size,
+                                Vec3 color, float frame, ParticleVertex* out, std::uint32_t& count,
+                                std::uint32_t capacity) const {
+    // The ribbon: one quad per pair of samples, as wide as the particle, fading to nothing at
+    // the tail. Size 0 makes the shader take the vertex positions as they are; the texture
+    // runs along the ribbon (u) and across it (v).
+    std::uint32_t n = history_count_[index];
+    if (n < 2) return;
+    const Vec3* samples = history_.data() + index * rope_samples_;
+    float half = size * 0.5f;
+    auto side = [&](std::uint32_t k) {
+        Vec3 d = k == 0 ? samples[0] - samples[1] : samples[k - 1] - samples[k];
+        if (k > 0 && k + 1 < n) d = d + (samples[k] - samples[k + 1]);
+        float l = std::sqrt(d[0] * d[0] + d[1] * d[1]);
+        if (l < 1e-4f) return Vec3{0, half, 0};
+        return Vec3{-d[1] / l * half, d[0] / l * half, 0};
+    };
+    Vec3 prev_side = side(0);
+    for (std::uint32_t k = 1; k < n; ++k) {
+        if (count >= capacity) return;
+        Vec3 s0 = prev_side, s1 = side(k);
+        prev_side = s1;
+        float u0 = static_cast<float>(k - 1) / static_cast<float>(n - 1);
+        float u1 = static_cast<float>(k) / static_cast<float>(n - 1);
+        float a0 = alpha * (1 - u0), a1 = alpha * (1 - u1);
+        const Vec3 corners[4] = {samples[k - 1] + s0, samples[k - 1] - s0, samples[k] + s1,
+                                 samples[k] - s1};
+        const float uv[4][2] = {{u0, 0}, {u0, 1}, {u1, 0}, {u1, 1}};
+        const float alphas[4] = {a0, a0, a1, a1};
+        for (int c = 0; c < 4; ++c) {
+            ParticleVertex v{};
+            v.position[0] = corners[c][0];
+            v.position[1] = corners[c][1];
+            v.position[2] = corners[c][2];
+            v.texcoord[0] = uv[c][0];
+            v.texcoord[1] = uv[c][1];
+            v.texcoord[2] = 0;
+            v.texcoord[3] = 0;
+            v.color[0] = color[0];
+            v.color[1] = color[1];
+            v.color[2] = color[2];
+            v.color[3] = std::clamp(alphas[c], 0.0f, 1.0f);
+            v.velocity[3] = frame;
+            v.velocity[0] = p.velocity[0];
+            v.velocity[1] = p.velocity[1];
+            out[count * 4 + static_cast<std::uint32_t>(c)] = v;
+        }
+        ++count;
+    }
 }
 
 }  // namespace glint::scene

@@ -164,6 +164,7 @@ struct ParticleObject {
     int id = 0;
     std::string name;
     std::string file;
+    int parent = -1;  // the id of an image or particle object it moves with
     Bound origin, scale, angles;
     Bound visible;
     Vec2 parallax_depth{1, 1};

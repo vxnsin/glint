@@ -125,6 +125,10 @@ private:
     math::Mat4 parallax_model(int object, const FrameInputs& inputs) const;
     math::Mat4 particle_model(int particle, const FrameInputs& inputs) const;
     math::Mat4 model_matrix(int object, std::vector<int>& visiting, double time) const;
+    // A particle object's transform, with its parents (images or particles).
+    math::Mat4 particle_matrix(int particle, std::vector<int>& visiting, double time) const;
+    // The transform of whatever object has this id, identity if none.
+    math::Mat4 transform_of_id(int id, std::vector<int>& visiting, double time) const;
     void transition(VkCommandBuffer cmd, Image& image, VkImageLayout layout);
 
     gpu::Context& gpu_;

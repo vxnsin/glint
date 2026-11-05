@@ -264,7 +264,44 @@ math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting, d
             return parent * local;
         }
     }
-    return local;  // the parent is not an image (a particle, say): ignored
+    // The parent is a particle object, or nothing.
+    visiting.push_back(object);
+    math::Mat4 parent = transform_of_id(image.parent, visiting, time);
+    visiting.pop_back();
+    return parent * local;
+}
+
+math::Mat4 SceneRenderer::particle_matrix(int particle, std::vector<int>& visiting,
+                                          double time) const {
+    const SceneDesc& scene = assets_->scene();
+    const ParticleObject& object = scene.particles[static_cast<std::size_t>(particle)];
+    Vec3 origin = parse_vec3(object.origin.at(values_, time), {0, 0, 0});
+    Vec3 scale = parse_vec3(object.scale.at(values_, time), {1, 1, 1});
+    Vec3 angles = parse_vec3(object.angles.at(values_, time), {0, 0, 0});
+    math::Mat4 local = math::Mat4::translate(origin[0], origin[1], origin[2]) *
+                       math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
+                       math::Mat4::rotate_x(angles[0]) *
+                       math::Mat4::scale(scale[0], scale[1], scale[2]);
+    if (object.parent < 0) return local;
+    // Particles are numbered after the images in the cycle guard.
+    int key = static_cast<int>(scene.images.size()) + particle;
+    if (std::ranges::find(visiting, key) != visiting.end()) return local;
+    visiting.push_back(key);
+    math::Mat4 parent = transform_of_id(object.parent, visiting, time);
+    visiting.pop_back();
+    return parent * local;
+}
+
+math::Mat4 SceneRenderer::transform_of_id(int id, std::vector<int>& visiting, double time) const {
+    const SceneDesc& scene = assets_->scene();
+    for (std::size_t i = 0; i < scene.images.size(); ++i) {
+        if (scene.images[i].id == id) return model_matrix(static_cast<int>(i), visiting, time);
+    }
+    for (std::size_t i = 0; i < scene.particles.size(); ++i) {
+        if (scene.particles[i].id == id)
+            return particle_matrix(static_cast<int>(i), visiting, time);
+    }
+    return {};
 }
 
 void SceneRenderer::build(VkExtent2D extent) {
@@ -397,14 +434,9 @@ void SceneRenderer::build(VkExtent2D extent) {
         }
     }
     particle_models_.clear();
-    for (const ParticleObject& object : scene.particles) {
-        Vec3 origin = parse_vec3(object.origin.resolve(values_), {0, 0, 0});
-        Vec3 scale = parse_vec3(object.scale.resolve(values_), {1, 1, 1});
-        Vec3 angles = parse_vec3(object.angles.resolve(values_), {0, 0, 0});
-        particle_models_.push_back(
-            math::Mat4::translate(origin[0], origin[1], origin[2]) *
-            math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
-            math::Mat4::rotate_x(angles[0]) * math::Mat4::scale(scale[0], scale[1], scale[2]));
+    for (std::size_t i = 0; i < scene.particles.size(); ++i) {
+        std::vector<int> visiting;
+        particle_models_.push_back(particle_matrix(static_cast<int>(i), visiting, 0));
     }
 
     models_.clear();

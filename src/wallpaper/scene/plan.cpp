@@ -164,7 +164,7 @@ Plan build_plan(const SceneDesc& scene, const Values& values, const TextureSize&
                 draw.request = {pass.shader.empty() ? "genericparticle" : pass.shader, pass.combos,
                                 0};
                 draw.request.combos["THICKFORMAT"] = 1;
-                if (desc.sprite_trail() || desc.rope()) draw.request.combos["TRAILRENDERER"] = 1;
+                if (desc.sprite_trail()) draw.request.combos["TRAILRENDERER"] = 1;
                 draw.blending = pass.blending.empty() ? "additive" : pass.blending;
                 draw.geometry = Geometry::object;
                 draw.target = -1;

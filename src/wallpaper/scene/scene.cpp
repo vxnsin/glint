@@ -451,6 +451,9 @@ std::string load_scene(const Vfs& vfs, std::string_view file, SceneDesc& out) {
             particle.id = object.value("id", next_id);
             particle.name = str(object, "name");
             particle.file = object["particle"].get<std::string>();
+            if (object.contains("parent") && object["parent"].is_number()) {
+                particle.parent = object["parent"].get<int>();
+            }
             particle.origin = parse_bound(object.value("origin", json("0 0 0")));
             particle.scale = parse_bound(object.value("scale", json("1 1 1")));
             particle.angles = parse_bound(object.value("angles", json("0 0 0")));
