@@ -1,10 +1,10 @@
-// glint: one binary, two roles. Without a command it is the daemon; with one it is a client
-// that talks to the daemon over the socket (docs/IPC.md).
+// glint: an interactive client and the background daemon in one binary.
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
+#include <unistd.h>
 
 #include "core/log.hpp"
 #include "core/version.hpp"
@@ -21,7 +21,9 @@ void usage() {
     std::printf(
         "glint %s\n"
         "\n"
-        "  glint                      run the daemon\n"
+        "  glint                      open the menu in a terminal\n"
+        "  glint --daemon             run the background daemon\n"
+        "  glint menu                 open the menu\n"
         "  glint outputs              list outputs and what they show\n"
         "  glint list [search]        search installed Workshop wallpapers\n"
         "  glint choose [search]      choose an installed wallpaper and output\n"
@@ -81,6 +83,10 @@ int run_client(int argc, char** argv) {
 
 int main(int argc, char** argv) {
     if (argc >= 2) {
+        if (std::strcmp(argv[1], "--daemon") == 0 && argc == 2) return run_daemon();
+#ifdef GLINT_PLATFORM
+        if (std::strcmp(argv[1], "menu") == 0 && argc == 2) return glint::cli::run_menu();
+#endif
         if (std::strcmp(argv[1], "--version") == 0 || std::strcmp(argv[1], "-v") == 0) {
             std::printf("glint %s (protocol %d)\n", glint::version, glint::protocol_version);
             return 0;
@@ -91,5 +97,8 @@ int main(int argc, char** argv) {
         }
         return run_client(argc, argv);
     }
+#ifdef GLINT_PLATFORM
+    if (::isatty(STDIN_FILENO) && ::isatty(STDOUT_FILENO)) return glint::cli::run_menu();
+#endif
     return run_daemon();
 }

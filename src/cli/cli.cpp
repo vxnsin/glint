@@ -18,6 +18,7 @@
 
 #include "cli/configure.hpp"
 #include "cli/library.hpp"
+#include "cli/menu.hpp"
 #include "core/fd.hpp"
 #include "core/paths.hpp"
 
@@ -161,6 +162,16 @@ void print_text(const std::string& op, const json& result) {
 }
 
 }  // namespace
+
+int run_menu() {
+    return menu(std::cin, std::cout, [](const std::vector<std::string>& args) {
+        std::vector<std::string> storage = {"glint"};
+        storage.insert(storage.end(), args.begin(), args.end());
+        std::vector<char*> argv;
+        for (auto& item : storage) argv.push_back(item.data());
+        return run(static_cast<int>(argv.size()), argv.data());
+    });
+}
 
 int run(int argc, char** argv) {
     std::vector<std::string_view> args;

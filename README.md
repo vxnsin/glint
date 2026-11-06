@@ -62,7 +62,8 @@ cmake --build --preset release
 ## Use
 
 ```
-glint                                   # the daemon; Hyprland: exec-once = glint
+glint                                   # interactive menu
+glint --daemon                          # the daemon; Hyprland: exec-once = glint --daemon
 glint set DP-1 ~/Pictures/lake.jpg
 glint set '*' ~/Pictures/lake.jpg scaling=fit color=#203040
 glint status                            # per output: state, frames, CPU and GPU time

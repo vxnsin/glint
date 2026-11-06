@@ -4,5 +4,6 @@
 namespace glint::cli {
 
 int run(int argc, char** argv);
+int run_menu();
 
 }  // namespace glint::cli
