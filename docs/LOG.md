@@ -870,3 +870,29 @@ out-of-order replies and events. The sandbox cannot bind a local socket or conne
 the desktop daemon, so the real socket round trip and Facet UI wiring remain to be checked
 on the desktop. The component is not installed into Facet yet.
 
+
+## Terminal UI and Workshop downloads
+
+`glint` in a terminal and `glint tui` now open an ncurses UI with arrow navigation,
+search, display selection, image previews and settings. Ghostty/Kitty can receive RGB
+previews through the Kitty graphics protocol; other color terminals draw half-block
+previews. Modal dialogs, resize and leaving the library remove image placements.
+
+Per-output FPS, scaling, transitions, sound and video options reapply the current path
+without discarding the other options. Project settings use live `props` requests. A
+setting change never replaces different wallpapers on other displays. TUI IPC waits
+run off the input thread and can be cancelled when closing the client.
+
+The Workshop page opens online search in Steam and offers direct item downloads through
+an optional SteamCMD executable. SteamCMD receives an item ID and account name, and
+handles password/Steam Guard prompts itself. Complete downloads can be registered into
+Glint's own library without changing Steam's managed files. Imported content and Steam
+subscriptions appear in CLI/IPC listings, with Steam's copy winning duplicate IDs.
+
+All ten release CTest suites passed. A pseudo-terminal test exercises the real UI with
+simulated daemon replies: arrows, preview decoding, FPS and volume conversion, project
+properties, Unicode search, resize, terminal cleanup and a simulated SteamCMD download
+and import. Separate checks decode the Kitty image payload and verify chunking/removal.
+An interrupt on the actual TUI also restored the terminal's canonical input and echo.
+Authenticated SteamCMD downloads and visual verification in the user's terminal are
+still desktop checks; no real Steam account was used in automated tests.

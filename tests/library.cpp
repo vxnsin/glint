@@ -55,6 +55,17 @@ int main() {
     CHECK(!error.empty());
     glint::cli::list_library(root / "absent", "", error);
     CHECK(!error.empty());
+    const char* old_data = std::getenv("XDG_DATA_HOME");
+    const std::optional<std::string> saved_data =
+        old_data ? std::optional<std::string>(old_data) : std::nullopt;
+    setenv("XDG_DATA_HOME", (root / "data").c_str(), 1);
+    const auto managed = glint::cli::download_path();
+    CHECK(glint::cli::register_workshop_download(root / "43", managed).empty());
+    CHECK(glint::cli::register_workshop_download(root / "43", managed).empty());
+    CHECK(!glint::cli::register_workshop_download(root / "44", managed).empty());
+    CHECK(glint::cli::list_installed_library(root, managed, "", error).size() == 2);
+    CHECK(glint::cli::list_installed_library(root / "no-steam", managed, "", error).size() == 1 &&
+          error.empty());
     const char* old_workshop = std::getenv("GLINT_WORKSHOP");
     const std::optional<std::string> saved =
         old_workshop ? std::optional<std::string>(old_workshop) : std::nullopt;
@@ -86,6 +97,10 @@ int main() {
         setenv("GLINT_WORKSHOP", saved->c_str(), 1);
     else
         unsetenv("GLINT_WORKSHOP");
+    if (saved_data)
+        setenv("XDG_DATA_HOME", saved_data->c_str(), 1);
+    else
+        unsetenv("XDG_DATA_HOME");
     std::filesystem::remove_all(root);
     std::printf("library regressions: %d failures\n", failures);
     return failures != 0;

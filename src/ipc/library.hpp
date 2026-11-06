@@ -11,6 +11,7 @@ struct LibraryRequest {
     enum class Operation { list, inspect } operation;
     std::filesystem::path path;
     std::string search;
+    std::filesystem::path downloads;
 };
 
 std::optional<LibraryRequest> parse_library_request(const nlohmann::json& request,

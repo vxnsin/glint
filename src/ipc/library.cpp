@@ -18,7 +18,7 @@ std::optional<LibraryRequest> parse_library_request(const nlohmann::json& reques
             return std::nullopt;
         }
         return LibraryRequest{LibraryRequest::Operation::list, cli::workshop_path(),
-                              request.value("search", std::string{})};
+                              request.value("search", std::string{}), cli::download_path()};
     }
     if (op == "inspect") {
         if (!request.contains("path") || !request["path"].is_string() ||
@@ -36,7 +36,7 @@ std::optional<LibraryRequest> parse_library_request(const nlohmann::json& reques
 
 nlohmann::json execute_library_request(const LibraryRequest& request, std::string& error) {
     if (request.operation == LibraryRequest::Operation::list)
-        return cli::list_library(request.path, request.search, error);
+        return cli::list_installed_library(request.path, request.downloads, request.search, error);
     return cli::inspect_wallpaper(request.path, error);
 }
 

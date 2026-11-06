@@ -281,11 +281,11 @@ Arch and CachyOS package names. Most are on a Hyprland desktop already.
 
 Required: vulkan-headers, vulkan-icd-loader, volk, wayland, wayland-protocols,
 wlr-protocols, glslang, nlohmann-json, lz4, ffmpeg, pipewire, freetype2, harfbuzz,
-fontconfig, quickjs-ng, cmake, ninja, a C++23 compiler (GCC 14 or Clang 18 and later). Vulkan Memory Allocator has no Arch package, only
+fontconfig, quickjs-ng, sdbus-cpp, ncurses, cmake, ninja, a C++23 compiler (GCC 14 or Clang 18 and later). Vulkan Memory Allocator has no Arch package, only
 an AUR one, so its single header is in `third_party/vma`. For the measurements in
 `docs/LOG.md`: perf.
 
-Later and optional: libva (hardware video), sdbus-c++ (media through MPRIS), wpewebkit and
+Later and optional: libva (hardware video), wpewebkit and
 wpebackend-fdo or CEF (web), qt6-base and qt6-declarative (glint-app).
 
 On the CachyOS box with a Hyprland desktop, glslang, ffmpeg, pipewire, wayland and the

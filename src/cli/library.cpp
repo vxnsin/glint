@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <set>
 
 #include "wallpaper/scene/project.hpp"
 #include "wallpaper/scene/scene.hpp"
@@ -55,12 +56,84 @@ std::filesystem::path workshop_path() {
 
 std::filesystem::path resolve_wallpaper(std::string_view target) {
     std::filesystem::path path(target);
+    if (target == "~" || target.starts_with("~/")) {
+        if (const char* home = std::getenv("HOME"))
+            path = std::filesystem::path(home) /
+                   (target.size() > 2 ? std::string(target.substr(2)) : "");
+    }
     std::error_code ec;
     const bool id =
         !target.empty() && std::ranges::all_of(target, [](char c) { return c >= '0' && c <= '9'; });
-    if (id && !std::filesystem::exists(path, ec)) path = workshop_path() / path;
+    if (id && !std::filesystem::exists(path, ec)) {
+        path = workshop_path() / path;
+        if (!std::filesystem::exists(path / "project.json", ec) &&
+            std::filesystem::exists(download_path() / std::string(target) / "project.json", ec))
+            path = download_path() / std::string(target);
+    }
     auto absolute = std::filesystem::absolute(path, ec);
     return (ec ? path : absolute).lexically_normal();
+}
+
+std::filesystem::path download_path() {
+    const char* data = std::getenv("XDG_DATA_HOME");
+    const char* home = std::getenv("HOME");
+    const auto base = data && data[0] == '/'
+                          ? std::filesystem::path(data)
+                          : std::filesystem::path(home ? home : "/") / ".local/share";
+    return base / "glint/workshop/431960";
+}
+
+json list_installed_library(const std::filesystem::path& workshop,
+                            const std::filesystem::path& downloads, std::string_view search,
+                            std::string& error) {
+    json result = json::array();
+    std::set<std::string> ids;
+    error.clear();
+    for (const auto& root : {workshop, downloads}) {
+        std::error_code ec;
+        if (!std::filesystem::exists(root, ec) && !ec) continue;
+        std::string problem;
+        auto items = list_library(root, search, problem);
+        if (!problem.empty()) {
+            error = problem;
+            continue;
+        }
+        for (auto& item : items)
+            if (ids.insert(item["id"].get<std::string>()).second) result.push_back(std::move(item));
+    }
+    std::sort(result.begin(), result.end(), [](const json& a, const json& b) {
+        return lower(a["title"].get<std::string>()) < lower(b["title"].get<std::string>());
+    });
+    return result;
+}
+
+std::string register_workshop_download(const std::filesystem::path& folder,
+                                       const std::filesystem::path& downloads) {
+    std::error_code ec;
+    const auto source = std::filesystem::canonical(folder, ec);
+    if (ec) return "Cannot open downloaded folder: " + ec.message();
+    const auto id = source.filename().string();
+    if (id.empty() || id.size() > 20 || id[0] == '0' ||
+        !std::ranges::all_of(id, [](char c) { return c >= '0' && c <= '9'; }))
+        return "The downloaded folder must be named after its numeric Workshop item ID";
+    scene::Project project;
+    std::string error;
+    if (!read_project(source, project, error)) return error;
+    if (project.type != "scene" && project.type != "video")
+        return "Only scene and video projects can be imported";
+    scene::Vfs vfs(source, {});
+    if (auto problem = vfs.open_package(); !problem.empty()) return problem;
+    if (!vfs.exists(project.file))
+        return "The download is incomplete: the project entry is missing";
+    std::filesystem::create_directories(downloads, ec);
+    if (ec) return "Cannot create download library: " + ec.message();
+    const auto target = downloads / id;
+    if (std::filesystem::exists(target, ec)) {
+        if (std::filesystem::equivalent(source, target, ec)) return {};
+        return "A different download with this ID already exists in glint's library";
+    }
+    std::filesystem::create_directory_symlink(source, target, ec);
+    return ec ? "Cannot register downloaded wallpaper: " + ec.message() : "";
 }
 
 json list_library(const std::filesystem::path& workshop, std::string_view search,

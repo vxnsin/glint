@@ -62,7 +62,8 @@ cmake --build --preset release
 ## Use
 
 ```
-glint                                   # interactive menu
+glint                                   # terminal UI: library, previews, settings, Workshop
+glint tui                               # explicitly open the TUI
 glint --daemon                          # the daemon; Hyprland: exec-once = glint --daemon
 glint set DP-1 ~/Pictures/lake.jpg
 glint set '*' ~/Pictures/lake.jpg scaling=fit color=#203040
@@ -86,6 +87,13 @@ glint screenshot DP-1 shot.png          # what glint drew, without the windows o
 
 The daemon remembers what was on which output in `$XDG_STATE_HOME/glint/state.json` and puts
 it back on the next start.
+
+The [terminal UI](docs/TUI.md) has arrow-key navigation, color image previews, search,
+display selection and wallpaper settings. Its settings page also edits FPS, scaling,
+transitions and sound. Workshop items can be opened in Steam, downloaded by ID with the
+optional SteamCMD tool, or imported from an existing download. SteamCMD handles its own
+login and Steam Guard prompts. Online Workshop search opens the signed-in Steam client;
+it is not an embedded online catalog.
 
 Two tools come with the build: `glint-render <item> out.png --frames 120` draws a scene
 headless into a PNG (no compositor needed, scripts and particles run), and `we-inspect <item>`

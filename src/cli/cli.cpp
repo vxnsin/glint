@@ -1,11 +1,13 @@
 #include "cli/cli.hpp"
 
 #include <errno.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,7 +20,8 @@
 
 #include "cli/configure.hpp"
 #include "cli/library.hpp"
-#include "cli/menu.hpp"
+#include "cli/tui.hpp"
+#include "cli/workshop.hpp"
 #include "core/fd.hpp"
 #include "core/paths.hpp"
 
@@ -33,7 +36,7 @@ int usage_error(const char* message) {
     return 2;
 }
 
-UniqueFd connect_daemon() {
+UniqueFd connect_daemon(bool quiet = false) {
     std::string path = paths::socket_path().string();
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
@@ -41,11 +44,13 @@ UniqueFd connect_daemon() {
     std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
     UniqueFd fd(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
     if (!fd) {
-        std::fprintf(stderr, "glint: cannot create IPC socket: %s\n", std::strerror(errno));
+        if (!quiet)
+            std::fprintf(stderr, "glint: cannot create IPC socket: %s\n", std::strerror(errno));
         return {};
     }
     if (::connect(fd.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
         const int error = errno;
+        if (quiet) return {};
         if (error == ENOENT || error == ECONNREFUSED)
             std::fprintf(stderr, "glint: no daemon on %s (start it with: glint)\n", path.c_str());
         else
@@ -60,7 +65,7 @@ bool send_line(int fd, const json& message) {
     std::string line = message.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
     std::size_t done = 0;
     while (done < line.size()) {
-        ssize_t n = ::write(fd, line.data() + done, line.size() - done);
+        ssize_t n = ::send(fd, line.data() + done, line.size() - done, MSG_NOSIGNAL);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
         done += static_cast<std::size_t>(n);
@@ -81,6 +86,7 @@ bool read_line(int fd, std::string& buffer, std::string& line) {
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
         buffer.append(chunk, static_cast<std::size_t>(n));
+        if (buffer.size() > 16 * 1024 * 1024) return false;
     }
 }
 
@@ -163,14 +169,41 @@ void print_text(const std::string& op, const json& result) {
 
 }  // namespace
 
-int run_menu() {
-    return menu(std::cin, std::cout, [](const std::vector<std::string>& args) {
-        std::vector<std::string> storage = {"glint"};
-        storage.insert(storage.end(), args.begin(), args.end());
-        std::vector<char*> argv;
-        for (auto& item : storage) argv.push_back(item.data());
-        return run(static_cast<int>(argv.size()), argv.data());
-    });
+json request_daemon(const json& request, std::stop_token stop) {
+    UniqueFd fd = connect_daemon(true);
+    if (!fd) return {{"ok", false}, {"error", "Glint is offline. Start it with glint --daemon."}};
+    timeval timeout{1, 0};
+    ::setsockopt(fd.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    ::setsockopt(fd.get(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    json message = request;
+    message["id"] = 1;
+    if (!send_line(fd.get(), message))
+        return {{"ok", false}, {"error", "Cannot send request to glint"}};
+    std::string buffer;
+    auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::seconds(request.value("op", "") == "set" ? 120 : 5);
+    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) {
+        pollfd ready{fd.get(), POLLIN, 0};
+        int count = ::poll(&ready, 1, 100);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) break;
+        if (count == 0) continue;
+        char bytes[4096];
+        ssize_t n = ::recv(fd.get(), bytes, sizeof(bytes), 0);
+        if (n <= 0) break;
+        buffer.append(bytes, static_cast<std::size_t>(n));
+        if (buffer.size() > 16 * 1024 * 1024) break;
+        for (;;) {
+            auto end = buffer.find('\n');
+            if (end == std::string::npos) break;
+            json reply = json::parse(buffer.substr(0, end), nullptr, false);
+            buffer.erase(0, end + 1);
+            if (reply.is_object() && reply.value("id", json()) == 1 && !reply.contains("event"))
+                return reply;
+        }
+    }
+    return {{"ok", false},
+            {"error", "Glint did not reply before the connection closed or timed out"}};
 }
 
 int run(int argc, char** argv) {
@@ -186,13 +219,31 @@ int run(int argc, char** argv) {
     }
     if (args.empty()) return usage_error("no command");
     std::string op(args[0]);
+    if (op == "download" || op == "import") {
+        if (as_json || (op == "download" && args.size() != 3) ||
+            (op == "import" && args.size() != 2))
+            return usage_error(
+                "download <Workshop id|link> <Steam account> | import <downloaded folder>");
+        std::string error;
+        if (op == "download") {
+            const auto id = workshop_item_id(std::string(args[1]));
+            error = download_workshop(id, std::string(args[2]));
+        } else
+            error = register_workshop_download(resolve_wallpaper(args[1]), download_path());
+        if (!error.empty()) {
+            std::fprintf(stderr, "glint: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("Wallpaper added to glint's library.\n");
+        return 0;
+    }
     if (op == "list" || op == "inspect") {
         if ((op == "inspect" && args.size() != 2) || (op == "list" && args.size() > 2))
             return usage_error("list [search] | inspect <Workshop id|folder>");
         std::string error;
-        json result = op == "list"
-                          ? list_library(workshop_path(), args.size() == 2 ? args[1] : "", error)
-                          : inspect_wallpaper(resolve_wallpaper(args[1]), error);
+        json result = op == "list" ? list_installed_library(workshop_path(), download_path(),
+                                                            args.size() == 2 ? args[1] : "", error)
+                                   : inspect_wallpaper(resolve_wallpaper(args[1]), error);
         if (!error.empty()) {
             std::fprintf(stderr, "glint: %s\n", error.c_str());
             return 1;
@@ -214,7 +265,8 @@ int run(int argc, char** argv) {
         json library;
         if (op == "choose") {
             std::string error;
-            library = list_library(workshop_path(), args.size() == 2 ? args[1] : "", error);
+            library = list_installed_library(workshop_path(), download_path(),
+                                             args.size() == 2 ? args[1] : "", error);
             if (!error.empty()) {
                 std::fprintf(stderr, "glint: %s\n", error.c_str());
                 return 1;

@@ -26,9 +26,14 @@ historical milestones; it is not a list of features already implemented.
 - The socket exposes installed Workshop listing and project inspection on workers, with
   an optional Quickshell client component for requests and events.
 
+- Terminal UI with arrow navigation, color previews, search, output selection and live
+  project properties. Per-output FPS, scaling, transitions, volume and video options can
+  be edited from it. Optional SteamCMD download/import is implemented; real authenticated
+  downloads still need validation. Online Workshop search opens Steam.
+
 ## Remaining
 
-- Interactive wallpaper selection, `doctor` and `install`.
+- `doctor` and `install` for standalone glint.
 - Daemon-wide settings IPC, UPower/idle integration and configurable window rules.
   The pure policy logic and the
   built-in fullscreen pause exist, but the full planned policy integration does not.
@@ -43,7 +48,7 @@ historical milestones; it is not a list of features already implemented.
   configured as local JSON files.
 - Effect swap commands and the remaining particle modules; particles currently run on the
   CPU rather than the planned compute path.
-- Optional web wallpapers, NVIDIA validation, glint-app and wiring the Quickshell client
+- Optional web wallpapers, NVIDIA validation, an embedded online Workshop catalog and wiring the Quickshell client
   into Facet's wallpaper app, launcher and lockscreen.
 
 ## Verification

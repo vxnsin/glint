@@ -1,10 +1,11 @@
 // glint: an interactive client and the background daemon in one binary.
 
+#include <unistd.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string_view>
-#include <unistd.h>
 
 #include "core/log.hpp"
 #include "core/version.hpp"
@@ -12,6 +13,7 @@
 
 #ifdef GLINT_PLATFORM
 #include "cli/cli.hpp"
+#include "cli/tui.hpp"
 #include "daemon.hpp"
 #endif
 
@@ -21,12 +23,14 @@ void usage() {
     std::printf(
         "glint %s\n"
         "\n"
-        "  glint                      open the menu in a terminal\n"
+        "  glint                      open the terminal UI\n"
         "  glint --daemon             run the background daemon\n"
-        "  glint menu                 open the menu\n"
+        "  glint tui                  open the terminal UI\n"
         "  glint outputs              list outputs and what they show\n"
         "  glint list [search]        search installed Workshop wallpapers\n"
         "  glint choose [search]      choose an installed wallpaper and output\n"
+        "  glint download <id|link> <Steam account>  download with SteamCMD\n"
+        "  glint import <folder>      add a downloaded Workshop folder\n"
         "  glint inspect <id|folder>  inspect a wallpaper without a daemon\n"
         "  glint set <output|*> <path> [key=value ...]\n"
         "  glint unset <output|*>\n"
@@ -85,7 +89,8 @@ int main(int argc, char** argv) {
     if (argc >= 2) {
         if (std::strcmp(argv[1], "--daemon") == 0 && argc == 2) return run_daemon();
 #ifdef GLINT_PLATFORM
-        if (std::strcmp(argv[1], "menu") == 0 && argc == 2) return glint::cli::run_menu();
+        if ((std::strcmp(argv[1], "menu") == 0 || std::strcmp(argv[1], "tui") == 0) && argc == 2)
+            return glint::cli::run_tui();
 #endif
         if (std::strcmp(argv[1], "--version") == 0 || std::strcmp(argv[1], "-v") == 0) {
             std::printf("glint %s (protocol %d)\n", glint::version, glint::protocol_version);
@@ -98,7 +103,7 @@ int main(int argc, char** argv) {
         return run_client(argc, argv);
     }
 #ifdef GLINT_PLATFORM
-    if (::isatty(STDIN_FILENO) && ::isatty(STDOUT_FILENO)) return glint::cli::run_menu();
+    if (::isatty(STDIN_FILENO) && ::isatty(STDOUT_FILENO)) return glint::cli::run_tui();
 #endif
     return run_daemon();
 }

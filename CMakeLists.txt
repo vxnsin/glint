@@ -86,13 +86,16 @@ add_test(NAME policy COMMAND glint-policy-tests)
 
 if(GLINT_PLATFORM)
     include(cmake/Dependencies.cmake)
+    pkg_check_modules(TUI REQUIRED IMPORTED_TARGET ncursesw)
     target_sources(glint PRIVATE
         src/daemon.cpp
         src/audio/capture.cpp
         src/audio/player.cpp
         src/input/hyprland.cpp
         src/cli/cli.cpp
-        src/cli/menu.cpp
+        src/cli/tui.cpp
+        src/cli/tui_model.cpp
+        src/cli/workshop.cpp
         src/cli/configure.cpp
         src/cli/library.cpp
         src/core/loop.cpp
@@ -123,7 +126,7 @@ if(GLINT_PLATFORM)
         src/wallpaper/video/video.cpp
         src/wayland/display.cpp
     )
-    target_link_libraries(glint PRIVATE glint::platform glint_scene glint_audio PkgConfig::SDBUS)
+    target_link_libraries(glint PRIVATE glint::platform glint_scene glint_audio PkgConfig::SDBUS PkgConfig::TUI)
     add_dependencies(glint glint_shaders)
 
     # The Wallpaper Engine readers, shared by the daemon, we-inspect and the tests.
@@ -188,11 +191,24 @@ if(GLINT_PLATFORM)
     target_link_libraries(glint-library-tests PRIVATE glint_scene)
     target_compile_options(glint-library-tests PRIVATE ${GLINT_WARNINGS})
     add_test(NAME library COMMAND glint-library-tests)
-    add_executable(glint-configure-tests tests/configure.cpp src/cli/configure.cpp src/cli/menu.cpp)
+    add_executable(glint-configure-tests tests/configure.cpp src/cli/configure.cpp)
     target_include_directories(glint-configure-tests PRIVATE src)
     target_link_libraries(glint-configure-tests PRIVATE nlohmann_json::nlohmann_json)
     target_compile_options(glint-configure-tests PRIVATE ${GLINT_WARNINGS})
     add_test(NAME configure COMMAND glint-configure-tests)
+    add_executable(glint-tui-tests tests/tui.cpp src/cli/tui_model.cpp)
+    target_include_directories(glint-tui-tests PRIVATE src)
+    target_link_libraries(glint-tui-tests PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_options(glint-tui-tests PRIVATE ${GLINT_WARNINGS})
+    add_test(NAME tui COMMAND glint-tui-tests)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
+    if(Python3_Interpreter_FOUND)
+        add_executable(glint-tui-driver tests/tui_driver.cpp src/cli/tui.cpp src/cli/tui_model.cpp src/cli/library.cpp src/cli/workshop.cpp)
+        target_link_libraries(glint-tui-driver PRIVATE glint_scene PkgConfig::TUI)
+        target_compile_options(glint-tui-driver PRIVATE ${GLINT_WARNINGS})
+        add_test(NAME tui-terminal COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/tui_terminal.py $<TARGET_FILE:glint-tui-driver>)
+        set_tests_properties(tui-terminal PROPERTIES TIMEOUT 25)
+    endif()
     add_executable(glint-media-tests tests/media.cpp)
     target_link_libraries(glint-media-tests PRIVATE glint_scene)
     target_compile_options(glint-media-tests PRIVATE ${GLINT_WARNINGS})

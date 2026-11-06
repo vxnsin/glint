@@ -6,8 +6,6 @@
 #include <string>
 #include <vector>
 
-#include "cli/menu.hpp"
-
 using nlohmann::json;
 
 int main() {
@@ -106,20 +104,6 @@ int main() {
     check(glint::cli::choose_wallpaper(library, cancel_in, cancel_out, menu_exchange) == 0 &&
               selected.is_null(),
           "wallpaper menu cancel");
-    std::vector<std::vector<std::string>> commands;
-    auto command = [&](const std::vector<std::string>& args) {
-        commands.push_back(args);
-        return 0;
-    };
-    std::istringstream home_in("1\nroxy\n2\nDP-2\n5\n6\nq\n");
-    std::ostringstream home_out;
-    check(glint::cli::menu(home_in, home_out, command) == 0, "main menu failed");
-    check(commands == std::vector<std::vector<std::string>>({{"choose", "roxy"},
-                                                             {"outputs"},
-                                                             {"configure", "DP-2"},
-                                                             {"pause", "*", "request"},
-                                                             {"resume", "*", "request"}}),
-          "main menu dispatched incorrect commands");
     std::printf("configure regressions: %d failures\n", failures);
     return failures != 0;
 }
