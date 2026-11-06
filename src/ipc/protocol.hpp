@@ -12,9 +12,13 @@ inline constexpr std::string_view socket_dir = "glint";
 inline constexpr std::string_view socket_env = "GLINT_SOCKET";
 
 // Operations a client may send ("op").
-inline constexpr std::array<std::string_view, 14> ops = {
-    "outputs", "set",    "unset",    "status",  "props",     "pause",   "resume",
-    "audio",   "cursor", "settings", "inspect", "subscribe", "version", "screenshot"};
+inline constexpr std::array<std::string_view, 15> ops = {
+    "outputs", "set",      "unset",   "status", "props",     "pause",   "resume",    "audio",
+    "cursor",  "settings", "inspect", "list",   "subscribe", "version", "screenshot"};
+
+inline constexpr std::array<std::string_view, 13> implemented_ops = {
+    "outputs", "set",     "unset", "status",    "props",   "pause",     "resume",
+    "cursor",  "inspect", "list",  "subscribe", "version", "screenshot"};
 
 // Event names ("event") sent to subscribers.
 inline constexpr std::array<std::string_view, 4> events = {"state", "props", "outputs", "error"};

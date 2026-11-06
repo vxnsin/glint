@@ -13,6 +13,7 @@
 #include "core/paths.hpp"
 #include "core/version.hpp"
 #include "gpu/texture.hpp"
+#include "ipc/library.hpp"
 #include "ipc/protocol.hpp"
 #include "wallpaper/image/decode.hpp"
 #include "wallpaper/image/image.hpp"
@@ -887,10 +888,13 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
                              : "";
 
     if (op == "version") {
+        nlohmann::json operations = nlohmann::json::array();
+        for (const auto name : ipc::implemented_ops) operations.push_back(std::string(name));
         reply.ok({{"version", version},
                   {"protocol", protocol_version},
                   {"vulkan", "1.3"},
-                  {"device", gpu_->device_name()}});
+                  {"device", gpu_->device_name()},
+                  {"operations", std::move(operations)}});
     } else if (op == "outputs") {
         nlohmann::json list = nlohmann::json::array();
         for (const auto& entry : screens_) list.push_back(output_json(*entry));
@@ -993,8 +997,27 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
         }
     } else if (op == "props") {
         props(request, std::move(reply));
-    } else if (op == "inspect") {
-        reply.error("inspect comes with milestone M6");
+    } else if (op == "list" || op == "inspect") {
+        std::string error;
+        auto parsed = ipc::parse_library_request(request, error);
+        if (!parsed) return reply.error(error);
+        struct LibraryResult {
+            nlohmann::json data;
+            std::string error = "library inspection failed";
+        };
+        auto result = std::make_shared<LibraryResult>();
+        workers_->post(
+            [parsed = std::move(*parsed), result] {
+                try {
+                    result->data = ipc::execute_library_request(parsed, result->error);
+                } catch (const std::exception& e) {
+                    result->error = e.what();
+                }
+            },
+            [result, reply = std::move(reply)]() mutable {
+                if (!result->error.empty()) return reply.error(result->error);
+                reply.ok(std::move(result->data));
+            });
     } else if (op == "cursor") {
         // For compositors where glint cannot see the pointer: the shell sends it.
         Screen* entry = screen(output);

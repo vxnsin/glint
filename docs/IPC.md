@@ -1,15 +1,14 @@
 # glint IPC
 
 Version 1. Implemented: `outputs`, `set`, `unset`, `status`, `pause`, `resume`, `props`,
-`subscribe`, `screenshot` and `version`, for still pictures and Wallpaper Engine scenes. The
-other operations (`audio`, `cursor`, `settings`, `inspect`) answer with an error that names
-the milestone that brings them; their description below is the plan.
+`cursor`, `list`, `inspect`, `subscribe`, `screenshot` and `version`. The operations
+`audio` and `settings` are not implemented yet; their descriptions below are plans.
 
 The CLI also has offline `list [search]` and `inspect <Workshop id|folder>` commands. They
 read installed projects directly, support `--json`, and use `GLINT_WORKSHOP` or Steam's
 default Workshop folder. The offline inspect output includes project metadata, properties,
-entry existence, scene counts, skipped object kinds and parser warnings. This is separate
-from the planned `inspect` socket operation below, which still returns an error.
+entry existence, scene counts, skipped object kinds and parser warnings. The socket's
+`list` and `inspect` operations return the same library data without launching a CLI.
 
 ## Transport
 
@@ -255,18 +254,31 @@ frames, `mute` the sounds, `stop` pauses and frees the memory as `free_after` do
 what all of its windows ask for together; minimized windows never count. The logic is in
 `src/policy`, the toplevel feed and UPower in the daemon (M6).
 
-### inspect
+### list / inspect
 
-Reads a project without loading it, for library UIs:
+Reads installed Workshop projects without loading them as wallpapers. Both operations run
+on a worker; clients may send other requests while waiting for the reply. Search matches
+title, ID and tags, ignoring ASCII case. `GLINT_WORKSHOP` selects the library root.
 
 ```
--> {"op": "inspect", "path": "/.../431960/123456"}
-<- {"ok": true, "result": {"kind": "scene", "title": "...", "preview": "/.../preview.gif",
-     "tags": ["Landscape"], "rating": "everyone", "properties": [...], "supported": true,
-     "needs": ["audio", "cursor"], "unsupported": ["models"]}}
+-> {"id": 1, "op": "list", "search": "roxy"}
+<- {"id": 1, "ok": true, "result": [
+     {"id": "123456", "title": "Roxy", "type": "scene", "path": "/.../431960/123456",
+      "preview": "preview.gif", "tags": ["Anime"], "rating": "Everyone", "property_count": 3}]}
+
+-> {"id": 2, "op": "inspect", "path": "123456"}
+<- {"id": 2, "ok": true, "result": {
+     "id": "123456", "title": "Roxy", "type": "scene", "path": "/.../431960/123456",
+     "preview": "preview.gif", "entry_exists": true, "properties": [...],
+     "scene": {"width": 3840, "height": 2160, "images": 8, "skipped_objects": {}},
+     "warnings": []}}
 ```
 
-`supported` and `unsupported` let a shell grey out what glint cannot show yet.
+`inspect` accepts an absolute folder or a Workshop ID. `preview` is relative to the item's
+`path`; it can be empty or missing on disk. The results describe installed Workshop items,
+not arbitrary local image/video folders. `scene` is present only for scene projects.
+Compatibility cannot yet be reduced to a `supported` flag; `warnings` and
+`scene.skipped_objects` expose known parsing limitations without asserting visual fidelity.
 
 ### subscribe
 
@@ -286,7 +298,10 @@ Events:
 
 ### version
 
-`{"op": "version"}` -> `{"version": "0.1.0", "protocol": 1, "vulkan": "1.3", "device": "..."}`
+`{"op": "version"}` -> `{"version": "0.1.0", "protocol": 1, "vulkan": "1.3", "device": "...", "operations": [...]}`
+
+`operations` lists the operations this daemon implements. Older protocol-1 daemons may omit
+it, so clients should handle both a missing list and an error for an unsupported operation.
 
 ## Running the daemon
 
@@ -300,7 +315,10 @@ Today: `Wallpapers.qml` runs `frame-wallpaper` (bash) as a process per command, 
 JSON output, and `frame-wallpaper` starts linux-wallpaperengine or mpvpaper per screen and
 polls `hyprctl layers` to know when a new one has drawn.
 
-With glint:
+An optional Quickshell client component is provided at
+`integrations/facet/GlintClient.qml`. It connects, subscribes to events, reconnects and
+matches asynchronous replies by request ID. It is not yet wired into the Facet app; the
+following describes the remaining integration:
 
 - `Wallpapers.qml` opens the socket with Quickshell's `Socket` (`Quickshell.Io`), sends
   `subscribe`, and keeps `outputs`, `status` and `props` as properties bound from events.

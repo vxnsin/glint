@@ -23,12 +23,14 @@ historical milestones; it is not a list of features already implemented.
   wallpaper currently on that output.
 - Local per-wallpaper script-property overrides can adjust authored script settings that
   the wallpaper does not expose as project properties; they are read when a scene loads.
+- The socket exposes installed Workshop listing and project inspection on workers, with
+  an optional Quickshell client component for requests and events.
 
 ## Remaining
 
 - Interactive wallpaper selection, `doctor` and `install`.
-- Daemon-wide settings IPC, the inspect IPC operation (the CLI version is offline),
-  UPower/idle integration and configurable window rules. The pure policy logic and the
+- Daemon-wide settings IPC, UPower/idle integration and configurable window rules.
+  The pure policy logic and the
   built-in fullscreen pause exist, but the full planned policy integration does not.
 - Independent per-output audio control; sharing scene sound currently prevents duplicates.
 - Perspective/3D model rendering, lights, camera paths/shake and scene-wide bloom.
@@ -41,7 +43,8 @@ historical milestones; it is not a list of features already implemented.
   configured as local JSON files.
 - Effect swap commands and the remaining particle modules; particles currently run on the
   CPU rather than the planned compute path.
-- Optional web wallpapers, NVIDIA validation, glint-app and frameshell/facet integration.
+- Optional web wallpapers, NVIDIA validation, glint-app and wiring the Quickshell client
+  into Facet's wallpaper app, launcher and lockscreen.
 
 ## Verification
 

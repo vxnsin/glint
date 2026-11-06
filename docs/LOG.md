@@ -857,3 +857,16 @@ The script regression runs the installed Roxy scene with an isolated configurati
 checks that the script returns a date; another scene and the source data remain unchanged.
 The updated desktop daemon still needs a restart for a visual check.
 
+### Library IPC and Quickshell client
+
+The socket now supports `list` and `inspect` using the same metadata readers as the
+offline CLI. Requests run on a worker so reading a scene package does not block frame
+handling. The version reply lists implemented operations for feature detection. Library
+tests cover request validation, Workshop ID resolution, search and malformed projects.
+
+An optional Quickshell component handles connection, subscriptions, request IDs and
+reconnection. `qmllint` and an offscreen Quickshell smoke check passed, including
+out-of-order replies and events. The sandbox cannot bind a local socket or connect to
+the desktop daemon, so the real socket round trip and Facet UI wiring remain to be checked
+on the desktop. The component is not installed into Facet yet.
+

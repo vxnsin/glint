@@ -108,6 +108,7 @@ if(GLINT_PLATFORM)
         src/gpu/video_pass.cpp
         src/gpu/volk.cpp
         src/ipc/server.cpp
+        src/ipc/library.cpp
         src/media/mpris.cpp
         src/wallpaper/wallpaper.cpp
         src/wallpaper/image/decode.cpp
@@ -182,7 +183,7 @@ if(GLINT_PLATFORM)
     target_compile_options(glint-script-tests PRIVATE ${GLINT_WARNINGS})
     add_test(NAME scripts COMMAND glint-script-tests)
     set_tests_properties(scripts PROPERTIES TIMEOUT 10)
-    add_executable(glint-library-tests tests/library.cpp src/cli/library.cpp)
+    add_executable(glint-library-tests tests/library.cpp src/cli/library.cpp src/ipc/library.cpp)
     target_link_libraries(glint-library-tests PRIVATE glint_scene)
     target_compile_options(glint-library-tests PRIVATE ${GLINT_WARNINGS})
     add_test(NAME library COMMAND glint-library-tests)

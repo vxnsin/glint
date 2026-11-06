@@ -3,8 +3,12 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+
+#include "ipc/library.hpp"
 
 namespace {
 int failures = 0;
@@ -51,6 +55,37 @@ int main() {
     CHECK(!error.empty());
     glint::cli::list_library(root / "absent", "", error);
     CHECK(!error.empty());
+    const char* old_workshop = std::getenv("GLINT_WORKSHOP");
+    const std::optional<std::string> saved =
+        old_workshop ? std::optional<std::string>(old_workshop) : std::nullopt;
+    setenv("GLINT_WORKSHOP", root.c_str(), 1);
+    auto request = glint::ipc::parse_library_request({{"op", "list"}, {"search", "HIKARI"}}, error);
+    CHECK(request && error.empty());
+    if (request) {
+        auto result = glint::ipc::execute_library_request(*request, error);
+        CHECK(error.empty() && result.size() == 1 && result[0]["id"] == "42");
+    }
+    request = glint::ipc::parse_library_request({{"op", "inspect"}, {"path", "42"}}, error);
+    CHECK(request && error.empty());
+    if (request) {
+        auto result = glint::ipc::execute_library_request(*request, error);
+        CHECK(error.empty() && result["title"] == "Nozomi Hikari");
+        CHECK(result["properties"].is_array() && result["scene"]["images"] == 0);
+    }
+    CHECK(!glint::ipc::parse_library_request({{"op", "list"}, {"search", 1}}, error));
+    CHECK(!error.empty());
+    CHECK(!glint::ipc::parse_library_request({{"op", "inspect"}, {"path", ""}}, error));
+    CHECK(!error.empty());
+    request = glint::ipc::parse_library_request({{"op", "inspect"}, {"path", "44"}}, error);
+    CHECK(request);
+    if (request) {
+        glint::ipc::execute_library_request(*request, error);
+        CHECK(!error.empty());
+    }
+    if (saved)
+        setenv("GLINT_WORKSHOP", saved->c_str(), 1);
+    else
+        unsetenv("GLINT_WORKSHOP");
     std::filesystem::remove_all(root);
     std::printf("library regressions: %d failures\n", failures);
     return failures != 0;
