@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Glint
+GenericName=Wallpaper manager
+Comment=Choose wallpapers, preview them and adjust their settings
+Exec="@GLINT_EXECUTABLE@" tui
+TryExec=@GLINT_EXECUTABLE@
+Icon=glint
+Terminal=true
+Categories=Settings;DesktopSettings;
+Keywords=wallpaper;background;workshop;steam;fps;

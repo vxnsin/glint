@@ -4,6 +4,12 @@ Run `glint` in a terminal, or `glint tui`. `glint menu` is an alias. The daemon 
 separately with `glint --daemon`. Existing unattended starts without a terminal still run
 the daemon. Opening the TUI while the daemon is running connects to it.
 
+After `cmake --install build/release --prefix ~/.local`, **Glint** also appears in the
+application launcher with its own icon. In Facet, press Super+Space, search for Glint and
+press Enter. Facet honors the entry's terminal flag and opens the TUI in Ghostty. This
+application entry launches the TUI; the native `wall`/Super+W wallpaper integration and
+daemon autostart are separate from it.
+
 The TUI uses ncurses with wide-character support (`ncurses` on Arch), a UTF-8 terminal,
 and at least 76 columns and 22 rows. Previews use FFmpeg's command-line executable
 to decode one image frame. Ghostty and Kitty use the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/)

@@ -57,7 +57,12 @@ Linux, a Wayland compositor with `wlr-layer-shell` (Hyprland, sway, river, niri)
 ```
 cmake --preset release
 cmake --build --preset release
+cmake --install build/release --prefix ~/.local
 ```
+
+The local installation adds `glint` to `~/.local/bin` and a **Glint** application entry
+with its icon. In Facet, open the launcher, search for Glint and press Enter to open the
+TUI in Ghostty. The entry uses the installed executable's absolute path.
 
 ## Use
 

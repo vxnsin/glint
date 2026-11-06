@@ -912,3 +912,15 @@ make search flicker. The terminal regression checks that an idle search prompt d
 emit repeated redraw frames. It also selects All displays in the Displays page and changes
 FPS on two different wallpapers while retaining their individual volume/scaling values.
 All ten release CTest suites passed.
+
+## Application launcher entry
+
+Installation now adds a Glint desktop entry and a scalable icon. Facet reads the entry's
+Terminal flag and launches the TUI in Ghostty. The executable path is generated at install
+time from the actual prefix, so local installs work even when Hyprland's PATH does not
+include ~/.local/bin.
+
+The entry passed desktop-file-validate. Local-prefix installation, a prefix containing
+spaces and DESTDIR staging were checked. A headless Quickshell check discovered Glint,
+its absolute command, terminal flag and icon. This is a launcher entry for the TUI; the
+native wall/Super+W service migration and daemon autostart remain separate work.
