@@ -23,6 +23,8 @@ void usage() {
         "\n"
         "  glint                      run the daemon\n"
         "  glint outputs              list outputs and what they show\n"
+        "  glint list [search]        search installed Workshop wallpapers\n"
+        "  glint inspect <id|folder>  inspect a wallpaper without a daemon\n"
         "  glint set <output|*> <path> [key=value ...]\n"
         "  glint unset <output|*>\n"
         "  glint status [output]\n"
@@ -37,7 +39,7 @@ void usage() {
         "               transition=fade|none duration=<ms>\n"
         "  add --json to any command for the raw reply.\n"
         "  set takes a picture, a scene folder or a Workshop id.\n"
-        "  later milestones: audio, cursor (M3), inspect, settings (M6)\n",
+        "  GLINT_WORKSHOP overrides the Workshop folder for list, inspect and set.\n",
         glint::version);
 }
 

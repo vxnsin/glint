@@ -9,6 +9,7 @@
 #include <functional>
 #include <sstream>
 
+#include "core/clock.hpp"
 #include "core/log.hpp"
 #include "gpu/blit.hpp"
 #include "gpu/context.hpp"
@@ -19,7 +20,7 @@ namespace glint::scene {
 
 namespace {
 
-constexpr VkFormat target_format = VK_FORMAT_R8G8B8A8_UNORM;
+constexpr VkFormat target_format = scene_target_format;
 constexpr std::uint32_t max_target = 8192;
 
 std::vector<float> floats_of(const nlohmann::json& j) {
@@ -134,9 +135,10 @@ SceneRenderer::SceneRenderer(gpu::Context& gpu, gpu::Blit& blit,
     : gpu_(gpu), blit_(blit), assets_(std::move(assets)) {
     values_ = default_values(assets_->project());
     const SceneGeneral& general = assets_->scene().general;
-    scripts_ =
-        std::make_unique<ScriptHost>(assets_->scene(), assets_->project(), assets_->project().title,
-                                     assets_->vfs().item().filename().string(), &assets_->vfs());
+    scripts_ = std::make_unique<ScriptHost>(
+        assets_->scene(), assets_->project(), assets_->project().title,
+        assets_->vfs().item().filename().string(), &assets_->vfs(),
+        [this](const std::string& path) { return assets_->mesh(path); });
     if (scripts_->empty()) {
         scripts_.reset();
     } else {
@@ -179,7 +181,7 @@ void SceneRenderer::set_values(const Values& values) {
 }
 
 void SceneRenderer::set_media(const MediaState& state) {
-    bool thumbnail = state.thumbnail_version != media_.thumbnail_version;
+    bool thumbnail = media::thumbnail_changed(media_, state);
     media_ = state;
     // A new cover: the draws hold its view.
     if (thumbnail) stale_ = true;
@@ -412,7 +414,7 @@ void SceneRenderer::pose_of(const ImageObject& object, const Mesh& mesh, double 
                             std::vector<math::Mat4>& locals) const {
     std::vector<math::Mat4> layer_locals, rest;
     mesh.rest_pose(rest);
-    bool first = true;
+    locals = rest;
     int image_index = -1;
     const std::vector<AnimationLayer>* layers = &object.animation_layers;
     if (scripts_) {
@@ -428,25 +430,10 @@ void SceneRenderer::pose_of(const ImageObject& object, const Mesh& mesh, double 
             layer.visible ? mesh.animation(layer.animation) : nullptr;
         if (animation == nullptr) continue;
         double t = scripts_ ? scripts_->layer_time(image_index, static_cast<int>(l), time) : time;
-        double frame = Mesh::frame_at(*animation, t, layer.rate);
+        double frame = Mesh::frame_at(*animation, t, scripts_ ? 1 : layer.rate);
         mesh.pose(*animation, frame, layer_locals);
-        if (first) {
-            locals = layer_locals;
-            first = false;
-            continue;
-        }
-        // Later layers blend in by their weight: additive ones add their change from the
-        // rest pose, the others move toward their pose.
-        float w = std::clamp(layer.blend, 0.0f, 1.0f);
-        for (std::size_t b = 0; b < locals.size() && b < layer_locals.size(); ++b) {
-            for (int k = 0; k < 16; ++k) {
-                float v = layer.additive ? layer_locals[b].m[k] - rest[b].m[k]
-                                         : layer_locals[b].m[k] - locals[b].m[k];
-                locals[b].m[k] += v * w;
-            }
-        }
+        Mesh::blend_pose(locals, layer_locals, rest, layer.blend, layer.additive);
     }
-    if (first) locals = rest;
 }
 
 math::Mat4 SceneRenderer::transform_of_id(int id, std::vector<int>& visiting, double time) const {
@@ -481,6 +468,7 @@ math::Mat4 SceneRenderer::transform_of_id(int id, std::vector<int>& visiting, do
 }
 
 void SceneRenderer::build(VkExtent2D extent) {
+    const auto started = clock::now_ns();
     release();
     const SceneDesc& scene = scene_desc();
     const SceneGeneral& general = scene.general;
@@ -719,13 +707,9 @@ void SceneRenderer::build(VkExtent2D extent) {
             }
             draw.extra["g_RenderVar1"] = {fw, fh, frames, ratio};
         }
-        // A puppet's layer holds the whole stored texture, padding included: its mesh uvs
-        // index the stored texture and reach past the picture's edge (a few texels of
-        // padding), which a cropped layer would answer with its last row, a thin streak.
-        bool puppet_object =
-            p.object >= 0 && scene.images[static_cast<std::size_t>(p.object)].puppet &&
-            assets_->mesh(scene.images[static_cast<std::size_t>(p.object)].puppet_path) != nullptr;
-        if (p.crop && !puppet_object && p.textures[0].kind == PlanTexture::Kind::file) {
+        // UVs address the real picture, including for puppets. File textures include
+        // storage padding, while an effect layer contains just the cropped picture.
+        if (p.crop && p.textures[0].kind == PlanTexture::Kind::file) {
             const SceneTexture& t = texture_of(p.textures[0].file);
             u1 = static_cast<float>(t.img_width) / static_cast<float>(t.tex_width);
             v1 = static_cast<float>(t.img_height) / static_cast<float>(t.tex_height);
@@ -747,11 +731,9 @@ void SceneRenderer::build(VkExtent2D extent) {
         if (p.particle >= 0) {
             // The quads come from the simulation each frame.
         } else if (mesh != nullptr && !p.request.name.empty()) {
-            // The rest mesh: its positions are already relative to the object's origin. Its
-            // uvs index the picture; drawn from a layer they are scaled to the layer's crop.
-            // The mesh uvs index the stored texture, and so does its layer (see the copy
-            // above), so they pass unchanged.
-            float su = 1, sv = 1;
+            // Mesh UVs are normalized to the picture, not its padded storage. A file
+            // needs the same UV crop as a quad; an effect layer is already cropped.
+            float su = u1, sv = v1;
             std::size_t base = vertices.size();
             for (std::size_t i = 0; i < mesh->vertices.size(); i += 5) {
                 vertices.push_back(mesh->vertices[i]);
@@ -762,13 +744,9 @@ void SceneRenderer::build(VkExtent2D extent) {
             }
             indices.insert(indices.end(), mesh->indices.begin(), mesh->indices.end());
             draw.index_count = static_cast<std::uint32_t>(mesh->indices.size());
-            // Posed by an animation layer that names one of the mesh's animations: skinned
-            // on the CPU every frame into a buffer of its own.
-            bool posed = false;
-            for (const AnimationLayer& layer : object.animation_layers) {
-                if (layer.visible && mesh->animation(layer.animation) != nullptr) posed = true;
-            }
-            if (posed && !mesh->bones.empty() &&
+            // Scripts can enable or replace animation layers after this buffer is built.
+            // Reserve skinning space even when no authored layer is currently visible.
+            if (!mesh->animations.empty() && !mesh->bones.empty() &&
                 mesh->bone_indices.size() * 5 == mesh->vertices.size()) {
                 draw.skin = mesh;
                 draw.skin_base.assign(vertices.begin() + static_cast<std::ptrdiff_t>(base),
@@ -943,6 +921,9 @@ void SceneRenderer::build(VkExtent2D extent) {
     stale_ = false;
     log::debug("scene: {} draws, {} targets in {} images, {} KB of uniforms per frame",
                draws_.size(), targets_.size(), images_.size(), uniform_slot_ / 1024);
+    log::info("scene {}: render setup {:.1f} ms at {}x{} ({} draws, {} target images)",
+              assets_->project().title, clock::ms_since(started), extent.width, extent.height,
+              draws_.size(), images_.size());
 }
 
 void SceneRenderer::fill_block(Draw& draw) {
@@ -1181,16 +1162,7 @@ void SceneRenderer::record(VkCommandBuffer cmd, VkExtent2D extent, const FrameIn
         scripts_->frame(values_, f);
         if (scripts_->uses_pointer()) scripts_->cursor(values_, f, down_edge, up_edge);
         if (scripts_->uses_media()) {
-            ScriptHost::MediaEvents events;
-            events.status = !media_status_sent_;
-            events.properties = media_.properties_version != media_seen_properties_;
-            events.playback = media_.playback_version != media_seen_playback_;
-            events.thumbnail = media_.thumbnail_version != media_seen_thumbnail_;
-            events.timeline = media_.available && media_.playback == 1;
-            media_status_sent_ = true;
-            media_seen_properties_ = media_.properties_version;
-            media_seen_playback_ = media_.playback_version;
-            media_seen_thumbnail_ = media_.thumbnail_version;
+            const auto events = media_tracker_.consume(media_);
             scripts_->media(values_, media_, events);
         }
         for (int id : scripts_->take_changed_texts()) update_text(id, inputs.time);

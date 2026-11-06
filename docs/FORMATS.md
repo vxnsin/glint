@@ -53,6 +53,8 @@ data                          entries back to back
 
 Older items are unpacked (loose files next to `project.json`); both are supported through
 one virtual file system: item folder first, then `scene.pkg`, then `assets/`.
+The project's scene entry point selects a matching package when present:
+`gifscene.json` selects `gifscene.pkg`. Otherwise the reader falls back to `scene.pkg`.
 
 ## 3. .tex (M2)
 
@@ -329,6 +331,12 @@ from the object (cursor-following ones from `g_PointerPosition`).
   size of the vertices, the vertices at 80 bytes (position 3 floats in picture pixels with y
   up, relative to the object's origin; normal 3; tangent 4; bone indices 4 x u32; weights 4;
   uv 2), u32 byte size of the indices, u16 triangles.
+- Puppet UVs are normalized to the real picture dimensions, not the padded texture.
+  A direct file draw scales them by imgWidth/texWidth and imgHeight/texHeight. With effects,
+  the initial copy crops to the picture and the final mesh uses its original UVs over that
+  cropped layer. Verified against Yosuga's hair: x = u * 1217 - 608.5 and
+  y = 674 - v * 1348, although its stored texture is 1280 x 1408. Sampling the stored
+  dimensions without this conversion cuts the strand into separate pieces.
 - `MDLS0001` to `MDLS0004`: u32 end offset, u32 bone count, per bone its name
   NUL-terminated (empty in most rigs, "eye", "halo" and the like in Arona's), u32 1, i32 parent
   (-1 for the root), u32 64, the 4x4 rest matrix relative to the parent (column-major), a
@@ -358,13 +366,20 @@ from the object (cursor-following ones from `g_PointerPosition`).
   show. This is read off the corpus, not a specification. glint does this on the CPU each frame; the posed
   vertices go into a buffer of their own.
 - An object's `animationlayers`: `animation` (id), `rate`, `blend`, `visible`, `additive`.
-  The first visible layer gives the pose; later ones blend in by their weight, additive ones
-  as their difference from the rest pose. An object without a layer that names one of the
-  mesh's animations stays in the rest pose.
+  Start with the rest pose, then blend each visible layer by its weight, including the
+  first; additive layers contribute their difference from rest. A zero weight leaves the
+  pose unchanged. An object without a layer that names one of the mesh's animations stays
+  in the rest pose. Bone indices retain their stored u32 width rather than clamping to 255.
+  Animated meshes reserve skinning buffers even when their authored layers are disabled,
+  so SceneScript can enable them without rebuilding the render plan.
+  The layer's authored name is retained for `getAnimationLayer(name)`; clip names are also
+  accepted. Its fps, length and duration come from the actual MDLA clip. Script-controlled
+  clip time includes playback rate once; pausing, seeking and changing rate preserve the
+  current frame rather than retroactively rescaling the entire scene time.
 - An image object with `"parent"` and `"attachment": "name"` hangs from that attachment of
-  the parent puppet: its transform is the parent's, then the attachment's place in the rest
+  the parent puppet: its transform is the parent's, then the attachment's place in the animated
   pose (the bone chain's translations plus its own), then the object's own origin. The
-  attachment does not yet follow the animated bone.
+  attachment follows the animated bone.
 - Bone physics (spring, gravity, limits from the JSON above) are not simulated.
 - `.mdl` (3D models, compiled from obj/fbx): header `MDLV0001`, meshes with vertex
   streams, skeleton (`MDLS`), animations (`MDLA`), morph (`MDMP`), attachments (`MDAT`).
@@ -474,8 +489,9 @@ glint rasterises with FreeType, shaped by HarfBuzz (with a system fallback face 
 characters the item's font lacks), at twice the canvas resolution, into the texture
 `_text_<id>` drawn by a synthesized image object with `genericimage2`; the block's offset
 from the origin goes into the model matrix. `we-inspect <item> --text` writes every text
-object's block as a PAM file. Open: the font effects, rasterising at the shown density, and
-text driven by scripts or media (shown as the stored value until SceneScript lands).
+object's block as a PAM file. Text and its font, size, padding, alignment, wrapping, row
+limits and background can change through SceneScript. The renderer rerasterizes only when
+those values change. Open: native font effects and rasterising at the shown density.
 
 ## 13. Media (M5)
 

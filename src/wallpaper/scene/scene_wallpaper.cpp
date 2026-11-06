@@ -6,6 +6,7 @@
 #include <cmath>
 #include <sstream>
 
+#include "core/clock.hpp"
 #include "core/log.hpp"
 #include "core/paths.hpp"
 #include "core/worker.hpp"
@@ -119,20 +120,32 @@ void SceneCache::request(const std::filesystem::path& item, Callback callback) {
             raw->assets = SceneAssets::load(item, default_assets(), paths::cache_dir() / "spirv",
                                             gpu, staging, raw->error);
         },
-        [this, key, result] {
-            if (result->assets) {
-                result->assets->finish();
-                ready_[key] = result->assets;
-                const SceneAssets& a = *result->assets;
-                log::info("scene {}: {} on a worker, {} shaders compiled, {} from cache",
-                          a.project().title, std::format("{:.0f} ms", a.load_ms()), a.compiled(),
-                          a.cached());
-                for (const auto& w : a.warnings()) log::warn("scene {}: {}", a.project().title, w);
-            }
-            auto node = loading_.extract(key);
-            if (node.empty()) return;
-            for (auto& waiter : node.mapped()) waiter(*result);
-        });
+        [this, key, result] { finish_loading(key, result); });
+}
+
+void SceneCache::finish_loading(const std::string& key, const std::shared_ptr<Result>& result) {
+    if (result->assets) {
+        if (!result->assets->finish_step()) {
+            workers_.post_main([this, key, result] { finish_loading(key, result); });
+            return;
+        }
+        ready_[key] = result->assets;
+        const SceneAssets& a = *result->assets;
+        log::info("scene {}: {} on a worker, {} shaders compiled, {} from cache", a.project().title,
+                  std::format("{:.0f} ms", a.load_ms()), a.compiled(), a.cached());
+        log::info(
+            "scene {}: pipelines {:.1f} ms on worker ({} prepared), "
+            "main-thread upload/finalize {:.1f} ms total, largest chunk {:.1f} ms",
+            a.project().title, a.pipeline_ms(), a.prepared_pipelines(), a.finish_ms(),
+            a.max_finish_step_ms());
+        for (const auto& w : a.warnings()) log::warn("scene {}: {}", a.project().title, w);
+    }
+    auto node = loading_.extract(key);
+    if (node.empty()) return;
+    for (auto& waiter : node.mapped()) {
+        // Per-output script initialization also yields between monitors.
+        workers_.post_main([waiter = std::move(waiter), result] { waiter(*result); });
+    }
 }
 
 Scene::Scene(std::filesystem::path path, const Options& options, Services& services)
@@ -205,6 +218,7 @@ void Scene::load(std::function<void(std::string error)> done) {
                 return;
             }
             assets_ = result.assets;
+            const auto started = clock::now_ns();
             renderer_ = std::make_unique<SceneRenderer>(services_.gpu, services_.blit, assets_);
             // Values set over IPC earlier for this project.
             if (options_.properties.is_object()) {
@@ -221,6 +235,8 @@ void Scene::load(std::function<void(std::string error)> done) {
             }
             last_time_ = local_day_seconds();
             start_sound();
+            log::info("scene {}: scripts/settings/sound setup {:.1f} ms", assets_->project().title,
+                      clock::ms_since(started));
             done({});
         });
 }

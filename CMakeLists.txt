@@ -48,6 +48,15 @@ target_compile_options(glint PRIVATE ${GLINT_WARNINGS})
 
 enable_testing()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Threads REQUIRED)
+    add_executable(glint-worker-tests tests/worker.cpp src/core/worker.cpp src/core/loop.cpp)
+    target_link_libraries(glint-worker-tests PRIVATE glint_core Threads::Threads)
+    target_compile_options(glint-worker-tests PRIVATE ${GLINT_WARNINGS})
+    add_test(NAME worker COMMAND glint-worker-tests)
+    set_tests_properties(worker PROPERTIES TIMEOUT 10)
+endif()
+
 # The audio spectrum (FFT and the 64 bands for scenes) needs only the standard library,
 # so it and its tests build everywhere, the hello preset included.
 add_library(glint_audio STATIC
@@ -83,6 +92,7 @@ if(GLINT_PLATFORM)
         src/audio/player.cpp
         src/input/hyprland.cpp
         src/cli/cli.cpp
+        src/cli/library.cpp
         src/core/loop.cpp
         src/core/state.cpp
         src/core/worker.cpp
@@ -166,6 +176,19 @@ if(GLINT_PLATFORM)
     target_link_libraries(glint-tests PRIVATE glint_scene)
     target_compile_options(glint-tests PRIVATE ${GLINT_WARNINGS})
     add_test(NAME readers COMMAND glint-tests)
+    add_executable(glint-script-tests tests/scripts.cpp)
+    target_link_libraries(glint-script-tests PRIVATE glint_scene)
+    target_compile_options(glint-script-tests PRIVATE ${GLINT_WARNINGS})
+    add_test(NAME scripts COMMAND glint-script-tests)
+    set_tests_properties(scripts PROPERTIES TIMEOUT 10)
+    add_executable(glint-library-tests tests/library.cpp src/cli/library.cpp)
+    target_link_libraries(glint-library-tests PRIVATE glint_scene)
+    target_compile_options(glint-library-tests PRIVATE ${GLINT_WARNINGS})
+    add_test(NAME library COMMAND glint-library-tests)
+    add_executable(glint-media-tests tests/media.cpp)
+    target_link_libraries(glint-media-tests PRIVATE glint_scene)
+    target_compile_options(glint-media-tests PRIVATE ${GLINT_WARNINGS})
+    add_test(NAME media COMMAND glint-media-tests)
 endif()
 
 install(TARGETS glint RUNTIME DESTINATION bin)

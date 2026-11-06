@@ -232,6 +232,7 @@ void Daemon::before_poll() {
         mpris_.reset();
         log::info("media client stopped");
     }
+    if (mpris_) mpris_->prepare_poll();
 
     // Free what the GPU is done with. Whatever is still in flight is waited for now, while
     // the GPU is busy for a millisecond at most, rather than needing a wakeup later.
@@ -289,7 +290,7 @@ bool Daemon::drawable(const Screen& entry) const {
 
 bool Daemon::due(Screen& entry) {
     int fps = entry.current ? entry.current->options().fps : 0;
-    if (entry.incoming && entry.incoming->ready() && entry.fade_start_ns != 0) {
+    if (entry.incoming && entry.incoming->ready()) {
         int f = entry.incoming->options().fps;
         if (f > 0 && (fps == 0 || f > fps)) fps = f;  // a fade runs at the faster of the two
     }
@@ -343,16 +344,9 @@ void Daemon::render(Screen& entry) {
         entry.resized = false;
     }
 
-    // Crossfade progress; the incoming wallpaper is only drawn once it is ready.
-    bool fading = entry.incoming && entry.incoming->ready() && entry.fade_start_ns != 0;
-    float t = 1.0f;
-    if (fading) {
-        int duration = entry.fade_ms;
-        t = duration <= 0 ? 1.0f
-                          : std::clamp(static_cast<float>(clock::ms_since(entry.fade_start_ns)) /
-                                           static_cast<float>(duration),
-                                       0.0f, 1.0f);
-    }
+    // A ready incoming wallpaper may still need its first render-plan/script setup.
+    // Start the visible fade only after that work, when a frame can be submitted.
+    bool fading = entry.incoming && entry.incoming->ready();
 
     gpu::FrameUniforms uniforms{};
     uniforms.resolution[0] = static_cast<float>(entry.surface->extent().width);
@@ -383,8 +377,8 @@ void Daemon::render(Screen& entry) {
     // A wallpaper that wants the cursor gets it: on Hyprland from its socket, wherever the
     // pointer is; elsewhere from pointer input on the surface, which only sees the pointer
     // while no window is over it.
-    bool cursor =
-        entry.current ? entry.current->wants_cursor() : (fading && entry.incoming->wants_cursor());
+    bool cursor = (entry.current && entry.current->wants_cursor()) ||
+                  (fading && entry.incoming->wants_cursor());
     output.set_pointer_input(cursor && !hyprland_.available());
     if (cursor && hyprland_.available()) {
         if (auto at = hyprland_.position()) {
@@ -418,6 +412,8 @@ void Daemon::render(Screen& entry) {
         loop_.wake();
         return;
     }
+    const std::int64_t fade_now = clock::now_ns();
+    const float t = fading ? entry.transition.opacity(fade_now, entry.fade_ms) : 1.0f;
     if (entry.current) entry.current->render(current_frame, target, 1.0f);
     if (fading) entry.incoming->render(incoming_frame, target, t);
 
@@ -428,12 +424,14 @@ void Daemon::render(Screen& entry) {
     // Only ask for a frame callback when another frame will be wanted; a still picture
     // presents once and then gets no more callbacks, so no more wakeups.
     if (more) output.request_frame();
-    if (!entry.surface->end()) {
+    const bool submitted = entry.surface->end();
+    if (!submitted) {
         // Suboptimal or out of date: the swapchain is made anew with the next draw.
         entry.resized = true;
         entry.dirty = true;
         loop_.wake();
     } else {
+        if (fading) entry.transition.submitted(fade_now);
         entry.dirty = more;
     }
 
@@ -443,16 +441,16 @@ void Daemon::render(Screen& entry) {
     entry.cpu_ms = clock::ms_since(start);
 
     // The first frame that shows the new wallpaper completes its set request.
-    if (fading && entry.request) {
+    if (submitted && fading && entry.request) {
         entry.load_ms = clock::ms_since(entry.request->start_ns);
         finish(entry.request, {});
         entry.request.reset();
     }
-    if (fade_done) {
+    if (submitted && fade_done) {
         entry.current = std::move(entry.incoming);
         entry.current_origin_ns = entry.incoming_origin_ns;
         entry.incoming_origin_ns = 0;
-        entry.fade_start_ns = 0;
+        entry.transition.reset();
     }
     log::debug("{}: frame {} in {:.2f} ms CPU{}", output.name(), entry.frames, entry.cpu_ms,
                fading ? std::format(", fade {:.2f}", t) : "");
@@ -530,10 +528,10 @@ void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<
     }
     if (request) request->kind = std::string(kind_name(wallpaper->kind()));
     // If a crossfade is running, the incoming one is far enough: it becomes the current one.
-    if (entry.incoming && entry.incoming->ready() && entry.fade_start_ns != 0) {
+    if (entry.incoming && entry.incoming->ready() && entry.transition.started()) {
         entry.current = std::move(entry.incoming);
         entry.current_origin_ns = entry.incoming_origin_ns;
-        entry.fade_start_ns = 0;
+        entry.transition.reset();
     }
     entry.incoming_origin_ns = 0;
     entry.incoming = std::move(wallpaper);
@@ -565,7 +563,7 @@ void Daemon::loaded(Screen& entry, Wallpaper* wallpaper, const std::string& erro
     // The first wallpaper on an output appears at once; later ones fade if asked to.
     bool fade = entry.current && wallpaper->options().transition == "fade";
     entry.fade_ms = fade ? std::max(wallpaper->options().duration_ms, 0) : 0;
-    entry.fade_start_ns = clock::now_ns();
+    entry.transition.reset();  // the first submitted frame starts the visible transition
     entry.dirty = true;
     // A paused output takes the new wallpaper without drawing, and one still waiting for the
     // compositor's frame callback (it is covered, say) draws when the compositor asks: the
@@ -673,6 +671,7 @@ void Daemon::pause_changed(Screen& entry, std::uint32_t before) {
         std::int64_t gap = at - entry.paused_at_ns;
         if (entry.current_origin_ns != 0) entry.current_origin_ns += gap;
         if (entry.incoming_origin_ns != 0) entry.incoming_origin_ns += gap;
+        entry.transition.resume(gap);
         entry.last_frame_ns = 0;
         entry.paused_at_ns = 0;
     }
@@ -699,6 +698,10 @@ void Daemon::pointer(wl::Output& output, double x, double y, std::uint32_t butto
         if (entry->current && entry->current->wants_cursor()) {
             entry->current->cursor({x, y, buttons});
             entry->dirty = true;  // a parallax scene at rest moves with the pointer
+        }
+        if (entry->incoming && entry->incoming->ready() && entry->incoming->wants_cursor()) {
+            entry->incoming->cursor({x, y, buttons});
+            entry->dirty = true;
         }
     }
 }
@@ -841,7 +844,7 @@ std::string Daemon::unset(std::string_view output) {
         entry->request.reset();
         entry->current.reset();
         entry->incoming.reset();
-        entry->fade_start_ns = 0;
+        entry->transition.reset();
         entry->error.clear();
         entry->dirty = true;
     }

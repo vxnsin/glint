@@ -6,11 +6,13 @@
 #include <memory>
 #include <string>
 
+#include "core/fd.hpp"
 #include "wallpaper/wallpaper.hpp"
 
 namespace sdbus {
 class IConnection;
 class IProxy;
+class Variant;
 }  // namespace sdbus
 
 namespace glint {
@@ -39,6 +41,8 @@ public:
     std::string start();
     void stop();
     bool running() const { return connection_ != nullptr; }
+    // Refresh all sdbus poll descriptors and its absolute timeout before each poll.
+    void prepare_poll();
 
     // The state with the position brought up to now.
     const MediaState& state();
@@ -51,11 +55,15 @@ private:
     void add_player(const std::string& name);
     void remove_player(const std::string& name);
     void read_player(Player& player, bool metadata, bool status, bool position);
+    void update_metadata(Player& player, const sdbus::Variant& value);
+    void update_playback(Player& player, const std::string& value);
     void choose_active();
     void apply_active();
     void fetch_thumbnail(const std::string& url);
+    void clear_thumbnail();
     void bump();
     void poll_data();
+    void process_events();
 
     Loop& loop_;
     Workers& workers_;
@@ -66,12 +74,17 @@ private:
     std::map<std::string, std::unique_ptr<Player>> players_;
     std::string active_;
     int loop_id_ = 0;
+    int wake_id_ = 0, timer_id_ = 0;
+    int bus_fd_ = -1, wake_fd_ = -1;
+    UniqueFd timer_;
+    std::int64_t armed_timeout_ = -1;
     std::function<void()> listener_;
     MediaState state_;
     std::uint64_t version_ = 1;
     double position_base_ = 0;  // seconds, at position_time_
     double position_time_ = 0;  // monotonic seconds
     std::string art_url_;       // of the thumbnail shown or being fetched
+    std::string track_key_;
     std::uint64_t fetch_serial_ = 0;
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };

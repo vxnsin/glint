@@ -191,6 +191,7 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
         for (const auto& layer : object["animationlayers"]) {
             if (!layer.is_object()) continue;
             AnimationLayer a;
+            a.name = str(layer, "name");
             a.animation = static_cast<int>(number(layer, "animation", 0));
             a.rate = number(layer, "rate", 1);
             a.blend = number(layer, "blend", 1);

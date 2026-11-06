@@ -110,8 +110,9 @@ struct Property {
 // What is playing, for scenes that show or react to media (docs/FORMATS.md, 11). The
 // versions tell a wallpaper what changed since it last looked.
 struct MediaState {
-    bool available = false;  // a player is on the bus
-    int playback = 0;        // 0 stopped, 1 playing, 2 paused (MediaPlaybackEvent)
+    std::uint64_t source_generation = 0;  // changes when the media client reconnects
+    bool available = false;               // a player is on the bus
+    int playback = 0;                     // 0 stopped, 1 playing, 2 paused (MediaPlaybackEvent)
     std::string title, artist, album, album_artist, content_type;
     double position = 0;  // seconds
     double duration = 0;

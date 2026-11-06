@@ -1,9 +1,13 @@
 #include "media/mpris.hpp"
 
 #include <sdbus-c++/sdbus-c++.h>
+#include <sys/timerfd.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -14,6 +18,7 @@
 #include "core/loop.hpp"
 #include "core/worker.hpp"
 #include "gpu/texture.hpp"
+#include "media/state.hpp"
 #include "wallpaper/image/decode.hpp"
 
 namespace glint::media {
@@ -24,6 +29,7 @@ constexpr const char* mpris_prefix = "org.mpris.MediaPlayer2.";
 constexpr const char* player_path = "/org/mpris/MediaPlayer2";
 constexpr const char* player_iface = "org.mpris.MediaPlayer2.Player";
 constexpr const char* properties_iface = "org.freedesktop.DBus.Properties";
+std::atomic<std::uint64_t> next_generation{1};
 
 double now_seconds() {
     return static_cast<double>(clock::now_ns()) / 1e9;
@@ -135,6 +141,7 @@ Colours colours_of(const std::byte* rgba, std::uint32_t width, std::uint32_t hei
 
 struct Mpris::Player {
     std::string name;
+    std::string track_id;
     std::unique_ptr<sdbus::IProxy> proxy;
     std::string title, artist, album, album_artist, art_url;
     double duration = 0;
@@ -154,6 +161,7 @@ Mpris::~Mpris() {
 
 std::string Mpris::start() {
     if (connection_) return {};
+    state_.source_generation = next_generation.fetch_add(1);
     try {
         connection_ = sdbus::createSessionBusConnection();
         bus_ = sdbus::createProxy(*connection_, sdbus::ServiceName{"org.freedesktop.DBus"},
@@ -163,52 +171,104 @@ std::string Mpris::start() {
             .call([this](const std::string& name, const std::string& old_owner,
                          const std::string& new_owner) {
                 if (!name.starts_with(mpris_prefix)) return;
-                if (new_owner.empty()) {
-                    remove_player(name);
-                } else if (old_owner.empty()) {
-                    add_player(name);
-                }
+                if (!old_owner.empty()) remove_player(name);
+                if (!new_owner.empty()) add_player(name);
                 choose_active();
             });
         refresh_players();
     } catch (const sdbus::Error& e) {
-        connection_.reset();
-        bus_.reset();
+        stop();
         return std::string("session bus: ") + e.what();
     }
-    sdbus::IConnection::PollData pd = connection_->getEventLoopPollData();
-    loop_id_ = loop_.add(pd.fd, pd.events, [this](short) {
-        try {
-            while (connection_ && connection_->processPendingEvent()) {
-            }
-        } catch (const sdbus::Error& e) {
-            log::warn("media: {}", e.what());
-        }
-        poll_data();
+    timer_.reset(::timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK));
+    if (timer_.get() < 0) {
+        stop();
+        return "cannot create media bus timeout timer";
+    }
+    timer_id_ = loop_.add(timer_.get(), POLLIN, [this](short) {
+        std::uint64_t count = 0;
+        [[maybe_unused]] auto n = ::read(timer_.get(), &count, sizeof(count));
+        armed_timeout_ = -1;
+        process_events();
     });
+    poll_data();
     choose_active();
     return {};
 }
 
 void Mpris::poll_data() {
-    if (!connection_ || loop_id_ == 0) return;
+    if (!connection_) return;
     sdbus::IConnection::PollData pd = connection_->getEventLoopPollData();
-    loop_.modify(loop_id_, pd.events);
+    if (pd.fd != bus_fd_) {
+        if (loop_id_ != 0) loop_.remove(loop_id_);
+        bus_fd_ = pd.fd;
+        loop_id_ =
+            pd.fd >= 0 ? loop_.add(pd.fd, pd.events, [this](short) { process_events(); }) : 0;
+    } else if (loop_id_ != 0) {
+        loop_.modify(loop_id_, pd.events);
+    }
+    if (pd.eventFd != wake_fd_) {
+        if (wake_id_ != 0) loop_.remove(wake_id_);
+        wake_fd_ = pd.eventFd;
+        // sdbus consumes its own eventfd when processing pending events.
+        wake_id_ = pd.eventFd >= 0
+                       ? loop_.add(pd.eventFd, POLLIN, [this](short) { process_events(); })
+                       : 0;
+    }
+    const auto timeout = pd.timeout.count();
+    if (timer_ && timeout != armed_timeout_) {
+        itimerspec spec{};
+        if (pd.timeout != std::chrono::microseconds::max()) {
+            const auto us = std::max<std::int64_t>(timeout, 1);
+            spec.it_value.tv_sec = static_cast<time_t>(us / 1'000'000);
+            spec.it_value.tv_nsec = static_cast<long>((us % 1'000'000) * 1000);
+        }
+        ::timerfd_settime(timer_.get(), TFD_TIMER_ABSTIME, &spec, nullptr);
+        armed_timeout_ = timeout;
+    }
+}
+
+void Mpris::prepare_poll() {
+    if (!connection_) return;
+    try {
+        poll_data();
+    } catch (const sdbus::Error& e) {
+        log::warn("media poll: {}", e.what());
+    }
+}
+
+void Mpris::process_events() {
+    try {
+        while (connection_ && connection_->processPendingEvent()) {
+        }
+        poll_data();
+    } catch (const sdbus::Error& e) {
+        log::warn("media: {}", e.what());
+    }
 }
 
 void Mpris::stop() {
+    ++fetch_serial_;
     if (loop_id_ != 0) loop_.remove(loop_id_);
+    if (wake_id_ != 0) loop_.remove(wake_id_);
+    if (timer_id_ != 0) loop_.remove(timer_id_);
     loop_id_ = 0;
+    wake_id_ = timer_id_ = 0;
+    bus_fd_ = wake_fd_ = -1;
+    timer_.reset();
+    armed_timeout_ = -1;
     players_.clear();
     bus_.reset();
     connection_.reset();
     active_.clear();
     MediaState fresh;
+    fresh.source_generation = state_.source_generation;
     fresh.properties_version = state_.properties_version + 1;
     fresh.playback_version = state_.playback_version + 1;
     fresh.thumbnail_version = state_.thumbnail_version + 1;
     state_ = fresh;
     art_url_.clear();
+    track_key_.clear();
 }
 
 void Mpris::refresh_players() {
@@ -231,11 +291,24 @@ void Mpris::add_player(const std::string& name) {
             .onInterface(properties_iface)
             .call([this, raw](const std::string& iface,
                               const std::map<std::string, sdbus::Variant>& changed,
-                              const std::vector<std::string>&) {
+                              const std::vector<std::string>& invalidated) {
                 if (iface != player_iface) return;
-                bool metadata = changed.contains("Metadata");
-                bool status = changed.contains("PlaybackStatus");
-                read_player(*raw, metadata, status, metadata || status);
+                // Use the signal's values directly. Re-reading them synchronously can
+                // block the rendering thread and can observe a different update.
+                if (auto m = changed.find("Metadata"); m != changed.end())
+                    update_metadata(*raw, m->second);
+                if (auto s = changed.find("PlaybackStatus"); s != changed.end())
+                    update_playback(*raw, variant_string(s->second));
+                auto invalid = [&](const char* property) {
+                    return !changed.contains(property) &&
+                           std::ranges::find(invalidated, property) != invalidated.end();
+                };
+                const bool metadata = invalid("Metadata"), status = invalid("PlaybackStatus");
+                if (metadata || status) read_player(*raw, metadata, status, false);
+                if (auto p = changed.find("Position"); p != changed.end()) {
+                    raw->position = variant_number(p->second) / 1e6;
+                    raw->position_time = now_seconds();
+                }
                 choose_active();
             });
         player->proxy->uponSignal("Seeked")
@@ -255,34 +328,55 @@ void Mpris::add_player(const std::string& name) {
 }
 
 void Mpris::remove_player(const std::string& name) {
+    if (name == active_) track_key_.clear();
     if (players_.erase(name) > 0) {
         log::info("media: player {} gone", name.substr(std::strlen(mpris_prefix)));
     }
+}
+
+void Mpris::update_metadata(Player& player, const sdbus::Variant& value) {
+    using Metadata = std::map<std::string, sdbus::Variant>;
+    if (!value.containsValueOfType<Metadata>()) return;
+    const auto map = value.get<Metadata>();
+    auto text = [&](const char* key) {
+        auto it = map.find(key);
+        return it != map.end() ? variant_string(it->second) : std::string();
+    };
+    const auto title = text("xesam:title"), artist = text("xesam:artist");
+    const auto track = text("mpris:trackid");
+    if (track != player.track_id || title != player.title || artist != player.artist) {
+        player.position = 0;
+        player.position_time = now_seconds();
+    }
+    player.track_id = track;
+    player.title = title;
+    player.artist = artist;
+    player.album = text("xesam:album");
+    player.album_artist = text("xesam:albumArtist");
+    player.art_url = text("mpris:artUrl");
+    auto len = map.find("mpris:length");
+    player.duration = len != map.end() ? variant_number(len->second) / 1e6 : 0;
+}
+
+void Mpris::update_playback(Player& player, const std::string& value) {
+    const auto now = now_seconds();
+    if (player.playback == 1) player.position += now - player.position_time;
+    player.position_time = now;
+    const int playback = value == "Playing" ? 1 : value == "Paused" ? 2 : 0;
+    if (playback == 1 && player.playback != 1) player.last_playing = now;
+    player.playback = playback;
 }
 
 void Mpris::read_player(Player& player, bool metadata, bool status, bool position) {
     try {
         if (metadata) {
             sdbus::Variant v = player.proxy->getProperty("Metadata").onInterface(player_iface);
-            auto map = v.get<std::map<std::string, sdbus::Variant>>();
-            auto text = [&](const char* key) {
-                auto it = map.find(key);
-                return it != map.end() ? variant_string(it->second) : std::string();
-            };
-            player.title = text("xesam:title");
-            player.artist = text("xesam:artist");
-            player.album = text("xesam:album");
-            player.album_artist = text("xesam:albumArtist");
-            player.art_url = text("mpris:artUrl");
-            auto len = map.find("mpris:length");
-            player.duration = len != map.end() ? variant_number(len->second) / 1e6 : 0;
+            update_metadata(player, v);
         }
         if (status) {
             sdbus::Variant v =
                 player.proxy->getProperty("PlaybackStatus").onInterface(player_iface);
-            std::string s = variant_string(v);
-            player.playback = s == "Playing" ? 1 : s == "Paused" ? 2 : 0;
-            if (player.playback == 1) player.last_playing = now_seconds();
+            update_playback(player, variant_string(v));
         }
         if (position) {
             sdbus::Variant v = player.proxy->getProperty("Position").onInterface(player_iface);
@@ -296,16 +390,9 @@ void Mpris::read_player(Player& player, bool metadata, bool status, bool positio
 
 // The player that is playing, else the one that played last.
 void Mpris::choose_active() {
-    std::string best;
-    double best_time = -1;
-    for (const auto& [name, p] : players_) {
-        double t = p->playback == 1 ? now_seconds() + 1 : p->last_playing;
-        if (t > best_time || (best.empty() && p->playback != 0)) {
-            best = name;
-            best_time = t;
-        }
-    }
-    active_ = best;
+    std::vector<PlayerChoice> choices;
+    for (const auto& [name, p] : players_) choices.push_back({name, p->playback, p->last_playing});
+    active_ = select_player(choices, active_);
     apply_active();
 }
 
@@ -319,23 +406,27 @@ void Mpris::apply_active() {
             state_.artist.clear();
             state_.album.clear();
             state_.album_artist.clear();
+            state_.content_type.clear();
+            state_.position = state_.duration = 0;
+            position_base_ = position_time_ = 0;
             ++state_.properties_version;
             ++state_.playback_version;
-            if (state_.has_thumbnail) {
-                state_.has_thumbnail = false;
-                state_.thumbnail.reset();
-                ++state_.thumbnail_version;
-            }
             art_url_.clear();
+            track_key_.clear();
+            fetch_thumbnail("");  // invalidate an in-flight cover from the removed player
             bump();
         }
         return;
     }
     const Player& p = *it->second;
+    const auto key = p.name + "\n" + p.track_id + "\n" + p.title + "\n" + p.artist + "\n" + p.album;
+    const bool track_changed = key != track_key_;
+    if (track_changed)
+        log::info("media: track updated from {}", p.name.substr(std::strlen(mpris_prefix)));
     bool changed = false;
     if (!state_.available || state_.title != p.title || state_.artist != p.artist ||
         state_.album != p.album || state_.album_artist != p.album_artist ||
-        state_.duration != p.duration) {
+        state_.duration != p.duration || track_changed) {
         state_.available = true;
         state_.title = p.title;
         state_.artist = p.artist;
@@ -353,8 +444,9 @@ void Mpris::apply_active() {
     }
     position_base_ = p.position;
     position_time_ = p.position_time;
-    if (p.art_url != art_url_) {
+    if (p.art_url != art_url_ || track_changed) {
         art_url_ = p.art_url;
+        track_key_ = key;
         fetch_thumbnail(p.art_url);
     }
     if (changed) bump();
@@ -363,12 +455,7 @@ void Mpris::apply_active() {
 void Mpris::fetch_thumbnail(const std::string& url) {
     std::uint64_t serial = ++fetch_serial_;
     if (url.empty()) {
-        if (state_.has_thumbnail) {
-            state_.has_thumbnail = false;
-            state_.thumbnail.reset();
-            ++state_.thumbnail_version;
-            bump();
-        }
+        clear_thumbnail();
         return;
     }
     std::string path = url.starts_with("file://") ? url.substr(7) : url;
@@ -384,9 +471,14 @@ void Mpris::fetch_thumbnail(const std::string& url) {
                 *colours = colours_of(decoded->pixels.data, decoded->width, decoded->height);
             }
         },
-        [this, alive, serial, decoded, error, colours, url] {
-            if (alive.expired() || serial != fetch_serial_) return;
+        [this, alive, serial, decoded, error, colours, url, &staging] {
+            if (alive.expired() || serial != fetch_serial_) {
+                staging.abandon(decoded->pixels);
+                return;
+            }
             if (!error->empty()) {
+                staging.abandon(decoded->pixels);
+                clear_thumbnail();
                 log::warn("media: cover {}: {}", url, *error);
                 return;
             }
@@ -403,6 +495,18 @@ void Mpris::fetch_thumbnail(const std::string& url) {
             ++state_.thumbnail_version;
             bump();
         });
+}
+
+void Mpris::clear_thumbnail() {
+    state_.has_thumbnail = false;
+    state_.thumbnail.reset();
+    state_.thumbnail_width = state_.thumbnail_height = 0;
+    for (float* color : {state_.primary, state_.secondary, state_.tertiary})
+        std::fill_n(color, 3, 0.0f);
+    std::fill_n(state_.text_color, 3, 1.0f);
+    std::fill_n(state_.high_contrast, 3, 1.0f);
+    ++state_.thumbnail_version;
+    bump();
 }
 
 void Mpris::bump() {

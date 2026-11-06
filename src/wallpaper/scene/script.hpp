@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "core/math.hpp"
+#include "media/state.hpp"
+#include "wallpaper/scene/mdl.hpp"
 #include "wallpaper/scene/scene.hpp"
 #include "wallpaper/wallpaper.hpp"
 
@@ -54,7 +56,8 @@ class ScriptHost {
 public:
     // vfs: the item's files, for layers scripts create (null: createLayer is refused).
     ScriptHost(const SceneDesc& scene, const Project& project, std::string label,
-               std::string storage_id, const Vfs* vfs = nullptr);
+               std::string storage_id, const Vfs* vfs = nullptr,
+               std::function<const Mesh*(const std::string&)> mesh_lookup = {});
     ~ScriptHost();
     ScriptHost(const ScriptHost&) = delete;
     ScriptHost& operator=(const ScriptHost&) = delete;
@@ -79,10 +82,7 @@ public:
     void cursor(const Values& values, const ScriptFrame& frame, bool down_edge, bool up_edge);
 
     // The media events, as far as they are due (the renderer tracks the versions).
-    struct MediaEvents {
-        bool status = false, properties = false, playback = false, thumbnail = false,
-             timeline = false;
-    };
+    using MediaEvents = ::glint::media::Updates;
     void media(const Values& values, const MediaState& state, const MediaEvents& events);
     bool uses_media() const { return uses_media_; }
 
@@ -98,7 +98,7 @@ public:
 
     // The puppet animation layers as scripts left them: by image index; null when untouched.
     const std::vector<AnimationLayer>* animation_layers(int image) const;
-    // The time an animation layer plays at, from the scene time (play/pause/rate).
+    // Clip time in seconds, with play/pause/rate already applied.
     double layer_time(int image, int layer, double time) const;
 
     const std::vector<std::string>& warnings() const { return warnings_; }

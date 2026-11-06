@@ -662,3 +662,162 @@ The daemon also stopped drawing on one output for good after a pause right at it
 frame callback asked for before the pause never came, and no frame is drawn while one is
 pending. A resume now gives up on a pending callback and draws.
 
+### Puppet regression checks and animation activation
+
+The local Claude session and its saved pictures were reviewed before continuing. Yosuga's
+preview itself contains some of the thin crossing strands visible in the reported picture;
+that does not establish that glint's animation is correct. No visual fix is claimed here:
+the current development environment exposes no /dev/dri device, so glint-render cannot
+create a Vulkan graphics context.
+
+Three independent animation faults were corrected: vertex bone indices retain their stored
+32-bit values (the reader previously clamped them to 255 despite accepting up to 1023
+bones), the first visible animation obeys its blend weight and additive flag, and animated
+meshes reserve skinning buffers even when no authored animation is currently enabled so
+SceneScript can activate them later. Reusing a Mesh for another file no longer retains
+the previous skeleton, animations or attachments. Empty index blocks no longer call memcpy
+with a null destination, an undefined operation caught by UBSan in the new synthetic fixture.
+The format-6 block-compression query was also brought into agreement with the DXT3 reader.
+
+The readers suite now includes Yosuga and Lucy when installed, checking the bind-pose skin
+matrices against identity and all clip matrices for finite values at the start, middle and
+end. Synthetic checks cover bone index 300, a reused mesh, truncated indices, and initial,
+additive and zero-weight blending. Release: 31,175 checks, zero failures on four installed
+corpus items; spectrum and policy tests also pass. GPU rendering and desktop activation
+remain unverified in this environment. Matrix blending still interpolates matrix elements;
+quaternion interpolation and bone physics remain separate work.
+The same readers suite passes with ASan and UBSan (halt-on-error). LeakSanitizer is disabled
+for that run because this environment runs under ptrace, which LeakSanitizer does not support.
+
+### Yosuga's cut hair: picture UVs versus storage padding
+
+The close-up prompted a CPU raster comparison of the original DXT5 texture through the
+actual puppet mesh, at frame 90, without effects. It reproduced the detached horizontal
+strand, so neither waterwaves nor the desktop compositor was needed to produce the fault.
+The vertices prove that UVs reference the real 1217 x 1348 picture: x = u * 1217 - 608.5,
+y = 674 - v * 1348. The texture is stored at 1280 x 1408. glint had deliberately skipped
+the picture crop for puppets; the resulting sampling offset picked the wrong parts of the
+texture near the hair tips. Applying the picture/storage ratio makes the same CPU render
+continuous, with the same mesh, pose and bone hierarchy.
+
+The renderer now crops the initial effect-layer copy for puppets just as for other images.
+Meshes drawn directly from files scale their UVs by the picture/storage ratio; meshes
+sampling an effect layer keep their original UVs because the layer already contains the
+cropped picture. This replaces the earlier assumption that puppet UVs index padded storage.
+Full Vulkan and desktop confirmation still require an environment with GPU access.
+
+The 95 saved scene renders were also reviewed again alongside the items' previews. These
+are earlier renders, not a fresh GPU sweep. Opening-state differences need later samples:
+Arona 2901582518 has openingblur enabled by default and its blur fades over 120 frames at
+30 fps; Arona 2919051696 also has a five-second opening blur and logo. The old white render
+of 3287654481 predates the format-6 correction. None of those pictures alone establishes a
+new fault. Next live sweep should sample after at least ten seconds, include a later frame
+for looping animation, and compare the current build rather than reuse these captures.
+
+The user rendered the UV correction on the real GPU to glint-review/yosuga-after.png at
+frame 600. The previously detached right strand is continuous in that capture. During
+the following manual scene sweep the user reported Roxy, four Hikari/Nozomi scenes and
+Hoshino as visually correct. Himmel's straight boot cutoffs in 3426865175 are present in
+the source PNG itself; no renderer change was made for those.
+
+### Moving scene pipeline creation off the rendering thread
+
+The user reported 977 ms to switch to Hoshino and a stall while loading, followed by smooth
+rendering. That duration alone does not identify the stall's cause. Inspection found that
+SceneAssets loaded SPIR-V on a worker, but created shader modules and layouts in finish(),
+then compiled Vulkan graphics pipelines synchronously during the first render-plan build.
+
+Modules, layouts, samplers and the graphics pipelines named by the scene's complete plan
+(including hidden layers and particle vertex layouts) are now prepared before publishing
+the assets from the worker. Scene rendering uses the same target format as preparation.
+Each load has a private pipeline cache seeded from pipelines.bin; after the worker finishes,
+the main thread merges it into the rendering cache and destroys the private cache. Queue
+submissions, texture uploads and deferred GPU destruction remain on the main thread.
+This follows the external synchronization requirement for the destination of
+[vkMergePipelineCaches](https://docs.vulkan.org/refpages/latest/refpages/source/vkMergePipelineCaches.html).
+
+Logs now separate worker pipeline preparation, main-thread upload/finalization, per-output
+scripts/settings/sound initialization, and render-plan construction. Pipeline variants
+requested later by scripts or changed properties still compile on demand and log their
+main-thread duration. glint-render prints the load breakdown too. These measurements are
+needed before claiming how much of the observed stall was removed; total load latency may
+stay similar even when the old wallpaper continues rendering during pipeline compilation.
+GPU runtime and concurrent scene-switch validation are still pending in this environment.
+
+### Start the crossfade on the first submitted frame
+
+The user clarified that the desktop remains responsive; the wallpaper transition itself
+looks abrupt. The updated daemon's live log confirms pipeline preparation on the worker.
+For Hoshino it measured 1245 ms of worker loading, including 1.3 ms of pipeline preparation,
+then 31.1 ms of upload/finalization and 14.1/13.1 ms of per-output script initialization.
+This does not establish a loading-speed improvement over the earlier 977 ms report.
+
+The fade clock used to start in loaded(), before the incoming scene's first-frame setup
+and before the compositor allowed a frame. Those delays consumed part of the 300 ms
+transition. A paused output could consume the entire fade without showing any of it.
+The clock now starts only when the first frame has successfully been submitted, after
+offscreen preparation. Failed begin/present attempts do not start it or promote the
+incoming wallpaper. Resume moves an active fade's clock past the paused interval. Both
+wallpapers receive cursor input during a fade, including when only the incoming one uses
+the cursor. The default duration remains 300 ms.
+
+CPU regression checks cover delayed first submission, repeated submissions, pause/resume,
+zero-duration switches and reset. Visual validation of the revised transition still needs
+the updated daemon running on the user's desktop.
+
+### Yield between scene upload chunks
+
+The later clarification was that the whole desktop stutters during a switch, so the user
+has not confirmed the crossfade fix as smooth. Treat the earlier short "yes" as ambiguous,
+not as successful validation. Hoshino still measured about 1082 ms on the worker followed
+by a single 31.6 ms finalization and 14.0/13.7 ms of consecutive per-output initialization.
+
+SceneCache now uploads one pending texture or initializes one embedded video per main-loop
+continuation, returning to the event loop between them. Per-output callbacks are likewise
+separate continuations. Workers dispatches only one completed callback per eventfd wakeup
+and re-signals any backlog; simply queueing all callbacks for the same dispatch would not
+yield between monitors. Standalone glint-render keeps the synchronous finish path. The
+loading log reports both cumulative finalization time and the largest individual chunk,
+so a large single allocation remains visible rather than being hidden by the split.
+
+FFmpeg codec threading is capped at two rather than automatic. A software-decoding check
+of Hoshino's actual 3840x2160 H.264 payload measured 218–251 ms to first frame with auto
+threading versus 172–186 ms with two threads (three fresh decoder instances each).
+FFmpeg decoded 120 frames in 0.944 seconds with two threads, about 127 fps, above the
+video's 60 fps. This is a CPU-side experiment, not proof of the real VA-API path's timing
+or of the desktop stutter's cause. Video open/first-frame time is now logged separately.
+The change limits the decoder's burst of parallel work without attributing the entire
+one-second scene load to it.
+
+A worker-loop regression test verifies worker completion, nested main-thread continuations
+and a before-poll/render opportunity between two callbacks already queued together. Actual
+desktop smoothness and the largest upload chunk must still be checked on the user's GPU.
+Release and debug daemon builds pass; all four CTest suites pass. The worker continuation
+test also passes under ASan/UBSan with leak detection disabled for the ptrace environment.
+
+After restarting with the chunked loader, the user reported that the switch no longer
+stuttered. The captured Hoshino load measured 1143 ms on the worker, 160.8 ms for video
+open/first-frame, 1.5 ms for pipeline preparation, 7.7 ms cumulative upload/finalization
+and 0.8 ms for its largest upload chunk. Per-output initialization was 13.0/28.5 ms, so
+some setup can still exceed a 60 Hz frame interval. This confirms the user's successful
+switch test, not a guarantee for every scene or a reduction of total loading time.
+
+### Scene scripts, library and media updates
+
+SceneScript animation layers now retain authored names and clip metadata, and their
+clocks preserve position through rate changes, seeks and pauses. Script-controlled
+text style updates rerasterize only when values actually change. The offline library
+commands list and inspect installed items; package selection follows the project's
+entry point, allowing item 3039022074 to load its gifscene.pkg. A CPU script sweep
+of 96 installed Everyone scenes completed without warnings or errors.
+
+The MPRIS integration now includes the sdbus wake descriptor and absolute timeout in
+the event loop, applies metadata directly from property change signals, and tracks
+media source generations so reconnects cannot silently reuse old version counters.
+Cover updates handle reused URLs and discard obsolete loads. Player selection and
+script media events have regression tests, including a reconnect and cover removal.
+Release and debug builds pass; all seven CTest suites pass, and media and script
+tests pass under ASan/UBSan with leak detection disabled. A real D-Bus and GPU test
+is still required: this sandbox cannot bind a private D-Bus socket or reach the user's
+desktop session.
+

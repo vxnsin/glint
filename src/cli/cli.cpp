@@ -15,6 +15,7 @@
 #include <string_view>
 #include <vector>
 
+#include "cli/library.hpp"
 #include "core/fd.hpp"
 #include "core/paths.hpp"
 
@@ -36,8 +37,17 @@ UniqueFd connect_daemon() {
     if (path.size() >= sizeof(address.sun_path)) return {};
     std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
     UniqueFd fd(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
+    if (!fd) {
+        std::fprintf(stderr, "glint: cannot create IPC socket: %s\n", std::strerror(errno));
+        return {};
+    }
     if (::connect(fd.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-        std::fprintf(stderr, "glint: no daemon on %s (start it with: glint)\n", path.c_str());
+        const int error = errno;
+        if (error == ENOENT || error == ECONNREFUSED)
+            std::fprintf(stderr, "glint: no daemon on %s (start it with: glint)\n", path.c_str());
+        else
+            std::fprintf(stderr, "glint: cannot connect to %s: %s\n", path.c_str(),
+                         std::strerror(error));
         return {};
     }
     return fd;
@@ -163,6 +173,27 @@ int run(int argc, char** argv) {
     }
     if (args.empty()) return usage_error("no command");
     std::string op(args[0]);
+    if (op == "list" || op == "inspect") {
+        if ((op == "inspect" && args.size() != 2) || (op == "list" && args.size() > 2))
+            return usage_error("list [search] | inspect <Workshop id|folder>");
+        std::string error;
+        json result = op == "list"
+                          ? list_library(workshop_path(), args.size() == 2 ? args[1] : "", error)
+                          : inspect_wallpaper(resolve_wallpaper(args[1]), error);
+        if (!error.empty()) {
+            std::fprintf(stderr, "glint: %s\n", error.c_str());
+            return 1;
+        }
+        if (as_json || op == "inspect")
+            std::printf("%s\n", result.dump(2).c_str());
+        else
+            for (const auto& item : result) {
+                std::printf("%s  %-6s %s\n", item["id"].get<std::string>().c_str(),
+                            item["type"].get<std::string>().c_str(),
+                            item["title"].get<std::string>().c_str());
+            }
+        return 0;
+    }
     json request = {{"id", 1}, {"op", op}};
 
     if (op == "outputs" || op == "version") {
@@ -173,21 +204,7 @@ int run(int argc, char** argv) {
     } else if (op == "set") {
         if (args.size() < 3) return usage_error("set <output|*> <path> [key=value ...]");
         request["output"] = std::string(args[1]);
-        std::error_code ec;
-        std::string target(args[2]);
-        // A bare Workshop id names a folder in Steam's Workshop for Wallpaper Engine.
-        bool id = !target.empty() &&
-                  std::ranges::all_of(target, [](char c) { return c >= '0' && c <= '9'; });
-        if (id && !std::filesystem::exists(target, ec)) {
-            const char* home = std::getenv("HOME");
-            const char* data = std::getenv("XDG_DATA_HOME");
-            std::filesystem::path base =
-                data != nullptr && data[0] == '/'
-                    ? std::filesystem::path(data)
-                    : std::filesystem::path(home != nullptr ? home : "/") / ".local/share";
-            target = (base / "Steam/steamapps/workshop/content/431960" / target).string();
-        }
-        request["path"] = std::filesystem::absolute(target, ec).lexically_normal().string();
+        request["path"] = resolve_wallpaper(args[2]).string();
         json options = json::object();
         for (std::size_t i = 3; i < args.size(); ++i) {
             auto eq = args[i].find('=');
@@ -247,7 +264,7 @@ int run(int argc, char** argv) {
             }
             request["set"] = set;
         }
-    } else if (op == "audio" || op == "cursor" || op == "settings" || op == "inspect") {
+    } else if (op == "audio" || op == "cursor" || op == "settings") {
         // Sent as is; the daemon says which milestone brings it.
     } else {
         std::fprintf(stderr, "glint: unknown command '%s'\n", op.c_str());

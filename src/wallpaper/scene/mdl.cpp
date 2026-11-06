@@ -64,6 +64,7 @@ math::Mat4 transform_of(const Mesh::Keyframe& k) {
 
 std::string parse_mdl(std::span<const std::byte> data, Mesh& out) {
     if (data.size() < 9 || std::memcmp(data.data(), "MDLV", 4) != 0) return "not an .mdl file";
+    out = {};
     std::size_t offset = 9 + 12;
     if (!read_string(data, offset, out.material)) return "no material path";
     // What follows the material differs by version. Usual (MDLV0021 on): seven u32, the
@@ -142,8 +143,7 @@ std::string parse_mdl(std::span<const std::byte> data, Mesh& out) {
         std::uint32_t bones[4];
         std::memcpy(bones, v + (floats - 10) * 4, sizeof(bones));
         for (int k = 0; k < 4; ++k) {
-            out.bone_indices[i][static_cast<std::size_t>(k)] =
-                static_cast<std::uint8_t>(std::min<std::uint32_t>(bones[k], 255));
+            out.bone_indices[i][static_cast<std::size_t>(k)] = bones[k];
             out.bone_weights[i][static_cast<std::size_t>(k)] =
                 f[floats - 6 + static_cast<std::size_t>(k)];
         }
@@ -154,7 +154,7 @@ std::string parse_mdl(std::span<const std::byte> data, Mesh& out) {
         return "truncated indices";
     }
     out.indices.resize(index_size / 2);
-    std::memcpy(out.indices.data(), data.data() + offset, index_size);
+    if (index_size != 0) std::memcpy(out.indices.data(), data.data() + offset, index_size);
     for (std::uint16_t i : out.indices) {
         if (i >= count) return "index out of range";
     }
@@ -295,6 +295,19 @@ double Mesh::frame_at(const Animation& animation, double seconds, double rate) {
 void Mesh::rest_pose(std::vector<math::Mat4>& locals) const {
     locals.resize(bones.size());
     for (std::size_t b = 0; b < bones.size(); ++b) locals[b] = matrix_of(bones[b].matrix);
+}
+
+void Mesh::blend_pose(std::vector<math::Mat4>& locals, const std::vector<math::Mat4>& layer,
+                      const std::vector<math::Mat4>& rest, float weight, bool additive) {
+    float w = std::isfinite(weight) ? std::clamp(weight, 0.0f, 1.0f) : 0.0f;
+    if (w == 0) return;
+    std::size_t n = std::min({locals.size(), layer.size(), rest.size()});
+    for (std::size_t b = 0; b < n; ++b) {
+        for (int k = 0; k < 16; ++k) {
+            float base = additive ? rest[b].m[k] : locals[b].m[k];
+            locals[b].m[k] += (layer[b].m[k] - base) * w;
+        }
+    }
 }
 
 void Mesh::pose(const Animation& animation, double frame, std::vector<math::Mat4>& locals) const {

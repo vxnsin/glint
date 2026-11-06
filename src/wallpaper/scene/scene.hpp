@@ -146,6 +146,7 @@ struct AnimationLayer {
     float blend = 1;
     bool visible = true;
     bool additive = false;
+    std::string name;
 };
 
 struct ImageObject {

@@ -154,6 +154,8 @@ struct ScriptHost::Impl {
     const Project& project;
     std::string label;
     const Vfs* vfs = nullptr;
+    std::function<const Mesh*(const std::string&)> mesh_lookup;
+    std::map<std::string, std::optional<Mesh>> mesh_cache;
     JSRuntime* rt = nullptr;
     JSContext* ctx = nullptr;
     JSValue glint = JS_UNDEFINED;  // the prelude's __glint
@@ -359,7 +361,7 @@ struct ScriptHost::Impl {
                 const TextObject& t = scene.texts[static_cast<std::size_t>(im.text)];
                 if (name == "pointsize") return t.pointsize;
                 if (name == "font") return t.font;
-                if (name == "padding") return t.padding[0];
+                if (name == "padding") return vec_text(t.padding);
                 if (name == "horizontalalign") return t.horizontal_align;
                 if (name == "verticalalign") return t.vertical_align;
                 if (name == "anchor") return t.anchor;
@@ -431,7 +433,7 @@ struct ScriptHost::Impl {
         return JS_UNDEFINED;
     }
 
-    bool field_set(int kind, int index, std::string_view name, json value) {
+    bool field_set(int kind, int index, std::string_view name, json value, const Values& values) {
         if (kind == kind_sound && name == "volume" && index >= 0 &&
             static_cast<std::size_t>(index) < host.sounds_.size() && value.is_number()) {
             SoundState& st = host.sounds_[static_cast<std::size_t>(index)];
@@ -444,9 +446,64 @@ struct ScriptHost::Impl {
             if (kind == kind_image && index >= 0 &&
                 static_cast<std::size_t>(index) < scene.images.size()) {
                 ImageObject& im = scene.images[static_cast<std::size_t>(index)];
+                if (im.text >= 0 && static_cast<std::size_t>(im.text) < scene.texts.size()) {
+                    TextObject& text = scene.texts[static_cast<std::size_t>(im.text)];
+                    const json before = field_value(kind, index, name, Values{});
+                    bool handled = true;
+                    if (name == "pointsize" && value.is_number()) {
+                        float size = value.get<float>();
+                        if (!std::isfinite(size)) return false;
+                        text.pointsize = std::clamp(size, 1.0f, 256.0f);
+                    } else if (name == "font" && value.is_string()) {
+                        text.font = value.get<std::string>();
+                    } else if (name == "padding") {
+                        Vec2 pad = parse_vec2(value, text.padding);
+                        for (float& v : pad) {
+                            if (!std::isfinite(v)) return false;
+                            v = std::clamp(v, 0.0f, 512.0f);
+                        }
+                        text.padding = pad;
+                    } else if (name == "horizontalalign" && value.is_string()) {
+                        const auto align = value.get<std::string>();
+                        if (align != "left" && align != "center" && align != "right") return false;
+                        text.horizontal_align = align;
+                    } else if (name == "verticalalign" && value.is_string()) {
+                        const auto align = value.get<std::string>();
+                        if (align != "top" && align != "center" && align != "bottom") return false;
+                        text.vertical_align = align;
+                    } else if (name == "maxrows" && value.is_number()) {
+                        const double rows = value.get<double>();
+                        if (!std::isfinite(rows)) return false;
+                        text.max_rows = static_cast<int>(std::clamp(rows, 1.0, 10000.0));
+                    } else if (name == "maxwidth" && value.is_number()) {
+                        const float width = value.get<float>();
+                        if (!std::isfinite(width)) return false;
+                        text.max_width = std::clamp(width, 0.0f, 16384.0f);
+                    } else if (name == "limitrows" && value.is_boolean()) {
+                        text.limit_rows = value.get<bool>();
+                    } else if (name == "limitwidth" && value.is_boolean()) {
+                        text.limit_width = value.get<bool>();
+                    } else if (name == "opaquebackground" && value.is_boolean()) {
+                        text.opaque_background = value.get<bool>();
+                    } else if (name == "backgroundcolor") {
+                        const Vec3 color = parse_vec3(value, text.background);
+                        for (float v : color)
+                            if (!std::isfinite(v)) return false;
+                        text.background = color;
+                    } else {
+                        handled = false;
+                    }
+                    if (handled) {
+                        if (before != field_value(kind, index, name, Values{}))
+                            host.changed_texts_.insert(im.id);
+                        return true;
+                    }
+                }
                 if (name == "alignment" && value.is_string()) {
-                    im.alignment = value.get<std::string>();
-                    ++host.structure_;
+                    if (im.alignment != value.get<std::string>()) {
+                        im.alignment = value.get<std::string>();
+                        ++host.structure_;
+                    }
                     return true;
                 }
                 if (name == "name" && value.is_string()) {
@@ -461,12 +518,10 @@ struct ScriptHost::Impl {
             return false;
         }
         bool visible = name == "visible";
-        json before = b->key >= 0 && host.cells_[static_cast<std::size_t>(b->key)].set
-                          ? host.cells_[static_cast<std::size_t>(b->key)].value
-                          : json();
+        const json before = b->at(values, time);
         if (!write(b, value)) return false;
         if (visible && before != value) ++host.structure_;
-        if (name == "text" && kind == kind_image) {
+        if (name == "text" && kind == kind_image && before != value) {
             host.changed_texts_.insert(scene.images[static_cast<std::size_t>(index)].id);
         }
         return true;
@@ -719,6 +774,21 @@ struct ScriptHost::Impl {
 
     // --- puppet animation layers ---
 
+    const Mesh* mesh_for(int index) {
+        if (index < 0 || static_cast<std::size_t>(index) >= scene.images.size()) return nullptr;
+        const auto& path = scene.images[static_cast<std::size_t>(index)].puppet_path;
+        if (path.empty()) return nullptr;
+        if (mesh_lookup) return mesh_lookup(path);
+        if (!vfs) return nullptr;
+        auto [it, inserted] = mesh_cache.try_emplace(path);
+        if (inserted) {
+            auto file = vfs->read(path);
+            Mesh mesh;
+            if (file && parse_mdl(file->bytes(), mesh).empty()) it->second = std::move(mesh);
+        }
+        return it->second ? &*it->second : nullptr;
+    }
+
     std::vector<AnimationLayer>* layers_of(int kind, int index) {
         if (kind != kind_image || index < 0 ||
             static_cast<std::size_t>(index) >= scene.images.size()) {
@@ -744,9 +814,16 @@ struct ScriptHost::Impl {
             if (JS_IsNumber(which)) {
                 i = int_of(ctx, which);
             } else {
-                // By the animation's name: the layer whose animation id matches a name is
-                // not known here; the first layer stands in.
-                i = list->empty() ? -1 : 0;
+                const std::string name = string_of(ctx, which);
+                const Mesh* mesh = mesh_for(index);
+                for (std::size_t n = 0; n < list->size(); ++n) {
+                    const auto& layer = (*list)[n];
+                    const auto* clip = mesh ? mesh->animation(layer.animation) : nullptr;
+                    if (layer.name == name || (clip && clip->name == name)) {
+                        i = static_cast<int>(n);
+                        break;
+                    }
+                }
             }
             if (i < 0 || static_cast<std::size_t>(i) >= list->size()) i = -1;
         }
@@ -755,31 +832,47 @@ struct ScriptHost::Impl {
         AnimationLayer& layer = (*list)[static_cast<std::size_t>(i)];
         AnimationLayerState& state =
             layer_states[static_cast<std::size_t>(index)][static_cast<std::size_t>(i)];
-        if (op == "fps") return JS_NewFloat64(ctx, 30);
-        if (op == "frameCount") return JS_NewFloat64(ctx, 0);
-        if (op == "duration") return JS_NewFloat64(ctx, 0);
-        if (op == "name") return JS_NewString(ctx, "");
+        const Mesh* mesh = mesh_for(index);
+        const Mesh::Animation* clip = mesh ? mesh->animation(layer.animation) : nullptr;
+        const double fps = clip ? clip->fps : 30;
+        const double duration = clip ? clip->length / fps : 0;
+        const double seconds = host.layer_time(index, i, time);
+        const bool ended = clip && clip->mode == Mesh::Animation::Mode::single && duration > 0 &&
+                           seconds >= duration;
+        if (op == "fps") return JS_NewFloat64(ctx, fps);
+        if (op == "frameCount") return JS_NewFloat64(ctx, clip ? clip->length : 0);
+        if (op == "duration") return JS_NewFloat64(ctx, duration);
+        if (op == "name") {
+            const auto& name = layer.name.empty() && clip ? clip->name : layer.name;
+            return JS_NewString(ctx, name.c_str());
+        }
         if (op == "rate") return JS_NewFloat64(ctx, layer.rate);
         if (op == "blend") return JS_NewFloat64(ctx, layer.blend);
         if (op == "visible") return JS_NewBool(ctx, layer.visible);
-        if (op == "playing") return JS_NewBool(ctx, state.playing);
+        if (op == "playing") return JS_NewBool(ctx, state.playing && !ended);
         if (op == "frame") {
-            double seconds = state.playing ? (time - state.start) + state.held : state.held;
-            return JS_NewFloat64(ctx, seconds * 30);
+            return JS_NewFloat64(ctx, clip ? Mesh::frame_at(*clip, seconds, 1) : seconds * fps);
         }
         if (op == "setRate") {
-            layer.rate = static_cast<float>(double_of(ctx, arg));
+            const double rate = double_of(ctx, arg);
+            if (!std::isfinite(rate)) return JS_UNDEFINED;
+            state.held = seconds;
+            state.start = time;
+            state.held_set = true;
+            layer.rate = static_cast<float>(std::clamp(rate, -1000.0, 1000.0));
         } else if (op == "setBlend") {
             layer.blend = static_cast<float>(double_of(ctx, arg));
         } else if (op == "setVisible") {
             layer.visible = JS_ToBool(ctx, arg) != 0;
         } else if (op == "setPlaying") {
             bool play = JS_ToBool(ctx, arg) != 0;
-            if (play && !state.playing) {
+            if (play && (!state.playing || ended)) {
+                if (ended) state.held = 0;
                 state.start = time;
+                state.held_set = true;
                 state.playing = true;
             } else if (!play && state.playing) {
-                state.held += time - state.start;
+                state.held = seconds;
                 state.held_set = true;
                 state.playing = false;
             }
@@ -788,7 +881,9 @@ struct ScriptHost::Impl {
             state.held = 0;
             state.held_set = true;
         } else if (op == "setFrame") {
-            state.held = double_of(ctx, arg) / 30.0;
+            const double frame = double_of(ctx, arg);
+            if (!std::isfinite(frame)) return JS_UNDEFINED;
+            state.held = std::max(0.0, frame) / fps;
             state.held_set = true;
             state.start = time;
         }
@@ -867,7 +962,7 @@ JSValue native_set(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
     ScriptHost::Impl& impl = impl_of(ctx);
     std::string name = string_of(ctx, argv[2]);
     return JS_NewBool(ctx, impl.field_set(int_of(ctx, argv[0]), int_of(ctx, argv[1]), name,
-                                          from_js(ctx, argv[3])));
+                                          from_js(ctx, argv[3]), values_now()));
 }
 
 JSValue native_parent(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv) {
@@ -1082,9 +1177,11 @@ JSModuleDef* load_module(JSContext* ctx, const char* name, void*) {
 }  // namespace
 
 ScriptHost::ScriptHost(const SceneDesc& source, const Project& project, std::string label,
-                       std::string storage_id, const Vfs* vfs)
+                       std::string storage_id, const Vfs* vfs,
+                       std::function<const Mesh*(const std::string&)> mesh_lookup)
     : scene_(source), impl_(std::make_unique<Impl>(*this, scene_, project, std::move(label))) {
     impl_->vfs = vfs;
+    impl_->mesh_lookup = std::move(mesh_lookup);
     // Scripts and draws point into the image list; layers made at run time must not move it.
     scene_.images.reserve(scene_.images.size() + made_layers_max);
     const SceneDesc& scene = scene_;
@@ -1649,12 +1746,17 @@ const std::vector<AnimationLayer>* ScriptHost::animation_layers(int image) const
 
 double ScriptHost::layer_time(int image, int layer, double time) const {
     const Impl& impl = *impl_;
-    if (image < 0 || static_cast<std::size_t>(image) >= impl.layer_states.size()) return time;
+    if (image < 0 || static_cast<std::size_t>(image) >= scene_.images.size()) return time;
+    const auto* list = animation_layers(image);
+    if (!list) list = &scene_.images[static_cast<std::size_t>(image)].animation_layers;
+    if (layer < 0 || static_cast<std::size_t>(layer) >= list->size()) return time;
+    const double rate = (*list)[static_cast<std::size_t>(layer)].rate;
+    if (static_cast<std::size_t>(image) >= impl.layer_states.size()) return time * rate;
     const auto& states = impl.layer_states[static_cast<std::size_t>(image)];
-    if (layer < 0 || static_cast<std::size_t>(layer) >= states.size()) return time;
+    if (static_cast<std::size_t>(layer) >= states.size()) return time * rate;
     const AnimationLayerState& s = states[static_cast<std::size_t>(layer)];
     if (!s.playing) return s.held;
-    return s.held_set ? (time - s.start) + s.held : time;
+    return (time - s.start) * rate + s.held;
 }
 
 }  // namespace glint::scene

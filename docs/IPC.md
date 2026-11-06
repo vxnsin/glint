@@ -5,6 +5,12 @@ Version 1. Implemented: `outputs`, `set`, `unset`, `status`, `pause`, `resume`, 
 other operations (`audio`, `cursor`, `settings`, `inspect`) answer with an error that names
 the milestone that brings them; their description below is the plan.
 
+The CLI also has offline `list [search]` and `inspect <Workshop id|folder>` commands. They
+read installed projects directly, support `--json`, and use `GLINT_WORKSHOP` or Steam's
+default Workshop folder. The offline inspect output includes project metadata, properties,
+entry existence, scene counts, skipped object kinds and parser warnings. This is separate
+from the planned `inspect` socket operation below, which still returns an error.
+
 ## Transport
 
 - Unix stream socket at `$XDG_RUNTIME_DIR/glint/$WAYLAND_DISPLAY.sock` (one daemon per

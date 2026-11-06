@@ -15,6 +15,7 @@
 #include "core/fd.hpp"
 #include "core/loop.hpp"
 #include "core/state.hpp"
+#include "core/transition.hpp"
 #include "core/worker.hpp"
 #include "gpu/blit.hpp"
 #include "gpu/context.hpp"
@@ -96,9 +97,9 @@ private:
         std::unique_ptr<Wallpaper> current;   // on screen
         std::unique_ptr<Wallpaper> incoming;  // loading, or ready and fading in
         std::shared_ptr<Request> request;     // the set that brought incoming
-        std::int64_t fade_start_ns = 0;       // 0: incoming not ready yet
-        int fade_ms = 0;                      // crossfade length, 0 for a straight swap
-        std::int64_t current_origin_ns = 0;   // when the current wallpaper's clock started
+        TransitionClock transition;
+        int fade_ms = 0;                     // crossfade length, 0 for a straight swap
+        std::int64_t current_origin_ns = 0;  // when the current wallpaper's clock started
         std::int64_t incoming_origin_ns = 0;
         std::int64_t paused_at_ns = 0;
         std::int64_t last_frame_ns = 0;

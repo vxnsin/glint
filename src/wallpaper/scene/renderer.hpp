@@ -219,8 +219,7 @@ private:
     std::map<int, TextOverride> texts_;  // by object id
     bool uses_media_ = false;
     MediaState media_;
-    std::uint64_t media_seen_properties_ = 0, media_seen_playback_ = 0, media_seen_thumbnail_ = 0;
-    bool media_status_sent_ = false;
+    media::StateTracker media_tracker_;
     bool parallax_ = false;
     bool uses_audio_ = false;
     bool uses_pointer_ = false;

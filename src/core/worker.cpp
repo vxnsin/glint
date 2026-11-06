@@ -57,27 +57,39 @@ void Workers::run() {
         } catch (...) {
             log::error("worker: unknown exception");
         }
-        {
-            std::lock_guard lock(mutex_);
-            if (stopping_) return;
-            finished_.push_back(std::move(job.done));
-        }
-        std::uint64_t one = 1;
-        [[maybe_unused]] auto n = ::write(event_.get(), &one, sizeof(one));
+        post_main(std::move(job.done));
     }
+}
+
+void Workers::post_main(std::function<void()> done) {
+    {
+        std::lock_guard lock(mutex_);
+        if (stopping_) return;
+        finished_.push_back(std::move(done));
+    }
+    std::uint64_t one = 1;
+    [[maybe_unused]] auto n = ::write(event_.get(), &one, sizeof(one));
 }
 
 void Workers::drain_done() {
     std::uint64_t count = 0;
     [[maybe_unused]] auto n = ::read(event_.get(), &count, sizeof(count));
-    std::vector<std::function<void()>> done;
+    std::function<void()> done;
+    bool more = false;
     {
         std::lock_guard lock(mutex_);
-        done.swap(finished_);
+        if (finished_.empty()) return;
+        done = std::move(finished_.front());
+        finished_.pop_front();
+        more = !finished_.empty();
     }
-    for (auto& callback : done) {
-        if (callback) callback();
+    // One continuation per dispatch leaves a before_poll/render pass between upload
+    // chunks and per-output script initialization, even when several are already queued.
+    if (more) {
+        std::uint64_t one = 1;
+        [[maybe_unused]] auto written = ::write(event_.get(), &one, sizeof(one));
     }
+    if (done) done();
 }
 
 }  // namespace glint

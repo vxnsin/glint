@@ -11,6 +11,8 @@
 #include <fstream>
 #include <system_error>
 
+#include "wallpaper/scene/project.hpp"
+
 namespace glint::scene {
 
 namespace {
@@ -132,8 +134,21 @@ Vfs::Vfs(std::filesystem::path item, std::filesystem::path assets)
 }
 
 std::string Vfs::open_package(std::string_view name) {
+    if (!safe_relative(name)) return "unsafe package path";
     auto path = item_ / name;
     std::error_code ec;
+    if (name == "scene.pkg") {
+        // The scene entry point also names its package: gifscene.json -> gifscene.pkg.
+        // A loose scene or an older project can still use the usual scene.pkg.
+        auto file = read("project.json");
+        Project project;
+        if (file && parse_project(file->text(), project).empty() && project.type == "scene") {
+            if (!safe_relative(project.file)) return "unsafe scene entry path";
+            auto candidate = std::filesystem::path(project.file);
+            candidate.replace_extension(".pkg");
+            if (std::filesystem::is_regular_file(item_ / candidate, ec)) path = item_ / candidate;
+        }
+    }
     if (!std::filesystem::exists(path, ec)) return {};
     std::string error;
     package_ = Package::open(path, error);

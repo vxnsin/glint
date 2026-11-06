@@ -50,7 +50,7 @@ struct Tex {
     // The mip payloads are whole PNG/JPEG files.
     bool embedded() const { return format == 0 && image_format >= 0; }
     bool block_compressed() const {
-        return format == 1 || format == 2 || format == 4 || format == 7;
+        return format == 1 || format == 2 || format == 4 || format == 6 || format == 7;
     }
 };
 

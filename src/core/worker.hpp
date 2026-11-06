@@ -24,6 +24,8 @@ public:
     Workers& operator=(const Workers&) = delete;
 
     void post(std::function<void()> work, std::function<void()> done);
+    // Queue a continuation for a later event-loop dispatch, without occupying a worker.
+    void post_main(std::function<void()> done);
 
 private:
     struct Job {
@@ -39,7 +41,7 @@ private:
     std::mutex mutex_;
     std::condition_variable wake_;
     std::deque<Job> queue_;
-    std::vector<std::function<void()>> finished_;
+    std::deque<std::function<void()>> finished_;
     std::vector<std::thread> threads_;
     bool stopping_ = false;
 };

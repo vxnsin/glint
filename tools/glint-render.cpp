@@ -129,6 +129,11 @@ int main(int argc, char** argv) {
             return 1;
         }
         assets->finish();
+        log::info(
+            "scene {}: load {:.1f} ms, pipelines {:.1f} ms ({} prepared), "
+            "upload/finalize {:.1f} ms",
+            assets->project().title, assets->load_ms(), assets->pipeline_ms(),
+            assets->prepared_pipelines(), assets->finish_ms());
         for (const auto& w : assets->warnings()) std::fprintf(stderr, "warning: %s\n", w.c_str());
         scene::SceneRenderer renderer(*gpu, blit, assets);
         if (!props.empty()) {

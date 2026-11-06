@@ -193,6 +193,7 @@ std::shared_ptr<SceneAssets> SceneAssets::load(const std::filesystem::path& item
             }
         }
     }
+    self->prepare_pipelines(all);
     self->load_ms_ = clock::ms_since(start);
     return self;
 }
@@ -308,12 +309,15 @@ void SceneAssets::read_texture(const std::string& name) {
         // Opened here on the worker, with the first frame decoded, so the main thread only
         // makes the images.
         std::string error;
+        const auto video_started = clock::now_ns();
         auto decoder = video::Decoder::open(cached, "auto", false, error);
         if (!decoder) {
             warnings_.push_back("texture " + name + ": video: " + error);
             return;
         }
         decoder->wait_first();
+        log::info("texture {}: video open/first frame {:.1f} ms", name,
+                  clock::ms_since(video_started));
         pending_videos_.push_back(
             {name, cached, tex.img_width, tex.img_height, std::move(decoder)});
         animated_ = true;
@@ -417,9 +421,10 @@ void SceneAssets::read_texture(const std::string& name) {
     pending_.push_back(std::move(pending));
 }
 
-bool SceneAssets::upload_pending() {
+bool SceneAssets::upload_pending(bool at_most_one) {
     bool ok = true;
-    for (PendingTexture& p : pending_) {
+    while (!pending_.empty()) {
+        PendingTexture& p = pending_.back();
         std::vector<gpu::Texture::Level> levels;
         for (const auto& [offset, size] : p.levels)
             levels.push_back({offset, size.first, size.second});
@@ -430,8 +435,9 @@ bool SceneAssets::upload_pending() {
             warnings_.push_back("texture " + p.name + ": upload failed");
             ok = false;
         }
+        pending_.pop_back();
+        if (at_most_one) break;
     }
-    pending_.clear();
     return ok;
 }
 
@@ -473,8 +479,39 @@ SceneProgram* SceneAssets::compile_program(const ShaderRequest& request) {
     return &stored;
 }
 
+bool SceneAssets::finish_step() {
+    const auto start = clock::now_ns();
+    if (!pending_.empty()) {
+        upload_pending(true);
+    } else if (!pending_videos_.empty()) {
+        start_video(pending_videos_.back());
+        pending_videos_.pop_back();
+    } else {
+        finish();
+        return true;
+    }
+    const double elapsed = clock::ms_since(start);
+    finish_ms_ += elapsed;
+    max_finish_step_ms_ = std::max(max_finish_step_ms_, elapsed);
+    return false;
+}
+
 bool SceneAssets::finish() {
+    const auto start = clock::now_ns();
     VkDevice device = gpu_.device();
+    // The worker has finished with its private cache. Only this thread accesses the
+    // rendering cache; merge now so future loads retain the compiled driver code.
+    if (preparation_cache_ != VK_NULL_HANDLE) {
+        if (gpu_.pipeline_cache() != VK_NULL_HANDLE) {
+            if (VkResult r =
+                    vkMergePipelineCaches(device, gpu_.pipeline_cache(), 1, &preparation_cache_);
+                r != VK_SUCCESS) {
+                log::warn("scene pipeline cache merge: {}", gpu::result_name(r));
+            }
+        }
+        vkDestroyPipelineCache(device, preparation_cache_, nullptr);
+        preparation_cache_ = VK_NULL_HANDLE;
+    }
     upload_pending();
     for (PendingVideo& p : pending_videos_) start_video(p);
     pending_videos_.clear();
@@ -493,6 +530,32 @@ bool SceneAssets::finish() {
         gpu::Texture::Level level{0, 1, 1};
         clear_.texture = gpu::Texture::upload(gpu_, staging_, none, VK_FORMAT_R8G8B8A8_UNORM,
                                               {&level, 1}, false);
+    }
+
+    const double elapsed = clock::ms_since(start);
+    finish_ms_ += elapsed;
+    max_finish_step_ms_ = std::max(max_finish_step_ms_, elapsed);
+    return true;
+}
+
+void SceneAssets::prepare_pipelines(const Plan& plan) {
+    const auto start = clock::now_ns();
+    VkDevice device = gpu_.device();
+    // Seed from disk rather than touching the main thread's live pipeline cache.
+    std::vector<char> seed;
+    {
+        std::ifstream in(paths::cache_dir() / "pipelines.bin", std::ios::binary);
+        if (in) seed.assign(std::istreambuf_iterator<char>(in), {});
+    }
+    VkPipelineCacheCreateInfo cache_info{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+        .initialDataSize = seed.size(),
+        .pInitialData = seed.empty() ? nullptr : seed.data(),
+    };
+    if (vkCreatePipelineCache(device, &cache_info, nullptr, &preparation_cache_) != VK_SUCCESS) {
+        cache_info.initialDataSize = 0;
+        cache_info.pInitialData = nullptr;
+        vkCreatePipelineCache(device, &cache_info, nullptr, &preparation_cache_);
     }
 
     std::vector<VkDescriptorSetLayoutBinding> bindings;
@@ -539,12 +602,28 @@ bool SceneAssets::finish() {
         program.vertex = module(device, program.shader.vertex);
         program.fragment = module(device, program.shader.fragment);
     }
-    return true;
+    // If creating a private cache failed, leave pipeline creation to the main thread.
+    // Never fall back to its shared cache while loading in parallel.
+    if (preparation_cache_ != VK_NULL_HANDLE && layout_ != VK_NULL_HANDLE) {
+        for (const PlanDraw& draw : plan.draws) {
+            if (draw.request.name.empty()) continue;
+            SceneProgram* p = program(draw.request);
+            if (p == nullptr || p->vertex == VK_NULL_HANDLE || p->fragment == VK_NULL_HANDLE)
+                continue;
+            auto before = p->pipelines.size();
+            pipeline(*p, draw.blending, scene_target_format,
+                     draw.particle >= 0 ? VertexLayout::particle : VertexLayout::image);
+            if (p->pipelines.size() > before) ++prepared_pipelines_;
+        }
+    }
+    pipeline_ms_ = clock::ms_since(start);
 }
 
 SceneAssets::~SceneAssets() {
     release_videos();
     VkDevice device = gpu_.device();
+    if (preparation_cache_ != VK_NULL_HANDLE)
+        vkDestroyPipelineCache(device, preparation_cache_, nullptr);
     // Pipelines and modules may still be in use by frames in flight.
     std::vector<VkPipeline> pipelines;
     std::vector<VkShaderModule> modules;
@@ -616,6 +695,7 @@ VkPipeline SceneAssets::pipeline(SceneProgram& program, const std::string& blend
     std::string key = blending + "|" + std::to_string(static_cast<int>(format)) + "|" +
                       std::to_string(static_cast<int>(layout));
     if (auto it = program.pipelines.find(key); it != program.pipelines.end()) return it->second;
+    const auto started = clock::now_ns();
 
     VkPipelineShaderStageCreateInfo stages[] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -714,13 +794,18 @@ VkPipeline SceneAssets::pipeline(SceneProgram& program, const std::string& blend
         .layout = layout_,
     };
     VkPipeline result = VK_NULL_HANDLE;
-    if (VkResult r = vkCreateGraphicsPipelines(gpu_.device(), gpu_.pipeline_cache(), 1, &info,
-                                               nullptr, &result);
+    VkPipelineCache cache =
+        preparation_cache_ != VK_NULL_HANDLE ? preparation_cache_ : gpu_.pipeline_cache();
+    if (VkResult r = vkCreateGraphicsPipelines(gpu_.device(), cache, 1, &info, nullptr, &result);
         r != VK_SUCCESS) {
         log::warn("scene pipeline {}: {}", program.shader.hash, gpu::result_name(r));
         result = VK_NULL_HANDLE;
     }
     program.pipelines[key] = result;
+    if (preparation_cache_ == VK_NULL_HANDLE) {
+        log::info("scene {}: late pipeline {} ({}) {:.1f} ms on main thread", project_.title,
+                  program.shader.hash, blending, clock::ms_since(started));
+    }
     return result;
 }
 

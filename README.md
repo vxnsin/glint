@@ -12,7 +12,10 @@
 
 **Status: milestone M5 in progress.** The daemon puts still pictures and Wallpaper Engine
 scenes (image layers, effects, particles, puppets, text, SceneScript, live settings) on every
-output with Vulkan and is driven over the socket; media, sound and video come next. Open work is tracked in the [issues](https://github.com/vxnsin/glint/issues).
+output with Vulkan and is driven over the socket. Videos, embedded video textures, sound
+and MPRIS media are implemented too. The [current checklist](docs/STATUS.md) separates
+working features from remaining work; the [issues](https://github.com/vxnsin/glint/issues)
+track follow-ups.
 
 ## What it does
 
@@ -71,6 +74,8 @@ Wallpaper Engine scenes from the Workshop and their settings:
 
 ```
 glint set '*' 3426865175                # a Workshop id, or the item's folder
+glint list hikari                      # search installed titles, ids and tags
+glint inspect 3510729512 --json          # project, properties and scene counts, no daemon
 glint props DP-1                        # the scene's own settings
 glint props DP-1 bloom off
 glint screenshot DP-1 shot.png          # what glint drew, without the windows on top
@@ -89,6 +94,7 @@ can use it directly; Quickshell's `Socket` type does, and `socat` works for scri
 ## Docs
 
 - [docs/PLAN.md](docs/PLAN.md): the stack and why, modules, milestones, what is measured.
+- [docs/STATUS.md](docs/STATUS.md): implemented features, remaining work and verification.
 - [docs/IPC.md](docs/IPC.md): the socket protocol and how facet moves onto it.
 - [docs/FORMATS.md](docs/FORMATS.md): what of Wallpaper Engine's formats glint reads.
 - [docs/LOG.md](docs/LOG.md): the measurements per milestone.

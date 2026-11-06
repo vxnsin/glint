@@ -31,8 +31,10 @@ class VideoPass;
 
 // Everything of a scene that does not depend on the output: the parsed files, the textures on
 // the GPU, the compiled shaders and their pipelines. Shared by every output that shows the
-// scene; loaded on a worker, finished on the main thread.
+// scene; files, shaders and pipelines prepared on a worker, uploads finished on the main thread.
 namespace glint::scene {
+
+inline constexpr VkFormat scene_target_format = VK_FORMAT_R8G8B8A8_UNORM;
 
 struct SceneTexture {
     std::shared_ptr<gpu::Texture> texture;
@@ -67,7 +69,9 @@ struct SceneProgram {
 
 class SceneAssets {
 public:
-    // Worker thread: reads, compiles, decodes. Returns null with an error.
+    // Worker thread: reads, decodes, compiles shaders and prepares graphics pipelines.
+    // Does not submit queue work or touch the main thread's pipeline cache.
+    // Returns null with an error.
     static std::shared_ptr<SceneAssets> load(const std::filesystem::path& item,
                                              const std::filesystem::path& assets,
                                              const std::filesystem::path& shader_cache,
@@ -75,6 +79,9 @@ public:
                                              std::string& error);
     // Main thread, once, before anything draws.
     bool finish();
+    // Main thread: uploads at most one texture/video per call. True once finalized.
+    // Return to the event loop between calls so existing wallpapers keep drawing.
+    bool finish_step();
     ~SceneAssets();
     SceneAssets(const SceneAssets&) = delete;
     SceneAssets& operator=(const SceneAssets&) = delete;
@@ -83,6 +90,10 @@ public:
     const SceneDesc& scene() const { return scene_; }
     const std::vector<std::string>& warnings() const { return warnings_; }
     double load_ms() const { return load_ms_; }
+    double pipeline_ms() const { return pipeline_ms_; }
+    double finish_ms() const { return finish_ms_; }
+    double max_finish_step_ms() const { return max_finish_step_ms_; }
+    int prepared_pipelines() const { return prepared_pipelines_; }
     int compiled() const { return compiled_; }
     int cached() const { return cached_; }
 
@@ -181,15 +192,22 @@ private:
     void start_video(PendingVideo& pending);
     void release_videos();
     std::set<std::string> missing_;  // textures asked for at run time that were not there
-    bool upload_pending();
+    bool upload_pending(bool at_most_one = false);
+    // Worker only, before publication. Uses a private cache, never the rendering cache.
+    void prepare_pipelines(const Plan& plan);
     SceneTexture white_;
     SceneTexture clear_;  // transparent black, for render targets glint does not make
     std::map<std::string, SceneProgram> programs_;
     std::map<std::string, Mesh> meshes_;
     VkDescriptorSetLayout set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout layout_ = VK_NULL_HANDLE;
+    VkPipelineCache preparation_cache_ = VK_NULL_HANDLE;
     VkSampler samplers_[4] = {};
     double load_ms_ = 0;
+    double pipeline_ms_ = 0;
+    double finish_ms_ = 0;
+    double max_finish_step_ms_ = 0;
+    int prepared_pipelines_ = 0;
     int compiled_ = 0, cached_ = 0;
     bool animated_ = false;
 };

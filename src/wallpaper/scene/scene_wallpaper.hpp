@@ -28,6 +28,7 @@ public:
     void request(const std::filesystem::path& item, Callback callback);
 
 private:
+    void finish_loading(const std::string& key, const std::shared_ptr<Result>& result);
     gpu::Context& gpu_;
     gpu::StagingRing& staging_;
     Workers& workers_;

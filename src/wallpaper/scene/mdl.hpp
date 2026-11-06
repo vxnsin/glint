@@ -19,7 +19,7 @@ struct Mesh {
     std::string material;
 
     // Per vertex, the four bones that move it and their weights; empty without a skeleton.
-    std::vector<std::array<std::uint8_t, 4>> bone_indices;
+    std::vector<std::array<std::uint32_t, 4>> bone_indices;
     std::vector<std::array<float, 4>> bone_weights;
 
     // The skeleton's rest pose: per bone its parent and its matrix relative to the parent
@@ -67,6 +67,10 @@ struct Mesh {
     void skin_matrices(const std::vector<math::Mat4>& locals, std::vector<math::Mat4>& out) const;
     // The rest pose's local transforms.
     void rest_pose(std::vector<math::Mat4>& locals) const;
+
+    // Blend a layer into a pose initialized with rest_pose(), including the first layer.
+    static void blend_pose(std::vector<math::Mat4>& locals, const std::vector<math::Mat4>& layer,
+                           const std::vector<math::Mat4>& rest, float weight, bool additive);
 
     // Where an attachment sits in the mesh's space under a pose (locals as pose() gives
     // them; the rest pose when empty): the bone's global transform times the attachment's.

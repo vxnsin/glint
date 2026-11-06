@@ -134,7 +134,9 @@ std::unique_ptr<Decoder> Decoder::open(const std::filesystem::path& path, const 
     AVStream* stream = s.format->streams[s.stream];
     s.codec = avcodec_alloc_context3(codec);
     avcodec_parameters_to_context(s.codec, stream->codecpar);
-    s.codec->thread_count = 0;
+    // Automatic frame threading can occupy every core and buffers extra frames before
+    // producing the first picture. Keep wallpaper decoding from causing a switch-time burst.
+    s.codec->thread_count = 2;
 
     Info& info = self->info_;
     if (hwdec != "no" &&

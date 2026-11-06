@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "wallpaper/scene/mdl.hpp"
 #include "wallpaper/scene/project.hpp"
 #include "wallpaper/scene/scene.hpp"
 #include "wallpaper/scene/tex.hpp"
@@ -70,6 +71,56 @@ void test_conditions() {
     std::string error;
     CHECK(evaluate_condition("snow.value &&", values, &error));  // unreadable stays visible
     CHECK(!error.empty());
+}
+
+void test_puppet() {
+    // Bone indices in an 80-byte MDL vertex are u32, even for rigs larger than 256 bones.
+    std::vector<std::byte> data;
+    put_magic(data, "MDLV0023");
+    for (int i = 0; i < 3; ++i) put(data, std::uint32_t{1});
+    data.push_back(std::byte{0});  // material path
+    for (int i = 0; i < 7; ++i) put(data, std::uint32_t{0});
+    put(data, std::uint32_t{0x0180000f});
+    put(data, std::uint32_t{80});
+    for (int i = 0; i < 10; ++i) put(data, 0.0f);
+    put(data, std::uint32_t{300});
+    for (int i = 0; i < 3; ++i) put(data, std::uint32_t{0});
+    put(data, 1.0f);
+    for (int i = 0; i < 5; ++i) put(data, 0.0f);
+    put(data, std::uint32_t{0});  // no triangles
+    Mesh mesh;
+    mesh.attachments.push_back({"old"});
+    CHECK(parse_mdl(data, mesh).empty());
+    CHECK(mesh.bone_indices.size() == 1);
+    CHECK(mesh.bone_indices[0][0] == 300);
+    CHECK(mesh.attachments.empty());
+    data.pop_back();
+    CHECK(!parse_mdl(data, mesh).empty());
+
+    using glint::math::Mat4;
+    std::vector<Mat4> rest{Mat4::translate(10, 20, 0)};
+    std::vector<Mat4> layer{Mat4::translate(30, 40, 0)};
+    auto pose = rest;
+    Mesh::blend_pose(pose, layer, rest, 0, false);
+    CHECK(pose[0].m[12] == 10 && pose[0].m[13] == 20);
+    Mesh::blend_pose(pose, layer, rest, 0.25f, false);
+    CHECK(pose[0].m[12] == 15 && pose[0].m[13] == 25);
+    // An additive layer adds its delta from rest, also when it is the first layer.
+    pose = rest;
+    Mesh::blend_pose(pose, layer, rest, 0.5f, true);
+    CHECK(pose[0].m[12] == 20 && pose[0].m[13] == 30);
+    Mesh::blend_pose(pose, layer, rest, 0.5f, true);
+    CHECK(pose[0].m[12] == 30 && pose[0].m[13] == 40);
+    Mesh::blend_pose(pose, {}, rest, 1, false);
+    CHECK(pose[0].m[12] == 30);
+    Mesh::blend_pose(pose, layer, rest, -1, false);
+    CHECK(pose[0].m[12] == 30);
+    pose = rest;
+    Mesh::blend_pose(pose, layer, rest, 2, false);
+    CHECK(pose[0].m[12] == 30 && pose[0].m[13] == 40);
+    Tex tex;
+    tex.format = 6;
+    CHECK(tex.block_compressed());
 }
 
 void test_colors() {
@@ -136,6 +187,26 @@ void test_package() {
     CHECK(vfs.locate("../etc/passwd") == Vfs::Source::none);
     CHECK(vfs.locate("/etc/passwd") == Vfs::Source::none);
     CHECK(!vfs.read("missing.json"));
+
+    // The project's entry point names its package, including when scene.pkg is present.
+    auto named_pkg = pkg;
+    named_pkg[11] = std::byte{'5'};
+    {
+        std::ofstream out(dir / "gifscene.pkg", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(named_pkg.data()),
+                  static_cast<std::streamsize>(named_pkg.size()));
+    }
+    std::ofstream(dir / "project.json") << R"({"type":"scene","file":"gifscene.json"})";
+    Vfs named(dir, {});
+    CHECK(named.open_package().empty());
+    CHECK(named.package() != nullptr && named.package()->version() == "PKGV0025");
+    std::filesystem::remove(dir / "scene.pkg");
+    Vfs only_named(dir, {});
+    CHECK(only_named.open_package().empty() && only_named.package() != nullptr);
+    CHECK(!only_named.open_package("../outside.pkg").empty());
+    std::ofstream(dir / "project.json") << R"({"type":"scene","file":"../outside.json"})";
+    Vfs unsafe(dir, {});
+    CHECK(!unsafe.open_package().empty());
 
     // Truncated: the table says more than there is.
     pkg.resize(pkg.size() - 2);
@@ -258,7 +329,8 @@ void test_corpus() {
         workshop =
             std::filesystem::path(home) / ".local/share/Steam/steamapps/workshop/content/431960";
     }
-    const char* corpus[] = {"3780525249", "3426865175", "1705122927", "1139304621", "1275921440"};
+    const char* corpus[] = {"3780525249", "3426865175", "1705122927", "1139304621",
+                            "1275921440", "2857144643", "3521337568", "3039022074"};
     int found = 0;
     for (const char* id : corpus) {
         auto folder = workshop / id;
@@ -291,6 +363,34 @@ void test_corpus() {
         if (vfs.package() == nullptr) continue;
         int textures = 0;
         for (const auto& entry : vfs.package()->entries()) {
+            if (entry.path.ends_with(".mdl")) {
+                auto data = vfs.read(entry.path);
+                Mesh mesh;
+                std::string error = data ? parse_mdl(data->bytes(), mesh) : "unreadable";
+                if (!error.empty())
+                    std::fprintf(stderr, "%s %s: %s\n", id, entry.path.c_str(), error.c_str());
+                CHECK(error.empty());
+                if (!error.empty()) continue;
+                std::vector<glint::math::Mat4> locals, skin;
+                mesh.rest_pose(locals);
+                mesh.skin_matrices(locals, skin);
+                // The stored bind pose must leave every vertex where it was authored.
+                for (const auto& m : skin) {
+                    for (int k = 0; k < 16; ++k) {
+                        CHECK(std::fabs(m.m[k] - (k % 5 == 0 ? 1.0f : 0.0f)) < 0.01f);
+                    }
+                }
+                for (const auto& animation : mesh.animations) {
+                    for (double frame :
+                         {0.0, animation.length * 0.5, static_cast<double>(animation.length)}) {
+                        mesh.pose(animation, frame, locals);
+                        mesh.skin_matrices(locals, skin);
+                        for (const auto& m : skin) {
+                            for (float component : m.m) CHECK(std::isfinite(component));
+                        }
+                    }
+                }
+            }
             if (!entry.path.ends_with(".tex")) continue;
             ++textures;
             auto data = vfs.read(entry.path);
@@ -308,12 +408,13 @@ void test_corpus() {
         }
         std::printf("corpus %s: %d textures\n", id, textures);
     }
-    std::printf("corpus: %d of 5 items installed\n", found);
+    std::printf("corpus: %d of %zu items installed\n", found, std::size(corpus));
 }
 
 }  // namespace
 
 int main() {
+    test_puppet();
     test_conditions();
     test_colors();
     test_project();

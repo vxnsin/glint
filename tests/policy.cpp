@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "core/transition.hpp"
 #include "policy/power.hpp"
 #include "policy/rules.hpp"
 
@@ -24,6 +25,29 @@ int checks = 0;
     } while (0)
 
 constexpr std::int64_t s = 1'000'000'000;
+
+void test_transition_clock() {
+    glint::TransitionClock fade;
+    // Loading and even repeated failed frame attempts must not advance a pending fade.
+    CHECK(fade.opacity(2 * s, 300) == 0);
+    CHECK(fade.opacity(20 * s, 300) == 0);
+    CHECK(!fade.started());
+    fade.submitted(20 * s);
+    CHECK(fade.opacity(20 * s, 300) == 0);
+    CHECK(fade.opacity(20 * s + 150'000'000, 300) == 0.5f);
+    fade.submitted(20 * s + 150'000'000);  // later frames do not restart the fade
+    CHECK(fade.opacity(20 * s + 300'000'000, 300) == 1);
+    fade.resume(5 * s);  // covering/uncovering the output preserves the halfway state
+    CHECK(fade.opacity(25 * s + 150'000'000, 300) == 0.5f);
+    CHECK(fade.opacity(30 * s, 300) == 1);
+    fade.reset();
+    fade.resume(5 * s);  // a pending fade is still pending after a pause
+    CHECK(fade.opacity(50 * s, 300) == 0);
+    CHECK(fade.opacity(50 * s, 0) == 1);
+    CHECK(fade.opacity(50 * s, -1) == 1);
+    fade.submitted(50 * s);
+    CHECK(fade.opacity(50 * s - 1, 300) == 0);
+}
 
 void test_glob() {
     CHECK(glob_match("", ""));
@@ -250,6 +274,7 @@ void test_combined_deadline() {
 }  // namespace
 
 int main() {
+    test_transition_clock();
     test_glob();
     test_builtin_rule();
     test_user_rules();
