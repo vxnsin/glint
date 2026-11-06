@@ -78,6 +78,32 @@ int main() {
     auto error = [](const json&) { return json{{"ok", false}, {"error", "no such output"}}; };
     check(glint::cli::configure("DP-1", error_in, error_out, error) == 1, "daemon error exit");
     check(error_out.str().find("no such output") != std::string::npos, "daemon error hidden");
+    const json library = json::array({
+        {{"title", "Lake"}, {"type", "scene"}, {"path", "/lake"}},
+        {{"title", "Web"}, {"type", "web"}, {"path", "/web"}},
+        {{"title", "Sky"}, {"type", "video"}, {"path", "/sky"}},
+    });
+    json selected;
+    auto menu_exchange = [&](const json& request) -> json {
+        if (request.value("op", "") == "outputs")
+            return {{"ok", true},
+                    {"result", json::array({{{"name", "DP-1"}}, {{"name", "DP-2"}}})}};
+        selected = request;
+        return {{"ok", true}, {"result", json::object()}};
+    };
+    std::istringstream menu_in("0\n2\n3\n");
+    std::ostringstream menu_out;
+    check(glint::cli::choose_wallpaper(library, menu_in, menu_out, menu_exchange) == 0,
+          "wallpaper menu failed");
+    check(selected.value("path", "") == "/sky" && selected.value("output", "") == "DP-2",
+          "wallpaper menu selected wrong wallpaper or output");
+    check(menu_out.str().find("Web") == std::string::npos, "unsupported wallpaper listed");
+    std::istringstream cancel_in("q\n");
+    std::ostringstream cancel_out;
+    selected = nullptr;
+    check(glint::cli::choose_wallpaper(library, cancel_in, cancel_out, menu_exchange) == 0 &&
+              selected.is_null(),
+          "wallpaper menu cancel");
     std::printf("configure regressions: %d failures\n", failures);
     return failures != 0;
 }

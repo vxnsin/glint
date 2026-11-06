@@ -24,6 +24,7 @@ void usage() {
         "  glint                      run the daemon\n"
         "  glint outputs              list outputs and what they show\n"
         "  glint list [search]        search installed Workshop wallpapers\n"
+        "  glint choose [search]      choose an installed wallpaper and output\n"
         "  glint inspect <id|folder>  inspect a wallpaper without a daemon\n"
         "  glint set <output|*> <path> [key=value ...]\n"
         "  glint unset <output|*>\n"

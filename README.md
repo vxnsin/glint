@@ -75,6 +75,7 @@ Wallpaper Engine scenes from the Workshop and their settings:
 ```
 glint set '*' 3426865175                # a Workshop id, or the item's folder
 glint list hikari                      # search installed titles, ids and tags
+glint choose roxy                      # select a wallpaper and output in a menu
 glint inspect 3510729512 --json          # project, properties and scene counts, no daemon
 glint props DP-1                        # the scene's own settings
 glint configure DP-1                    # edit visible settings in a terminal menu

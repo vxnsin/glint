@@ -11,5 +11,7 @@ namespace glint::cli {
 using Exchange = std::function<nlohmann::json(const nlohmann::json&)>;
 int configure(const std::string& output, std::istream& in, std::ostream& out,
               const Exchange& exchange);
+int choose_wallpaper(const nlohmann::json& library, std::istream& in, std::ostream& out,
+                     const Exchange& exchange);
 
 }  // namespace glint::cli

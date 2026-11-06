@@ -59,6 +59,66 @@ bool reply_ok(const json& reply, std::ostream& out) {
 }
 }  // namespace
 
+int choose_wallpaper(const json& library, std::istream& in, std::ostream& out,
+                     const Exchange& exchange) {
+    if (!library.is_array()) {
+        out << "Error: invalid wallpaper list\n";
+        return 1;
+    }
+    std::vector<json> items;
+    for (const auto& item : library) {
+        if (item.is_object() && item.contains("path") && item["path"].is_string() &&
+            (item.value("type", "") == "scene" || item.value("type", "") == "video"))
+            items.push_back(item);
+    }
+    if (items.empty()) {
+        out << "No installed scene or video wallpapers found.\n";
+        return 0;
+    }
+    out << "\nInstalled wallpapers:\n";
+    for (std::size_t i = 0; i < items.size(); ++i)
+        out << "  " << i + 1 << ". " << items[i].value("title", "Untitled") << " ["
+            << items[i].value("type", "") << "]\n";
+    std::string line;
+    std::optional<std::size_t> wallpaper;
+    while (!wallpaper) {
+        out << "Select a number, or q to quit: " << std::flush;
+        if (!std::getline(in, line) || line == "q" || line == "Q") return 0;
+        wallpaper = selection(line, items.size());
+        if (!wallpaper) out << "Enter a number from the list.\n";
+    }
+    const json reply = exchange({{"op", "outputs"}});
+    if (!reply_ok(reply, out)) return 1;
+    if (!reply.contains("result") || !reply["result"].is_array()) {
+        out << "Error: invalid output list\n";
+        return 1;
+    }
+    std::vector<std::string> outputs;
+    for (const auto& output : reply["result"])
+        if (output.is_object() && output.contains("name") && output["name"].is_string())
+            outputs.push_back(output["name"].get<std::string>());
+    if (outputs.empty()) {
+        out << "No outputs are connected.\n";
+        return 1;
+    }
+    out << "\nOutput:\n  1. All outputs\n";
+    for (std::size_t i = 0; i < outputs.size(); ++i)
+        out << "  " << i + 2 << ". " << outputs[i] << '\n';
+    std::optional<std::size_t> target;
+    while (!target) {
+        out << "Select a number, or q to quit: " << std::flush;
+        if (!std::getline(in, line) || line == "q" || line == "Q") return 0;
+        target = selection(line, outputs.size() + 1);
+        if (!target) out << "Enter a number from the list.\n";
+    }
+    const std::string output = *target == 0 ? "*" : outputs[*target - 1];
+    const auto applied =
+        exchange({{"op", "set"}, {"output", output}, {"path", items[*wallpaper]["path"]}});
+    if (!reply_ok(applied, out)) return 1;
+    out << "Wallpaper applied on " << output << ".\n";
+    return 0;
+}
+
 int configure(const std::string& output, std::istream& in, std::ostream& out,
               const Exchange& exchange) {
     for (;;) {

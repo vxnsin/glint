@@ -196,8 +196,19 @@ int run(int argc, char** argv) {
             }
         return 0;
     }
-    if (op == "configure") {
-        if (args.size() != 2 || as_json) return usage_error("configure <output>");
+    if (op == "configure" || op == "choose") {
+        if (as_json || (op == "configure" && args.size() != 2) ||
+            (op == "choose" && args.size() > 2))
+            return usage_error("configure <output> | choose [search]");
+        json library;
+        if (op == "choose") {
+            std::string error;
+            library = list_library(workshop_path(), args.size() == 2 ? args[1] : "", error);
+            if (!error.empty()) {
+                std::fprintf(stderr, "glint: %s\n", error.c_str());
+                return 1;
+            }
+        }
         UniqueFd fd = connect_daemon();
         if (!fd) return 1;
         std::string buffer;
@@ -214,6 +225,7 @@ int run(int argc, char** argv) {
             }
             return {{"ok", false}, {"error", "the daemon closed the connection"}};
         };
+        if (op == "choose") return choose_wallpaper(library, std::cin, std::cout, exchange);
         return configure(std::string(args[1]), std::cin, std::cout, exchange);
     }
     json request = {{"id", 1}, {"op", op}};
