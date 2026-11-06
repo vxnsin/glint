@@ -22,6 +22,21 @@ int main() {
               request["options"]["properties"]["clock"] == true,
           "setting update lost other options");
     check(status["options"]["fps"] == 60, "setting update mutated snapshot");
+    const json states = {{"DP-2", status},
+                         {"HDMI-A-1",
+                          {{"path", "/different/video"},
+                           {"options", {{"fps", 30}, {"volume", 0.2}, {"speed", 1.5}}}}},
+                         {"DP-3", {{"path", nullptr}}}};
+    const auto batch = glint::cli::tui_setting_requests("*", states, "fps", 120);
+    check(batch.size() == 2, "all-display settings include inactive displays");
+    for (const auto& item : batch) {
+        const std::string name = item["output"];
+        check(item["path"] == states[name]["path"],
+              "all-display edit replaced a different wallpaper");
+        check(item["options"]["fps"] == 120 &&
+                  item["options"]["volume"] == states[name]["options"]["volume"],
+              "all-display edit lost individual options");
+    }
     const auto image = glint::cli::kitty_image(std::string("\x00\xff\x00", 3), 1, 1, 1, 1, 42);
     check(image.find("q=2,C=1,i=42,s=1,v=1,c=1,r=1,m=0;AP8A") != std::string::npos,
           "Kitty image encoding");

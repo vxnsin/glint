@@ -297,7 +297,7 @@ public:
 
 private:
     json library_ = json::array(), outputs_ = json::array(), status_ = json::object(),
-         props_ = json::array();
+         statuses_ = json::object(), props_ = json::array();
     std::vector<std::size_t> filtered_;
     std::string query_, target_ = "*", message_ = "Loading displays…";
     int tab_ = 0;
@@ -314,16 +314,14 @@ private:
     Clock::time_point library_checked_ = Clock::now();
 
     bool busy() const { return task_.valid(); }
-    std::string settings_output() const {
-        if (target_ != "*") return target_;
-        for (const auto& o : outputs_)
-            if (o.value("wallpaper", json::object()).contains("path")) return o.value("name", "");
-        return outputs_.empty() ? "" : outputs_[0].value("name", "");
-    }
+    std::string settings_output() const { return target_; }
     static json snapshot(const std::string& output, std::stop_token stop) {
         json response = request_daemon({{"op", "outputs"}}, stop);
         if (!response.value("ok", false)) return response;
         json result = {{"ok", true}, {"outputs", response.value("result", json::array())}};
+        const auto states = request_daemon({{"op", "status"}}, stop);
+        if (!states.value("ok", false)) return states;
+        result["statuses"] = states.value("result", json::object());
         std::string chosen = output;
         if (chosen == "*" || chosen.empty()) {
             for (const auto& o : result["outputs"]) {
@@ -335,12 +333,19 @@ private:
             }
         }
         if (!chosen.empty()) {
-            auto s = request_daemon({{"op", "status"}, {"output", chosen}}, stop);
-            auto p = request_daemon({{"op", "props"}, {"output", chosen}}, stop);
-            result["status"] =
-                s.value("ok", false) ? s.value("result", json::object()) : json::object();
-            result["props"] =
-                p.value("ok", false) ? p.value("result", json::array()) : json::array();
+            result["status"] = result["statuses"].value(chosen, json::object());
+            bool same_project = true;
+            const auto path = result["status"].value("path", json());
+            if (output == "*") {
+                for (const auto& state : result["statuses"])
+                    if (state.value("path", json()).is_string() && state["path"] != path)
+                        same_project = false;
+            }
+            if (same_project) {
+                auto p = request_daemon({{"op", "props"}, {"output", chosen}}, stop);
+                result["props"] =
+                    p.value("ok", false) ? p.value("result", json::array()) : json::array();
+            }
         }
         return result;
     }
@@ -362,6 +367,48 @@ private:
         failed_ = false;
         task_ = std::async(std::launch::async, [request, stop = cancellation_.get_token()] {
             return request_daemon(request, stop);
+        });
+    }
+    void edit_setting(const Option& option, const json& value) {
+        if (busy()) return;
+        task_is_refresh_ = false;
+        message_ = target_ == "*" ? "Saving on all displays…" : "Saving…";
+        failed_ = false;
+        task_ = std::async(std::launch::async, [target = target_, option, value,
+                                                path = status_.value("path", json()),
+                                                stop = cancellation_.get_token()] {
+            auto response = request_daemon({{"op", "status"}}, stop);
+            if (!response.value("ok", false)) return response;
+            const auto states = response.value("result", json::object());
+            json requests;
+            if (option.property.is_object()) {
+                requests = json::array();
+                for (const auto& [name, state] : states.items()) {
+                    if (target != "*" && target != name) continue;
+                    if (!state.value("path", json()).is_string()) continue;
+                    if (state["path"] != path)
+                        return json{
+                            {"ok", false},
+                            {"error", "Wallpaper changed. Refresh before editing its settings."}};
+                    requests.push_back(
+                        {{"op", "props"}, {"output", name}, {"set", {{option.key, value}}}});
+                }
+            } else
+                requests = tui_setting_requests(target, states, option.key, value);
+            if (requests.empty())
+                return json{{"ok", false},
+                            {"error", "No running wallpapers on the selected displays"}};
+            std::string failures;
+            for (const auto& request : requests) {
+                if (stop.stop_requested()) break;
+                const auto result = request_daemon(request, stop);
+                if (!result.value("ok", false)) {
+                    if (!failures.empty()) failures += "; ";
+                    failures += request.value("output", "") + ": " +
+                                result.value("error", "Request failed");
+                }
+            }
+            return failures.empty() ? json{{"ok", true}} : json{{"ok", false}, {"error", failures}};
         });
     }
     void tick() {
@@ -389,6 +436,7 @@ private:
                 online_ = true;
                 outputs_ = result.value("outputs", json::array());
                 status_ = result.value("status", json::object());
+                statuses_ = result.value("statuses", json::object());
                 props_ = result.value("props", json::array());
                 if (message_ == "Loading displays…" || failed_) message_ = "Ready";
                 failed_ = false;
@@ -455,7 +503,12 @@ private:
              {}},
             {"mute", "Mute", values.value("mute", false) ? "on" : "off", {}},
             {"color", "Background color", values.value("color", "#000000"), {}}};
-        if (status_.value("kind", "") == "video") {
+        bool videos_only = status_.value("kind", "") == "video";
+        if (target_ == "*")
+            for (const auto& state : statuses_)
+                if (state.value("path", json()).is_string() && state.value("kind", "") != "video")
+                    videos_only = false;
+        if (videos_only) {
             list.push_back(
                 {"speed", "Playback speed", shown(values.value("speed", json(1))) + "×", {}});
             list.push_back({"hwdec", "Video decoding", values.value("hwdec", "auto"), {}});
@@ -466,11 +519,29 @@ private:
             list.push_back({p.value("name", ""), p.value("text", p.value("name", "")),
                             shown(p.value("value", json())), p});
         }
+        if (target_ == "*") {
+            const json defaults = {
+                {"fps", 0},           {"scaling", "fill"}, {"transition", "fade"},
+                {"duration", 300},    {"volume", 0},       {"mute", false},
+                {"color", "#000000"}, {"speed", 1},        {"hwdec", "auto"}};
+            for (auto& option : list) {
+                if (!option.property.is_null()) continue;
+                const auto first = values.value(option.key, defaults.at(option.key));
+                for (const auto& state : statuses_) {
+                    if (!state.value("path", json()).is_string()) continue;
+                    if (state.value("options", json::object())
+                            .value(option.key, defaults.at(option.key)) != first) {
+                        option.value = "Mixed";
+                        break;
+                    }
+                }
+            }
+        }
         return list;
     }
     int count() const {
         if (tab_ == 0) return static_cast<int>(filtered_.size());
-        if (tab_ == 1) return static_cast<int>(outputs_.size());
+        if (tab_ == 1) return static_cast<int>(outputs_.size()) + 1;
         if (tab_ == 2) return static_cast<int>(options().size());
         return 5;
     }
@@ -497,8 +568,9 @@ private:
             x += static_cast<int>(label.size()) + 2;
         }
         text_at(5, 3,
-                tab_ == 2 ? "Display: " + settings_output()
-                          : "Apply to: " + (target_ == "*" ? "all displays" : target_),
+                tab_ == 2
+                    ? "Display: " + (settings_output() == "*" ? "All displays" : settings_output())
+                    : "Apply to: " + (target_ == "*" ? "all displays" : target_),
                 accent);
         text_at(LINES - 3, 3, message_, failed_ ? error_color : muted);
         if (COLS < 100) {
@@ -611,14 +683,14 @@ private:
             }
         }
     }
-    void draw() {
+    void draw(bool present = true) {
         if (tab_ != 0 || modal_ || COLS < 76 || LINES < 22 || picked() == nullptr)
             delete_kitty_image();
         erase();
         if (COLS < 76 || LINES < 22) {
             text_at(1, 1, "glint · resize the terminal to at least 76 × 22", accent);
             text_at(3, 1, "q to quit", muted);
-            refresh();
+            if (present) refresh();
             return;
         }
         header();
@@ -645,7 +717,9 @@ private:
             } else
                 text_at(10, left + 2, "No installed wallpapers match this search.", muted);
         } else if (tab_ == 1) {
-            int y = 8;
+            row(8, 3, COLS - 7, "All displays",
+                "Apply wallpaper settings to every connected display", selected_[1] == 0);
+            int y = 11;
             for (std::size_t i = 0; i < outputs_.size() && y < LINES - 5; ++i, y += 3) {
                 const auto& o = outputs_[i];
                 const auto w = o.value("wallpaper", json::object());
@@ -653,9 +727,14 @@ private:
                     o.value("name", "") + " · " + std::to_string(o.value("width", 0)) + " × " +
                         std::to_string(o.value("height", 0)),
                     w.value("state", "none") + " · " + w.value("path", "No wallpaper"),
-                    static_cast<int>(i) == selected_[1]);
+                    static_cast<int>(i) + 1 == selected_[1]);
             }
         } else if (tab_ == 2) {
+            if (target_ == "*" && props_.empty())
+                text_at(6, 3,
+                        "General options for all displays · o selects a display for its project "
+                        "settings",
+                        muted);
             const auto list = options();
             int rows = std::max(1, (LINES - 11) / 2);
             selected_[2] =
@@ -684,14 +763,16 @@ private:
                     "Steam handles login and ownership. Glint never asks for your password.",
                     muted);
         }
-        refresh();
-        render_kitty_image();
+        if (present) {
+            refresh();
+            render_kitty_image();
+        }
     }
     std::optional<std::string> prompt(const std::string& title, const std::string& initial = "") {
         Modal modal(modal_);
         std::string value = initial;
         for (;;) {
-            draw();
+            draw(false);
             const int y = LINES / 2;
             wattr_set(stdscr, A_NORMAL, highlighted, nullptr);
             for (int row_y = y - 2; row_y <= y + 2; ++row_y)
@@ -867,17 +948,15 @@ private:
             failed_ = true;
             return;
         }
-        if (option.property.is_object())
-            action(
-                {{"op", "props"}, {"output", settings_output()}, {"set", {{option.key, value}}}});
-        else {
-            try {
-                action(tui_setting_request(settings_output(), status_, option.key, value));
-            } catch (const std::exception& e) {
-                message_ = e.what();
-                failed_ = true;
-            }
+        if (option.property.is_null() && option.key == "mute" && target_ == "*") {
+            bool all_muted = true;
+            for (const auto& state : statuses_)
+                if (state.value("path", json()).is_string())
+                    all_muted =
+                        all_muted && state.value("options", json::object()).value("mute", false);
+            value = !all_muted;
         }
+        edit_setting(option, value);
     }
     void open_steam(const std::string& url) {
         if (opener_.start({"xdg-open", url}, false))
@@ -896,9 +975,13 @@ private:
             if (const auto* item = picked())
                 action({{"op", "set"}, {"output", target_}, {"path", (*item)["path"]}});
         } else if (tab_ == 1) {
-            if (!outputs_.empty()) {
+            if (selected_[1] == 0) {
+                target_ = "*";
+                tab_ = 2;
+                refresh_state();
+            } else if (!outputs_.empty()) {
                 target_ = outputs_[static_cast<std::size_t>(std::clamp(
-                                       selected_[1], 0, static_cast<int>(outputs_.size()) - 1))]
+                                       selected_[1] - 1, 0, static_cast<int>(outputs_.size()) - 1))]
                               .value("name", "");
                 tab_ = 2;
                 refresh_state();

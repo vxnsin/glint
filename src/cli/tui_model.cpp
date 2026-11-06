@@ -53,6 +53,22 @@ json tui_setting_request(const std::string& output, const json& status, const st
     return {{"op", "set"}, {"output", output}, {"path", status["path"]}, {"options", options}};
 }
 
+json tui_setting_requests(const std::string& output, const json& statuses, const std::string& name,
+                          const json& value) {
+    if (!statuses.is_object() || output.empty())
+        throw std::invalid_argument("Invalid display state");
+    json requests = json::array();
+    for (const auto& [display, status] : statuses.items()) {
+        if (output != "*" && output != display) continue;
+        if (!status.is_object() || !status.contains("path") || !status["path"].is_string())
+            continue;
+        requests.push_back(tui_setting_request(display, status, name, value));
+    }
+    if (requests.empty())
+        throw std::invalid_argument("No running wallpapers on the selected displays");
+    return requests;
+}
+
 std::string workshop_item_id(const std::string& text) {
     std::string_view id = text;
     if (id.starts_with("https://steamcommunity.com/sharedfiles/filedetails/") ||

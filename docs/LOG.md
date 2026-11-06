@@ -896,3 +896,19 @@ and import. Separate checks decode the Kitty image payload and verify chunking/r
 An interrupt on the actual TUI also restored the terminal's canonical input and echo.
 Authenticated SteamCMD downloads and visual verification in the user's terminal are
 still desktop checks; no real Steam account was used in automated tests.
+
+## TUI settings on all displays and stable prompts
+
+The Displays page now includes All displays. General settings follow that target and
+show Mixed when the displays differ. Each update reads the latest per-display state and
+changes only the requested option, preserving each wallpaper path and its other options.
+Project properties can be applied together when all active displays show the same project;
+for different projects the user selects an individual display. Per-display failures are
+reported explicitly.
+
+Text prompts are composed with the underlying page before a single screen refresh. The
+previous separate refreshes briefly exposed the page between dialog redraws and could
+make search flicker. The terminal regression checks that an idle search prompt does not
+emit repeated redraw frames. It also selects All displays in the Displays page and changes
+FPS on two different wallpapers while retaining their individual volume/scaling values.
+All ten release CTest suites passed.

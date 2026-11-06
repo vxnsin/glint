@@ -89,20 +89,25 @@ print('Test SteamCMD download complete')
         pump(0.2)
 
     try:
-        wait(lambda: any(r['op'] == 'props' for r in logged()), 'initial daemon state missing')
+        wait(lambda: any(r['op'] == 'status' for r in logged()), 'initial daemon state missing')
         wait(lambda: '▀'.encode() in screen, 'image preview did not render')
         send(b'\n')
         wait(lambda: any(r.get('path') == str(item) for r in logged()), 'Enter did not apply selected wallpaper')
-        wait(lambda: len([r for r in logged() if r['op'] == 'props']) >= 2, 'state did not refresh after apply')
-        send(b'3')
+        wait(lambda: len([r for r in logged() if r['op'] == 'status']) >= 2, 'state did not refresh after apply')
+        send(b'2\n')
+        assert b'Mixed' in screen, 'different display settings were not marked as mixed'
         send(b'\n')
         for _ in range(6):
             send(b'\x1b[B')
         send(b'\n')
-        wait(lambda: any(r.get('options', {}).get('fps') == 144 for r in logged()), 'FPS picker failed')
-        fps = next(r for r in logged() if r.get('options', {}).get('fps') == 144)
-        assert fps['output'] == 'DP-2' and fps['options']['volume'] == 0.5 and fps['options']['scaling'] == 'fit', fps
+        wait(lambda: len([r for r in logged() if r.get('options', {}).get('fps') == 144]) == 2, 'all-display FPS picker failed')
+        fps = {r['output']: r for r in logged() if r.get('options', {}).get('fps') == 144}
+        assert fps['DP-2']['path'] == '/test/scene' and fps['DP-2']['options']['volume'] == 0.5 and fps['DP-2']['options']['scaling'] == 'fit', fps
+        assert fps['HDMI-A-1']['path'] == '/other/scene' and fps['HDMI-A-1']['options']['volume'] == 0.2 and fps['HDMI-A-1']['options']['scaling'] == 'fill', fps
         pump(0.3)
+        send(b'o')
+        send(b'\x1b[B\n')
+        wait(lambda: any(r['op'] == 'props' for r in logged()), 'individual display selection failed')
         for _ in range(4):
             send(b'\x1b[B')
         send(b'\n')
@@ -122,6 +127,9 @@ print('Test SteamCMD download complete')
         send(b'\n')
         wait(lambda: (root / 'data/glint/workshop/431960/5678/project.json').exists(), 'completed download was not registered')
         send(b'1/')
+        before = len(screen)
+        pump(0.5)
+        assert len(screen) - before < 128, 'search dialog redraws idle frames and may flicker'
         send('Röxy'.encode() + b'\n')
         fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack('HHHH', 15, 55, 0, 0))
         os.kill(pid, signal.SIGWINCH)

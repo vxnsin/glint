@@ -38,10 +38,16 @@ an already accepted wallpaper change may still finish in the daemon.
 
 ## Settings
 
-The Settings page shows the current wallpaper on a concrete display. When the Library's
-target is all displays, Settings uses the first display with a wallpaper and shows its
-name. Changing a setting here affects that display, so different wallpapers on other
-displays are preserved.
+The Settings page follows the selected display target. Choose **All displays** with `o`
+or from the Displays page to edit general settings across all active wallpapers.
+Different values are shown as **Mixed**. Each display keeps its own wallpaper path and
+other options; changing FPS on all displays does not copy one display's wallpaper to the
+others. Displays without an assigned wallpaper are skipped. Failed changes report the
+affected display rather than claiming that everything was saved.
+
+Wallpaper-specific project properties can be edited together when all active displays
+show the same project. When they show different projects, select an individual display
+with `o` to edit its project properties.
 
 - FPS: display refresh rate, presets, or a custom cap from 0 to 1000.
 - Scaling: fill, fit, center, tile or stretch.
