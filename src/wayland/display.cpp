@@ -384,11 +384,13 @@ struct DisplayListeners {
         auto* entry = static_cast<Display::Toplevel*>(data);
         if (std::ranges::find(entry->outputs, output) == entry->outputs.end()) {
             entry->outputs.push_back(output);
+            entry->display->recompute_covered();
         }
     }
     static void output_leave(void* data, zwlr_foreign_toplevel_handle_v1*, wl_output* output) {
         auto* entry = static_cast<Display::Toplevel*>(data);
         std::erase(entry->outputs, output);
+        entry->display->recompute_covered();
     }
     static void state(void* data, zwlr_foreign_toplevel_handle_v1*, wl_array* states) {
         auto* entry = static_cast<Display::Toplevel*>(data);
