@@ -10,11 +10,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "cli/configure.hpp"
 #include "cli/library.hpp"
 #include "core/fd.hpp"
 #include "core/paths.hpp"
@@ -193,6 +195,26 @@ int run(int argc, char** argv) {
                             item["title"].get<std::string>().c_str());
             }
         return 0;
+    }
+    if (op == "configure") {
+        if (args.size() != 2 || as_json) return usage_error("configure <output>");
+        UniqueFd fd = connect_daemon();
+        if (!fd) return 1;
+        std::string buffer;
+        auto exchange = [&](const json& request) -> json {
+            json message = request;
+            message["id"] = 1;
+            if (!send_line(fd.get(), message))
+                return {{"ok", false}, {"error", "the daemon closed the connection"}};
+            std::string line;
+            while (read_line(fd.get(), buffer, line)) {
+                json reply = json::parse(line, nullptr, false);
+                if (reply.is_object() && !reply.contains("event") && reply.value("id", json()) == 1)
+                    return reply;
+            }
+            return {{"ok", false}, {"error", "the daemon closed the connection"}};
+        };
+        return configure(std::string(args[1]), std::cin, std::cout, exchange);
     }
     json request = {{"id", 1}, {"op", op}};
 

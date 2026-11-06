@@ -415,6 +415,15 @@ the script's own settings: the builder's defaults under the object's `scriptprop
 whose entries may themselves be bound to project properties (`{"user": ..., "value": ...}`,
 nested, with conditions).
 
+For authored script settings that are not exposed as project properties, an optional local
+file `$XDG_CONFIG_HOME/glint/script-properties/<item-id>.json` can override individual
+layer script properties. When `XDG_CONFIG_HOME` is unset, use `~/.config`. For example,
+`{"layers":{"69":{"text":{"showDay":false}}}}` overrides `showDay` on text layer 69.
+The other supported fields are `origin`, `scale`, `angles`, `size`, `visible`, `alpha`,
+`color` and `brightness`, where present on a layer. Overrides are read when the wallpaper
+loads; reload it to apply changes. They do not modify the Workshop item. Script property
+overrides are not yet editable through `glint configure`.
+
 Values cross as the scene stores them: vectors are "x y z" strings, so a `Vec3` goes out as
 `toString()` and a number returned for a vector fills every component. A field's current
 value is what the script last returned, else the timeline's or the property's.

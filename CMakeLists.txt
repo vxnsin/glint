@@ -92,6 +92,7 @@ if(GLINT_PLATFORM)
         src/audio/player.cpp
         src/input/hyprland.cpp
         src/cli/cli.cpp
+        src/cli/configure.cpp
         src/cli/library.cpp
         src/core/loop.cpp
         src/core/state.cpp
@@ -185,6 +186,11 @@ if(GLINT_PLATFORM)
     target_link_libraries(glint-library-tests PRIVATE glint_scene)
     target_compile_options(glint-library-tests PRIVATE ${GLINT_WARNINGS})
     add_test(NAME library COMMAND glint-library-tests)
+    add_executable(glint-configure-tests tests/configure.cpp src/cli/configure.cpp)
+    target_include_directories(glint-configure-tests PRIVATE src)
+    target_link_libraries(glint-configure-tests PRIVATE nlohmann_json::nlohmann_json)
+    target_compile_options(glint-configure-tests PRIVATE ${GLINT_WARNINGS})
+    add_test(NAME configure COMMAND glint-configure-tests)
     add_executable(glint-media-tests tests/media.cpp)
     target_link_libraries(glint-media-tests PRIVATE glint_scene)
     target_compile_options(glint-media-tests PRIVATE ${GLINT_WARNINGS})

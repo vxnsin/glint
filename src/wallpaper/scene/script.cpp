@@ -1092,7 +1092,7 @@ JSValue native_transform(JSContext* ctx, JSValueConst, int argc, JSValueConst* a
     Vec3 scale = parse_vec3(impl.field_value(kind, index, "scale", values), {1, 1, 1});
     Vec3 angles = parse_vec3(impl.field_value(kind, index, "angles", values), {0, 0, 0});
     math::Mat4 m = math::Mat4::translate(origin[0], origin[1], origin[2]) *
-                   math::Mat4::rotate_z(-angles[2]) *
+                   math::Mat4::rotate_z(angles[2]) *
                    math::Mat4::scale(scale[0], scale[1], scale[2]);
     for (std::uint32_t i = 0; i < 16; ++i)
         JS_SetPropertyUint32(ctx, out, i, JS_NewFloat64(ctx, m.m[i]));
@@ -1160,6 +1160,54 @@ int interrupt(JSRuntime*, void* opaque) {
     return std::chrono::steady_clock::now() > impl->deadline ? 1 : 0;
 }
 
+// User overrides apply to a copy of the scene, before script modules are evaluated.
+// The workshop package stays unchanged and every other wallpaper keeps its own settings.
+void apply_script_overrides(SceneDesc& scene, const std::string& storage_id) {
+    if (storage_id.empty() || storage_id == "." || storage_id == ".." ||
+        std::filesystem::path(storage_id).filename() != storage_id)
+        return;
+    const auto path = paths::config_dir() / "script-properties" / (storage_id + ".json");
+    std::ifstream in(path);
+    if (!in) return;
+    const json root = json::parse(in, nullptr, false);
+    if (!root.is_object() || !root.contains("layers") || !root["layers"].is_object()) {
+        log::warn("script overrides {}: expected an object with a layers object", path.string());
+        return;
+    }
+    const json& layers = root["layers"];
+    auto apply = [&](int id, std::string_view field, Bound& bound) {
+        const auto layer = layers.find(std::to_string(id));
+        if (!bound.script || layer == layers.end() || !layer->is_object()) return;
+        const auto values = layer->find(std::string(field));
+        if (values == layer->end() || !values->is_object()) return;
+        if (!bound.script_properties.is_object()) bound.script_properties = json::object();
+        for (const auto& [name, value] : values->items()) bound.script_properties[name] = value;
+    };
+    for (auto& image : scene.images) {
+        apply(image.id, "origin", image.origin);
+        apply(image.id, "scale", image.scale);
+        apply(image.id, "angles", image.angles);
+        apply(image.id, "size", image.size);
+        apply(image.id, "visible", image.visible);
+        apply(image.id, "alpha", image.alpha);
+        apply(image.id, "color", image.color);
+        apply(image.id, "brightness", image.brightness);
+    }
+    for (auto& text : scene.texts) apply(text.id, "text", text.text);
+    for (auto& particle : scene.particles) {
+        apply(particle.id, "origin", particle.origin);
+        apply(particle.id, "scale", particle.scale);
+        apply(particle.id, "angles", particle.angles);
+        apply(particle.id, "visible", particle.visible);
+    }
+    for (auto& group : scene.groups) {
+        apply(group.id, "origin", group.origin);
+        apply(group.id, "scale", group.scale);
+        apply(group.id, "angles", group.angles);
+        apply(group.id, "visible", group.visible);
+    }
+}
+
 JSModuleDef* load_module(JSContext* ctx, const char* name, void*) {
     const char* source = module_source(name);
     if (source == nullptr) {
@@ -1182,6 +1230,7 @@ ScriptHost::ScriptHost(const SceneDesc& source, const Project& project, std::str
     : scene_(source), impl_(std::make_unique<Impl>(*this, scene_, project, std::move(label))) {
     impl_->vfs = vfs;
     impl_->mesh_lookup = std::move(mesh_lookup);
+    apply_script_overrides(scene_, storage_id);
     // Scripts and draws point into the image list; layers made at run time must not move it.
     scene_.images.reserve(scene_.images.size() + made_layers_max);
     const SceneDesc& scene = scene_;

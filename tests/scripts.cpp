@@ -1,7 +1,14 @@
+#include <unistd.h>
+
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 
 #include "wallpaper/scene/script.hpp"
+#include "wallpaper/scene/vfs.hpp"
 
 using namespace glint::scene;
 
@@ -83,6 +90,93 @@ void test_text_changes() {
     host.frame(values, {});
     CHECK(host.structure_version() == version);
     CHECK(host.warnings().empty());
+}
+
+void test_layer_rotation() {
+    auto scene = scene_with_script(R"JS(
+        export function init() {
+            const point = thisLayer.getTransformMatrix().transformPoint(new Vec3(1, 0, 0));
+            if (Math.abs(point.x) > 0.0001 || Math.abs(point.y - 1) > 0.0001)
+                throw new Error('positive quarter turn must point up in scene coordinates');
+        }
+    )JS");
+    scene.images[0].angles.value = "0 0 1.57079632679";
+    scene.images[0].scale.value = "1 1 1";
+    Project project;
+    ScriptHost host(scene, project, "rotation test", "");
+    Values values;
+    values.cells = &host.cells();
+    host.start(values, {});
+    CHECK(host.warnings().empty());
+}
+
+void test_script_property_overrides() {
+    const char* previous = std::getenv("XDG_CONFIG_HOME");
+    const std::optional<std::string> old =
+        previous ? std::optional<std::string>(previous) : std::nullopt;
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("glint-script-overrides-" + std::to_string(getpid()));
+    std::filesystem::create_directories(root / "glint/script-properties");
+    setenv("XDG_CONFIG_HOME", root.c_str(), 1);
+    std::ofstream(root / "glint/script-properties/42.json")
+        << R"({"layers":{"1":{"origin":{"showDay":false}}}})";
+    auto scene = scene_with_script(R"JS(
+        export var scriptProperties = createScriptProperties()
+            .addCheckbox({name: 'showDay', value: true}).finish();
+        export function update(value) {
+            thisLayer.text = scriptProperties.showDay ? 'day' : 'date';
+            return value;
+        }
+    )JS",
+                                   true);
+    scene.images[0].origin.script_properties = {{"showDay", true}};
+    Project project;
+    auto value_after_frame = [&](const std::string& item) {
+        ScriptHost host(scene, project, "override test", item);
+        Values values;
+        values.cells = &host.cells();
+        host.start(values, {});
+        host.frame(values, {});
+        CHECK(host.warnings().empty());
+        return host.scene().texts[0].text.at(values, 0);
+    };
+    CHECK(value_after_frame("42") == "date");
+    CHECK(value_after_frame("43") == "day");
+    CHECK(scene.images[0].origin.script_properties["showDay"] == true);
+    // Exercise the real Roxy date script when that Workshop item is installed.
+    const char* home = std::getenv("HOME");
+    const auto roxy = std::filesystem::path(home ? home : "/") /
+                      ".local/share/Steam/steamapps/workshop/content/431960/3780525249";
+    if (std::filesystem::exists(roxy / "scene.pkg")) {
+        std::ofstream(root / "glint/script-properties/3780525249.json")
+            << R"({"layers":{"69":{"text":{"showDay":false}}}})";
+        Vfs vfs(roxy, default_assets());
+        CHECK(vfs.open_package().empty());
+        const auto project_file = vfs.read("project.json");
+        Project roxy_project;
+        CHECK(project_file && parse_project(project_file->text(), roxy_project).empty());
+        SceneDesc roxy_scene;
+        CHECK(load_scene(vfs, "scene.json", roxy_scene).empty());
+        ScriptHost host(roxy_scene, roxy_project, "Roxy", "3780525249", &vfs);
+        Values values;
+        values.cells = &host.cells();
+        host.start(values, {});
+        host.frame(values, {});
+        bool date_found = false;
+        for (const auto& text : host.scene().texts) {
+            if (text.id != 69) continue;
+            const auto value = text.text.at(values, 0);
+            date_found = value.is_string() && !value.get<std::string>().empty() &&
+                         value.get<std::string>()[0] >= '0' && value.get<std::string>()[0] <= '9';
+        }
+        CHECK(date_found);
+        CHECK(host.warnings().empty());
+    }
+    if (old)
+        setenv("XDG_CONFIG_HOME", old->c_str(), 1);
+    else
+        unsetenv("XDG_CONFIG_HOME");
+    std::filesystem::remove_all(root);
 }
 
 void test_puppet_playback() {
@@ -196,6 +290,8 @@ void test_media_updates() {
 
 int main() {
     test_text_changes();
+    test_layer_rotation();
+    test_script_property_overrides();
     test_puppet_playback();
     test_media_updates();
     std::printf("script regressions: %d failures\n", failures);

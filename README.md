@@ -77,6 +77,7 @@ glint set '*' 3426865175                # a Workshop id, or the item's folder
 glint list hikari                      # search installed titles, ids and tags
 glint inspect 3510729512 --json          # project, properties and scene counts, no daemon
 glint props DP-1                        # the scene's own settings
+glint configure DP-1                    # edit visible settings in a terminal menu
 glint props DP-1 bloom off
 glint screenshot DP-1 shot.png          # what glint drew, without the windows on top
 ```

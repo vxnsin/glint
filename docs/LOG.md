@@ -821,3 +821,39 @@ tests pass under ASan/UBSan with leak detection disabled. A real D-Bus and GPU t
 is still required: this sandbox cannot bind a private D-Bus socket or reach the user's
 desktop session.
 
+### Media textures and scene rotation
+
+Some projects put `$mediaThumbnail` in the material itself, rather than the image's
+instance. Those material texture slots now resolve to the current cover as well. A reader
+regression test exercises this form. Text rasterization also includes glyph ink extending
+beyond the font's nominal line metrics, covered by a decorative-font clipping check.
+
+For Blue Archive - Arona (2919051696), the user's reference image showed the scene's clock
+and song text rotated opposite to Glint. Scene object z rotations now use the authored
+angle in y-up scene coordinates; the SceneScript transform matrix uses the same direction.
+The user confirmed that the Arona scene now looks correct, Yosuga's hair now animates
+correctly, and Frieren and Nozomi Hikari 131121999_p0 also look right after the rotation
+change. A script regression checks the positive rotation direction. Other scenes still
+need visual checks; the automated tests do not establish their appearance.
+
+### Interactive wallpaper settings
+
+`glint configure <output>` uses the existing props IPC interface to show visible wallpaper
+settings and edit them interactively. Boolean settings toggle, combo options show their
+labels, and numeric and text values can be entered directly. The list is refreshed after
+each edit so dependent settings appear or disappear. Menu tests cover setting types,
+hidden options, invalid input and daemon errors. A live desktop session is still needed
+to confirm the new command against the running daemon.
+
+### Local script property overrides
+
+Roxy (3780525249) stores a date script configured to show a custom day label, but its
+label list has no Friday or Saturday entry. On those days the script returns undefined,
+leaving its authored placeholder `H A M S T E R` on screen. Glint can now read local
+per-item, per-layer script-property overrides before evaluating script modules, without
+altering the Workshop package or changing undefined-result behavior globally. A local
+configuration sets the date script's `showDay` to false, so it returns a numeric date.
+The script regression runs the installed Roxy scene with an isolated configuration and
+checks that the script returns a date; another scene and the source data remain unchanged.
+The updated desktop daemon still needs a restart for a visual check.
+

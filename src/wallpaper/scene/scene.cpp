@@ -95,6 +95,20 @@ std::vector<std::optional<std::string>> texture_list(const json& j) {
     return out;
 }
 
+void apply_system_textures(const json& source, MaterialPass& pass) {
+    if (!source.contains("usertextures") || !source["usertextures"].is_array()) return;
+    std::size_t i = 0;
+    for (const json& texture : source["usertextures"]) {
+        if (texture.is_object() && str(texture, "name") == "$mediaThumbnail") {
+            if (pass.textures.size() <= i) pass.textures.resize(i + 1);
+            std::string placeholder = pass.textures[i] ? *pass.textures[i] : "util/white";
+            if (!placeholder.starts_with("$mediaThumbnail:"))
+                pass.textures[i] = "$mediaThumbnail:" + placeholder;
+        }
+        ++i;
+    }
+}
+
 std::map<std::string, int> combo_map(const json& j) {
     std::map<std::string, int> out;
     if (!j.is_object()) return out;
@@ -228,19 +242,11 @@ void parse_image(const Vfs& vfs, const json& object, ImageObject& image,
                 if (list[i]) pass.textures[i] = list[i];
             }
         }
-        if (inst.contains("usertextures") && inst["usertextures"].is_array()) {
-            std::size_t i = 0;
-            for (const json& ut : inst["usertextures"]) {
-                if (ut.is_object() && str(ut, "name") == "$mediaThumbnail") {
-                    if (pass.textures.size() <= i) pass.textures.resize(i + 1);
-                    std::string placeholder = pass.textures[i] ? *pass.textures[i] : "util/white";
-                    pass.textures[i] = "$mediaThumbnail:" + placeholder;
-                    image.media_thumbnail = true;
-                }
-                ++i;
-            }
-        }
+        apply_system_textures(inst, pass);
     }
+    for (const MaterialPass& pass : image.material.passes)
+        for (const auto& texture : pass.textures)
+            if (texture && texture->starts_with("$mediaThumbnail:")) image.media_thumbnail = true;
     if (object.contains("effects") && object["effects"].is_array()) {
         for (const auto& entry : object["effects"]) {
             if (!entry.is_object()) continue;
@@ -470,6 +476,7 @@ bool parse_material(const Vfs& vfs, std::string_view path, Material& out,
         p.depth_test = str(pass, "depthtest") == "enabled";
         p.depth_write = str(pass, "depthwrite") == "enabled";
         p.textures = texture_list(pass.value("textures", json::array()));
+        apply_system_textures(pass, p);
         p.combos = combo_map(pass.value("combos", json::object()));
         if (pass.contains("constantshadervalues") && pass["constantshadervalues"].is_object()) {
             for (const auto& [k, v] : pass["constantshadervalues"].items()) p.constants[k] = v;

@@ -30,6 +30,7 @@ void usage() {
         "  glint status [output]\n"
         "  glint pause|resume [output|*] [locked|request]\n"
         "  glint props <output> [reset | name value ...]\n"
+        "  glint configure <output>   interactively edit wallpaper settings\n"
         "  glint screenshot <output> <file.png>\n"
         "  glint subscribe [state|props|outputs|error ...]\n"
         "  glint version\n"

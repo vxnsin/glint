@@ -17,6 +17,7 @@
 #include "wallpaper/scene/project.hpp"
 #include "wallpaper/scene/scene.hpp"
 #include "wallpaper/scene/tex.hpp"
+#include "wallpaper/scene/text.hpp"
 #include "wallpaper/scene/vfs.hpp"
 
 namespace {
@@ -153,6 +154,56 @@ void test_project() {
     CHECK(!evaluate_condition(project.properties[2].condition, values));
     values["a"] = "2";
     CHECK(evaluate_condition(project.properties[2].condition, values));
+}
+
+void test_decorative_text_bounds() {
+    const char* home = std::getenv("HOME");
+    if (!home) return;
+    auto folder = std::filesystem::path(home) /
+                  ".local/share/Steam/steamapps/workshop/content/431960/2919051696";
+    if (!std::filesystem::exists(folder / "scene.pkg")) return;
+    Vfs vfs(folder, {});
+    CHECK(vfs.open_package().empty());
+    TextRenderer renderer;
+    TextSpec spec;
+    spec.font = "fonts/Hanged Letters.ttf";
+    spec.text = "Falling in Reverse";
+    spec.pointsize = 17;
+    spec.pixels_per_unit = 2;
+    spec.padding = {0, 0};
+    std::vector<std::string> warnings;
+    auto tight = renderer.render(spec, vfs, warnings);
+    spec.padding = {64, 64};
+    auto padded = renderer.render(spec, vfs, warnings);
+    auto alpha_sum = [](const TextBitmap& bitmap) {
+        std::uint64_t sum = 0;
+        for (std::size_t i = 3; i < bitmap.rgba.size(); i += 4) sum += bitmap.rgba[i];
+        return sum;
+    };
+    CHECK(warnings.empty());
+    CHECK(alpha_sum(tight) > 0);
+    CHECK(alpha_sum(tight) == alpha_sum(padded));
+}
+
+void test_material_media_thumbnail() {
+    auto dir =
+        std::filesystem::temp_directory_path() / ("glint-media-test-" + std::to_string(getpid()));
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "model.json") << R"({"material":"material.json"})";
+    std::ofstream(dir / "material.json")
+        << R"({"passes":[{"shader":"genericimage2","textures":["cover"],"usertextures":[{"name":"$mediaThumbnail","type":"system"}]}]})";
+    Vfs vfs(dir, {});
+    ImageObject image;
+    std::vector<std::string> warnings;
+    parse_image_object(vfs, {{"image", "model.json"}}, image, warnings);
+    CHECK(warnings.empty());
+    CHECK(image.media_thumbnail);
+    CHECK(image.material.passes.size() == 1);
+    if (!image.material.passes.empty() && !image.material.passes[0].textures.empty())
+        CHECK(image.material.passes[0].textures[0] == "$mediaThumbnail:cover");
+    else
+        CHECK(false);
+    std::filesystem::remove_all(dir);
 }
 
 void test_package() {
@@ -418,6 +469,8 @@ int main() {
     test_conditions();
     test_colors();
     test_project();
+    test_material_media_thumbnail();
+    test_decorative_text_bounds();
     test_package();
     test_tex();
     test_bound();

@@ -19,10 +19,14 @@ historical milestones; it is not a list of features already implemented.
   pause/resume and continuous rate changes.
 - Offline `glint list [search]` and `glint inspect <id|folder>`; JSON output and
   `GLINT_WORKSHOP` override. Explicit set commands also accept bare Workshop IDs.
+- `glint configure <output>` provides a terminal menu for the visible settings of the
+  wallpaper currently on that output.
+- Local per-wallpaper script-property overrides can adjust authored script settings that
+  the wallpaper does not expose as project properties; they are read when a scene loads.
 
 ## Remaining
 
-- Interactive terminal menus, `doctor` and `install`.
+- Interactive wallpaper selection, `doctor` and `install`.
 - Daemon-wide settings IPC, the inspect IPC operation (the CLI version is offline),
   UPower/idle integration and configurable window rules. The pure policy logic and the
   built-in fullscreen pause exist, but the full planned policy integration does not.
@@ -33,14 +37,19 @@ historical milestones; it is not a list of features already implemented.
 - Native text outline/blur/shadow settings. Authored image effects on text are separate.
 - Further SceneScript APIs, including reparenting, creating/destroying animation layers,
   animation-ended callbacks and texture/video animation control.
+- Editing script-property overrides in the settings menu; currently those overrides are
+  configured as local JSON files.
 - Effect swap commands and the remaining particle modules; particles currently run on the
   CPU rather than the planned compute path.
 - Optional web wallpapers, NVIDIA validation, glint-app and frameshell/facet integration.
 
 ## Verification
 
-The user has checked Roxy, the flower-tower Frieren, Yosuga, four Hikari/Nozomi scenes,
-Hoshino and Stargazing Arona. The corrected Yosuga strand is continuous in the user's GPU
+The user has checked Roxy, the flower-tower Frieren, Yosuga, several Hikari/Nozomi scenes,
+Hoshino and two Arona scenes. After the general rotation change, the user confirmed that
+Arona (2919051696) looks correct, Yosuga's hair now animates as expected, and Frieren and
+Nozomi Hikari 131121999_p0 also look right. More scenes still need rechecking.
+The corrected Yosuga strand is continuous in the user's GPU
 capture. The user reported no stutter on the Hoshino switch after incremental loading;
 this is one successful switch test, not a guarantee for every scene.
 

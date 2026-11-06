@@ -349,9 +349,9 @@ math::Mat4 SceneRenderer::model_matrix(int object, std::vector<int>& visiting, d
     Vec3 origin = parse_vec3(image.origin.at(values_, time), {0, 0, 0});
     Vec3 scale = parse_vec3(image.scale.at(values_, time), {1, 1, 1});
     Vec3 angles = parse_vec3(image.angles.at(values_, time), {0, 0, 0});
-    // scene.json keeps angles in radians; z turns clockwise on the canvas.
+    // scene.json keeps angles in radians in the scene's y-up coordinate system.
     math::Mat4 local = math::Mat4::translate(origin[0], origin[1], origin[2]) *
-                       math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
+                       math::Mat4::rotate_z(angles[2]) * math::Mat4::rotate_y(angles[1]) *
                        math::Mat4::rotate_x(angles[0]) *
                        math::Mat4::scale(scale[0], scale[1], scale[2]);
     if (image.text >= 0) {
@@ -397,7 +397,7 @@ math::Mat4 SceneRenderer::particle_matrix(int particle, std::vector<int>& visiti
     Vec3 scale = parse_vec3(object.scale.at(values_, time), {1, 1, 1});
     Vec3 angles = parse_vec3(object.angles.at(values_, time), {0, 0, 0});
     math::Mat4 local = math::Mat4::translate(origin[0], origin[1], origin[2]) *
-                       math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
+                       math::Mat4::rotate_z(angles[2]) * math::Mat4::rotate_y(angles[1]) *
                        math::Mat4::rotate_x(angles[0]) *
                        math::Mat4::scale(scale[0], scale[1], scale[2]);
     if (object.parent < 0) return local;
@@ -452,7 +452,7 @@ math::Mat4 SceneRenderer::transform_of_id(int id, std::vector<int>& visiting, do
         Vec3 scale = parse_vec3(group.scale.at(values_, time), {1, 1, 1});
         Vec3 angles = parse_vec3(group.angles.at(values_, time), {0, 0, 0});
         math::Mat4 local = math::Mat4::translate(origin[0], origin[1], origin[2]) *
-                           math::Mat4::rotate_z(-angles[2]) * math::Mat4::rotate_y(angles[1]) *
+                           math::Mat4::rotate_z(angles[2]) * math::Mat4::rotate_y(angles[1]) *
                            math::Mat4::rotate_x(angles[0]) *
                            math::Mat4::scale(scale[0], scale[1], scale[2]);
         if (group.parent < 0) return local;

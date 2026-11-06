@@ -36,6 +36,10 @@ std::filesystem::path cache_dir() {
     return env_or("XDG_CACHE_HOME", home() / ".cache") / "glint";
 }
 
+std::filesystem::path config_dir() {
+    return env_or("XDG_CONFIG_HOME", home() / ".config") / "glint";
+}
+
 std::string display_name() {
     const char* display = std::getenv("WAYLAND_DISPLAY");
     std::string name = display != nullptr && display[0] != '\0' ? display : "wayland-0";

@@ -114,8 +114,9 @@ struct Glyph {
     std::uint32_t index;
     float x_advance;  // canvas units, floored as WE floors it, with the letter spacing
     float x_offset, y_offset;
-    float box_min, box_max;  // the outline's horizontal extent from the pen, canvas units
-    std::uint32_t cluster;   // code point index
+    float box_min, box_max;     // the outline's horizontal extent from the pen, canvas units
+    float box_bottom, box_top;  // vertical ink extent relative to the baseline
+    std::uint32_t cluster;      // code point index
     bool space;
     float x = 0;  // laid out: the pen position from the line's start
 };
@@ -166,6 +167,11 @@ void shape(std::vector<Glyph>& out, const std::vector<std::uint32_t>& text, std:
                 if (m.width > 0) {
                     g.box_min = std::floor(static_cast<float>(m.horiBearingX) / 64 / ppu);
                     g.box_max = std::ceil(static_cast<float>(m.horiBearingX + m.width) / 64 / ppu);
+                }
+                if (m.height > 0) {
+                    g.box_bottom =
+                        std::floor(static_cast<float>(m.horiBearingY - m.height) / 64 / ppu);
+                    g.box_top = std::ceil(static_cast<float>(m.horiBearingY) / 64 / ppu);
                 }
             }
             g.cluster = infos[k].cluster;
@@ -413,6 +419,12 @@ TextBitmap TextRenderer::render(const TextSpec& spec, const Vfs& vfs,
         high_x = std::max(high_x, o[0] + line.min_x + line.width);
         low_y = std::min({low_y, o[1] + descent, o[1] + ascent - line_height});
         high_y = std::max(high_y, o[1] + ascent);
+        // Decorative and fallback glyphs can extend beyond the face's nominal line
+        // metrics. Include their ink before allocating the bitmap so it is not clipped.
+        for (const Glyph& glyph : line.glyphs) {
+            low_y = std::min(low_y, o[1] + glyph.y_offset + glyph.box_bottom);
+            high_y = std::max(high_y, o[1] + glyph.y_offset + glyph.box_top);
+        }
     }
     if (lines.empty()) low_x = low_y = high_x = high_y = 0;
     float pad_x = std::clamp(spec.padding[0], 0.0f, 512.0f);
