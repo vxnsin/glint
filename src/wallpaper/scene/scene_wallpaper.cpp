@@ -198,13 +198,16 @@ void Scene::start_sound() {
         return;
     }
     assets_->sound_owner = this;
+    if (paused_) player_->set_paused(true);
 }
 
 void Scene::pause() {
+    paused_ = true;
     if (player_) player_->set_paused(true);
 }
 
 void Scene::resume() {
+    paused_ = false;
     if (player_) player_->set_paused(false);
 }
 

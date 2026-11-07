@@ -29,6 +29,9 @@ public:
     std::uint64_t memory() const override { return source_->memory(); }
 
     const Info* info() const { return source_->info(); }
+    double playback_seconds() const { return source_->playback_seconds(); }
+    double decoded_seconds() const { return source_->decoded_seconds(); }
+    int runners() const { return source_->runners(); }
 
 private:
     std::filesystem::path path_;

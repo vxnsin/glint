@@ -3,6 +3,26 @@
 Measurements per milestone, on Luis's machine. Numbers, how they were taken, and what was
 left out.
 
+## Fullscreen pause and resume (2026-11-07)
+
+Incoming wallpapers now follow the output's pause state during loading and crossfades.
+Previously an incoming video could keep a shared source clock running while no output
+rendered it, leaving a decode backlog on resume. Video clocks now start after loading,
+and scene sound players retain pauses issued before their asynchronous load completes.
+Fullscreen tracking stays subscribed while all wallpapers are paused, so stopping
+playback does not remove the watcher needed to resume it.
+
+Release build and all ten CTest suites passed. `python3 tests/live-pause.py --live`
+is an opt-in test against an existing video daemon: it pauses all outputs, reapplies
+their original assignments while paused, verifies frozen clocks and frame counters,
+then checks normal-speed playback and unchanged saved assignments/options.
+
+Live testing on the RX 7800 XT also used a temporary Kitty fullscreen window on DP-2
+with HDMI-A-1 explicitly held. The playback clock and frame counters remained frozen
+while covered; after terminating the test window, DP-2 resumed at 60 FPS with about
+16 ms between the playback clock and the decoded frame. The other output's temporary
+pause was released. The release binary was installed and the desktop daemon restarted.
+
 ## M1, the renderer (2026-11-05)
 
 ### Setup

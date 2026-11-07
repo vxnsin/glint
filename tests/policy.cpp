@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/transition.hpp"
+#include "core/playback_clock.hpp"
 #include "policy/power.hpp"
 #include "policy/rules.hpp"
 
@@ -25,6 +26,26 @@ int checks = 0;
     } while (0)
 
 constexpr std::int64_t s = 1'000'000'000;
+
+void test_playback_clock() {
+    glint::PlaybackClock clock;
+    // Loading, including loading behind fullscreen, consumes no playback time.
+    CHECK(clock.seconds(120 * s) == 0);
+    clock.set_running(false, 120 * s);
+    clock.set_running(true, 180 * s);
+    CHECK(clock.seconds(182 * s) == 2);
+    // Another output starting or stopping must not restart a shared clock.
+    clock.set_running(true, 182 * s);
+    CHECK(clock.seconds(185 * s) == 5);
+    clock.set_running(false, 185 * s);
+    CHECK(clock.seconds(785 * s) == 5);
+    clock.set_running(false, 785 * s);
+    clock.set_running(true, 800 * s);
+    CHECK(clock.seconds(801 * s) == 6);
+    clock.set_running(false, 802 * s);
+    clock.set_running(true, 900 * s);
+    CHECK(clock.seconds(903 * s) == 10);
+}
 
 void test_transition_clock() {
     glint::TransitionClock fade;
@@ -274,6 +295,7 @@ void test_combined_deadline() {
 }  // namespace
 
 int main() {
+    test_playback_clock();
     test_transition_clock();
     test_glob();
     test_builtin_rule();

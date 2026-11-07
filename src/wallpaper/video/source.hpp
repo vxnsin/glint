@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "audio/player.hpp"
+#include "core/playback_clock.hpp"
 #include "gpu/buffer.hpp"
 #include "gpu/dmabuf.hpp"
 #include "gpu/vulkan.hpp"
@@ -46,6 +47,9 @@ public:
 
     // Decoding and sound run while at least one output runs.
     void add_runner(int delta);
+    double playback_seconds() const;
+    double decoded_seconds() const { return decoded_seconds_; }
+    int runners() const { return runners_; }
     std::uint64_t memory() const;
     const Info* info() const { return decoder_ ? &decoder_->info() : nullptr; }
 
@@ -76,8 +80,8 @@ private:
     std::uint32_t slot_ = 0;
     std::optional<Picture> first_;  // taken on the worker, shown with the first frame
     int runners_ = 0;
-    double clock_ = 0;        // seconds run before since_
-    std::int64_t since_ = 0;  // when the clock last started, while running
+    PlaybackClock clock_;
+    double decoded_seconds_ = 0;
     std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 
     // dma-buf frames: the decoder's surfaces imported once each, by buffer.

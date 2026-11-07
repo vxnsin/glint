@@ -135,6 +135,12 @@ callback), `dirty`, `configured`, `current_wants_frames`, `incoming_wants_frames
 `incoming_ready` and `timer_armed`. These distinguish a configured, unpaused wallpaper
 from one that is actually presenting frames; `running` alone does not prove progress.
 
+Video status also includes `video.position` (the unwrapped playback clock in seconds),
+`video.decoded_position` (the latest picture's timestamp) and `video.running_instances`
+(active wallpaper instances sharing that source, including an incoming crossfade).
+Loading time is excluded. The clock, decoder and sound pause when no instance is running;
+if another output still plays the same source, it continues to keep those outputs in sync.
+
 
 ### props list / get / set / reset
 

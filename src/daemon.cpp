@@ -18,6 +18,7 @@
 #include "wallpaper/image/decode.hpp"
 #include "wallpaper/image/image.hpp"
 #include "wallpaper/scene/scene_wallpaper.hpp"
+#include "wallpaper/video/video.hpp"
 
 namespace glint {
 
@@ -180,7 +181,9 @@ void Daemon::before_poll() {
     // Fullscreen windows matter only while something animates (or when asked to for tests).
     bool animating = force_toplevels_;
     for (const auto& entry : screens_) {
-        if ((entry->current && entry->current->wants_frames()) ||
+        // Keep listening for the uncover event while playback is paused.
+        if ((reasons(*entry) != 0 && (entry->current || entry->incoming)) ||
+            (entry->current && entry->current->wants_frames()) ||
             (entry->incoming && entry->incoming->wants_frames())) {
             animating = true;
         }
@@ -543,6 +546,7 @@ void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<
     entry.request = std::move(request);
     entry.error.clear();
     Wallpaper* incoming = entry.incoming.get();
+    if (reasons(entry) != 0) incoming->pause();
     wl::Output* output = entry.output;
     incoming->load([this, output, incoming](std::string load_error) {
         Screen* target = screen(*output);
@@ -567,6 +571,7 @@ void Daemon::loaded(Screen& entry, Wallpaper* wallpaper, const std::string& erro
         return;
     }
     // The first wallpaper on an output appears at once; later ones fade if asked to.
+    if (reasons(entry) != 0) wallpaper->pause();
     bool fade = entry.current && wallpaper->options().transition == "fade";
     entry.fade_ms = fade ? std::max(wallpaper->options().duration_ms, 0) : 0;
     entry.transition.reset();  // the first submitted frame starts the visible transition
@@ -685,6 +690,7 @@ void Daemon::pause_changed(Screen& entry, std::uint32_t before) {
     if (now != 0) {
         if (entry.surface) entry.surface->cancel_capture();  // no frame will come
         if (entry.current) entry.current->pause();
+        if (entry.incoming) entry.incoming->pause();
         // A set waiting for its first frame will not get one while paused.
         if (entry.request && entry.incoming && entry.incoming->ready()) {
             finish(entry.request, {});
@@ -694,6 +700,7 @@ void Daemon::pause_changed(Screen& entry, std::uint32_t before) {
         entry.output->abandon_frame();
         entry.dirty = true;  // the frame it would have drawn while paused
         if (entry.current) entry.current->resume();
+        if (entry.incoming) entry.incoming->resume();
         loop_.wake();
     }
 }
@@ -814,6 +821,11 @@ nlohmann::json Daemon::status_json(Screen& entry) {
         json["options"] = state::options_json(shown->options());
         if (auto* picture = dynamic_cast<const image::Image*>(shown)) {
             json["picture"] = {{"width", picture->width()}, {"height", picture->height()}};
+        }
+        if (auto* video = dynamic_cast<const video::Video*>(shown)) {
+            json["video"] = {{"position", video->playback_seconds()},
+                             {"decoded_position", video->decoded_seconds()},
+                             {"running_instances", video->runners()}};
         }
     } else {
         json["path"] = nullptr;

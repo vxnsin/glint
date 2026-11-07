@@ -92,6 +92,7 @@ private:
     void start_sound();
     std::vector<File> sound_files_;  // what the player reads from, kept alive
     std::unique_ptr<audio::Player> player_;
+    bool paused_ = false;
     bool audio_ = false;
     std::vector<int> sound_tracks_;              // by sound index: its track, or -1
     std::vector<std::uint64_t> sound_applied_;   // the script state version applied

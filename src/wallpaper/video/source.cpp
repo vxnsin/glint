@@ -115,6 +115,7 @@ void Source::load(std::function<void(std::string error)> done) {
                       prime_          ? "VA-API, dma-buf"
                       : info.hardware ? "VA-API, copied"
                                       : "software");
+            clock_.set_running(runners_ > 0, clock::now_ns());
             decoder_->set_paused(runners_ == 0);
             start_sound();
             for (auto& callback : waiting) callback({});
@@ -266,6 +267,7 @@ void Source::show(Picture& picture, VkCommandBuffer cmd) {
 }
 
 void Source::present(Picture& picture, VkCommandBuffer cmd) {
+    decoded_seconds_ = picture.time;
     if (picture.prime && prime_) {
         show(picture, cmd);
         return;
@@ -281,13 +283,12 @@ void Source::present(Picture& picture, VkCommandBuffer cmd) {
 
 void Source::prepare(VkCommandBuffer cmd) {
     if (!decoder_) return;
-    double time = clock_;
-    if (runners_ > 0) time += static_cast<double>(clock::now_ns() - since_) / 1e9;
+    double time = playback_seconds();
     if (first_) {
         present(*first_, cmd);
         first_.reset();
     }
-    if (auto picture = decoder_->take(time * static_cast<double>(options_.speed))) {
+    if (auto picture = decoder_->take(time)) {
         present(*picture, cmd);
     }
 }
@@ -309,13 +310,15 @@ bool Source::render(const gpu::Target& target, const Options& options, float opa
 }
 
 void Source::add_runner(int delta) {
-    bool was = runners_ > 0;
     runners_ += delta;
-    if (!was && runners_ > 0) since_ = clock::now_ns();
-    if (was && runners_ <= 0) clock_ += static_cast<double>(clock::now_ns() - since_) / 1e9;
+    clock_.set_running(decoder_ && runners_ > 0, clock::now_ns());
     bool paused = runners_ <= 0;
     if (decoder_) decoder_->set_paused(paused);
     if (player_) player_->set_paused(paused);
+}
+
+double Source::playback_seconds() const {
+    return clock_.seconds(clock::now_ns()) * static_cast<double>(options_.speed);
 }
 
 std::uint64_t Source::memory() const {
