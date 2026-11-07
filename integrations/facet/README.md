@@ -43,7 +43,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME
 
 Facet's core and Bloom/Tui styles now include a native integration built on this client.
 `facet install quickshell hypr wallpaper` installs Glint and selects it as the backend;
-Hyprland starts `frame-glint-start`, which reuses an existing daemon or restores saved
+Hyprland starts `facet-glint-start`, which reuses an existing daemon or restores saved
 assignments. Bloom's `wall` launcher mode and both styles' Super+W views use the socket
 directly, including per-display common settings and authored project properties. The
 lockscreen pauses and resumes Glint with the `locked` reason.
@@ -57,3 +57,9 @@ Facet core (`tests/glint`). Real compositor behavior still requires a desktop ch
 The initial integration is committed and locally installed; remote publication is
 pending repository write access. Online Workshop discovery currently opens Steam,
 rather than embedding its catalog or download interface. See `docs/IPC.md`.
+
+Bloom's Super+W entry delegates to the same launcher menu as `wall`. Its original
+width is preserved; Library, general Settings and authored Wallpaper settings have
+separate tabs. The volume slider controls sound without a separate mute switch.
+Facet's user directories and helper names now use `facet` / `facet-*`; migration
+preserves saved configuration and compatibility links for existing clients.

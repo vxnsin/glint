@@ -312,7 +312,7 @@ layer if it is installed.
 ## Facet integration
 
 Facet's wallpaper service uses Quickshell's `Socket` client when the backend marker
-`$XDG_STATE_HOME/frameshell/wallpaper-backend` contains `glint`. It subscribes to
+`$XDG_STATE_HOME/facet/wallpaper-backend` contains `glint`. It subscribes to
 state, property, output and error events and reconnects after daemon restarts.
 `integrations/facet/GlintClient.qml` is the reusable transport component.
 
@@ -324,10 +324,10 @@ The background surface yields to Glint on assigned outputs; locking sends
 `pause` with `locked` and unlocking sends the matching `resume`. Fullscreen
 pause remains Glint's responsibility.
 
-`frame-wallpaper list-local` supplies local image/video library entries alongside
+`facet-wallpaper list-local` supplies local image/video library entries alongside
 Glint's installed Workshop list. Other legacy helper commands remain available
 for configurations that have not selected Glint. A disconnected Glint selection
-does not fall back to a legacy renderer. `frame-glint-start` handles autostart,
+does not fall back to a legacy renderer. `facet-glint-start` handles autostart,
 existing-daemon reuse and first-run migration without replacing saved Glint state.
 `facet wallpaper` opens the separate terminal interface; explicit subcommands
 forward to the Glint CLI. Online discovery opens Steam Workshop.
