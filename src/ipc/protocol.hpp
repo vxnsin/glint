@@ -16,12 +16,12 @@ inline constexpr std::array<std::string_view, 15> ops = {
     "outputs", "set",      "unset",   "status", "props",     "pause",   "resume",    "audio",
     "cursor",  "settings", "inspect", "list",   "subscribe", "version", "screenshot"};
 
-inline constexpr std::array<std::string_view, 13> implemented_ops = {
+inline constexpr std::array<std::string_view, 14> implemented_ops = {
     "outputs", "set",     "unset", "status",    "props",   "pause",     "resume",
-    "cursor",  "inspect", "list",  "subscribe", "version", "screenshot"};
+    "cursor",  "inspect", "list",  "subscribe", "version", "screenshot", "settings"};
 
 // Event names ("event") sent to subscribers.
-inline constexpr std::array<std::string_view, 4> events = {"state", "props", "outputs", "error"};
+inline constexpr std::array<std::string_view, 5> events = {"state", "props", "outputs", "error", "settings"};
 
 // Pause reasons; they stack per output.
 inline constexpr std::array<std::string_view, 4> pause_reasons = {"covered", "locked", "request",

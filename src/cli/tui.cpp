@@ -334,6 +334,11 @@ private:
         }
         if (!chosen.empty()) {
             result["status"] = result["statuses"].value(chosen, json::object());
+            const auto global = request_daemon({{"op", "settings"}}, stop);
+            if (global.value("ok", false) && global.contains("result") && global["result"].is_object()) {
+                if (!result["status"].contains("options")) result["status"]["options"] = json::object();
+                result["status"]["options"].update(global["result"]);
+            }
             bool same_project = true;
             const auto path = result["status"].value("path", json());
             if (output == "*") {
@@ -371,6 +376,10 @@ private:
     }
     void edit_setting(const Option& option, const json& value) {
         if (busy()) return;
+        if (!option.property.is_object() && option.key != "speed" && option.key != "hwdec") {
+            action({{"op", "settings"}, {"set", {{option.key, value}}}});
+            return;
+        }
         task_is_refresh_ = false;
         message_ = target_ == "*" ? "Saving on all displays…" : "Saving…";
         failed_ = false;
@@ -525,6 +534,7 @@ private:
                 {"duration", 300},    {"volume", 0},       {"mute", false},
                 {"color", "#000000"}, {"speed", 1},        {"hwdec", "auto"}};
             for (auto& option : list) {
+                if (option.key != "speed" && option.key != "hwdec") continue;
                 if (!option.property.is_null()) continue;
                 const auto first = values.value(option.key, defaults.at(option.key));
                 for (const auto& state : statuses_) {
@@ -569,7 +579,7 @@ private:
         }
         text_at(5, 3,
                 tab_ == 2
-                    ? "Display: " + (settings_output() == "*" ? "All displays" : settings_output())
+                    ? "Global playback · Project: " + (settings_output() == "*" ? "All displays" : settings_output())
                     : "Apply to: " + (target_ == "*" ? "all displays" : target_),
                 accent);
         text_at(LINES - 3, 3, message_, failed_ ? error_color : muted);

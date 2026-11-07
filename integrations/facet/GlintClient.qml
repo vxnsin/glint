@@ -97,7 +97,7 @@ Scope {
 
         onConnectionStateChanged: {
             if (connected) {
-                root.send("subscribe", { events: ["state", "props", "outputs", "error"] });
+                root.send("subscribe", { events: ["state", "props", "outputs", "error", "settings"] });
             } else {
                 const old = root.pending;
                 root.pending = {};

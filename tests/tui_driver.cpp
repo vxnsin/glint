@@ -14,9 +14,17 @@ nlohmann::json request_daemon(const nlohmann::json& request, std::stop_token) {
         {"DP-2", {{"fps", 60}, {"volume", 0.5}, {"scaling", "fit"}, {"transition", "fade"}}},
         {"HDMI-A-1", {{"fps", 30}, {"volume", 0.2}, {"scaling", "fill"}, {"transition", "none"}}}};
     static bool clock = true;
+    static json defaults = options["DP-2"];
     std::ofstream log(std::getenv("GLINT_TEST_REQUESTS"), std::ios::app);
     log << request.dump() << '\n';
     const auto op = request.value("op", "");
+    if (op == "settings") {
+        if (request.contains("set")) {
+            defaults.update(request["set"]);
+            for (auto& settings : options) settings.update(defaults);
+        }
+        return {{"ok", true}, {"result", defaults}};
+    }
     if (op == "outputs")
         return {{"ok", true},
                 {"result",

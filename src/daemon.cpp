@@ -147,6 +147,7 @@ int Daemon::run() {
     all_ = restored.all;
     outputs_ = std::move(restored.outputs);
     properties_ = std::move(restored.properties);
+    settings_ = std::move(restored.settings);
     if (all_ || !outputs_.empty()) {
         log::info("restoring {} from {}", all_ ? all_->path.string() : "per-output wallpapers",
                   state::file().string());
@@ -488,6 +489,7 @@ void Daemon::set(std::string_view output, const std::filesystem::path& path, con
     }
     request->previous_all = all_;
     request->previous_outputs = outputs_;
+    request->previous_settings = settings_;
     request->generation = ++generation_;
 
     std::vector<Screen*> targets;
@@ -594,6 +596,7 @@ void Daemon::finish(const std::shared_ptr<Request>& request, const std::string& 
             request->generation != 0) {
             all_ = request->previous_all;
             outputs_ = request->previous_outputs;
+            settings_ = request->previous_settings;
             ++generation_;
             save_state();
         }
@@ -727,6 +730,7 @@ void Daemon::save_state() const {
     current.all = all_;
     current.outputs = outputs_;
     current.properties = properties_;
+    current.settings = settings_;
     if (!state::save(current)) log::warn("cannot write {}", state::file().string());
 }
 
@@ -942,6 +946,7 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
         std::filesystem::path path = request["path"].get<std::string>();
         if (!path.is_absolute()) return reply.error("path must be absolute");
         Options options;
+        state::parse_options(settings_, options);
         if (request.contains("options")) {
             if (std::string error = state::parse_options(request["options"], options);
                 !error.empty()) {
@@ -1060,10 +1065,49 @@ void Daemon::handle(const nlohmann::json& request, ipc::Server::Reply reply) {
     } else if (op == "audio") {
         reply.error("audio comes with sound objects later in M3");
     } else if (op == "settings") {
-        reply.error("settings come with milestone M6");
+        settings(request, std::move(reply));
     } else {
         reply.error("unknown op '" + op + "'");
     }
+}
+
+nlohmann::json Daemon::settings_json() const {
+    Options options;
+    if (!outputs_.empty()) options = outputs_.begin()->second.options;
+    else if (all_) options = all_->options;
+    state::parse_options(settings_, options);
+    return state::common_options(options);
+}
+
+void Daemon::settings(const nlohmann::json& message, ipc::Server::Reply reply) {
+    if (!message.contains("set")) return reply.ok(settings_json());
+    Options options;
+    state::parse_options(settings_json(), options);
+    if (auto error = state::parse_settings(message["set"], options); !error.empty())
+        return reply.error(error);
+    auto request = std::make_shared<Request>();
+    request->previous_all = all_;
+    request->previous_outputs = outputs_;
+    request->previous_settings = settings_;
+    request->start_ns = clock::now_ns();
+    request->generation = ++generation_;
+    settings_ = state::common_options(options);
+    if (all_) state::parse_options(settings_, all_->options);
+    for (auto& [name, assignment] : outputs_) state::parse_options(settings_, assignment.options);
+    save_state();
+    std::vector<std::pair<Screen*, Assignment>> targets;
+    for (auto& entry : screens_) {
+        if (const auto* a = assignment(entry->output->name())) targets.emplace_back(entry.get(), *a);
+    }
+    request->remaining = static_cast<int>(targets.size());
+    request->done = [this, reply](const SetResult& result) mutable {
+        if (!result.error.empty()) return reply.error(result.error);
+        const auto values = settings_json();
+        if (server_) server_->broadcast("settings", {{"settings", values}});
+        reply.ok(values);
+    };
+    if (targets.empty()) return finish(request, {});
+    for (auto& [entry, a] : targets) apply(*entry, a, request);
 }
 
 void Daemon::props(const nlohmann::json& request, ipc::Server::Reply reply) {

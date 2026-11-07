@@ -1,8 +1,8 @@
 # glint IPC
 
 Version 1. Implemented: `outputs`, `set`, `unset`, `status`, `pause`, `resume`, `props`,
-`cursor`, `list`, `inspect`, `subscribe`, `screenshot` and `version`. The operations
-`audio` and `settings` are not implemented yet; their descriptions below are plans.
+`cursor`, `list`, `inspect`, `subscribe`, `screenshot`, `settings` and `version`.
+The `audio` operation is not implemented yet; its description below is a plan.
 
 The CLI also has offline `list [search]` and `inspect <Workshop id|folder>` commands. They
 read installed projects directly, support `--json`, and use `GLINT_WORKSHOP` or Steam's
@@ -239,7 +239,23 @@ parallax is on or a shader reads `g_PointerPosition`, and then draws every frame
 
 ### settings
 
-Daemon-wide values, persisted:
+Global playback values, persisted in `state.json`:
+
+```json
+{"op": "settings", "set": {"fps": 120, "scaling": "fill", "volume": 0.1}}
+```
+
+Without `set`, returns all common values: `fps`, `scaling`, `volume`, `mute`,
+`transition`, `duration` and `color`. A validated update applies to every assigned
+output, including saved assignments for disconnected displays, retaining wallpaper
+paths, decoder options and authored project properties. New `set` requests inherit
+these values; explicit per-request options can override them. Facet always applies
+the global values when choosing wallpapers. A daemon restart retains the defaults.
+Before the first global update, reads derive defaults from an existing assignment.
+Successful updates emit `settings` with a `settings` object containing the new values.
+Unknown keys and invalid values reject the whole update.
+
+The following extensions are planned and are not accepted by this operation yet:
 
 ```
 -> {"op": "settings", "set": {"workshop": "/path/to/431960", "assets": "/path/to/assets",
@@ -320,7 +336,8 @@ it, so clients should handle both a missing list and an error for an unsupported
 
 ## Running the daemon
 
-`glint` without a command is the daemon. A second one on the same Wayland display refuses to
+`glint --daemon` runs the daemon; `glint` without a command opens the TUI.
+A second daemon on the same Wayland display refuses to
 start. `GLINT_LOG=debug` logs every frame; `GLINT_VALIDATION=1` loads the Vulkan validation
 layer if it is installed.
 
@@ -332,8 +349,9 @@ state, property, output and error events and reconnects after daemon restarts.
 `integrations/facet/GlintClient.qml` is the reusable transport component.
 
 Bloom's `wall` launcher mode and both styles' Super+W wallpaper views send `set`
-and `props` requests directly. Common settings first request current status and
-update each selected output separately, preserving its path and other options.
+and `props` requests directly. Common settings use the global `settings` operation
+and apply to all displays and future wallpaper selections. The display selection
+controls wallpaper placement and authored properties.
 Authored property changes target only displays showing the selected project.
 The background surface yields to Glint on assigned outputs; locking sends
 `pause` with `locked` and unlocking sends the matching `resume`. Fullscreen

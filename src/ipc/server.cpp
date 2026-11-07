@@ -164,7 +164,7 @@ void Server::readable(Client& client) {
                     if (name.is_string()) client.events.insert(name.get<std::string>());
                 }
             } else {
-                client.events = {"state", "props", "outputs", "error"};
+                client.events = {"state", "props", "outputs", "error", "settings"};
             }
             reply.ok(nlohmann::json(
                 std::vector<std::string>(client.events.begin(), client.events.end())));

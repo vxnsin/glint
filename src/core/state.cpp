@@ -65,6 +65,22 @@ nlohmann::json options_json(const Options& options) {
     return json;
 }
 
+nlohmann::json common_options(const Options& options) {
+    return {{"fps", options.fps}, {"scaling", scaling_name(options.scaling)},
+            {"volume", options.volume}, {"mute", options.mute},
+            {"transition", options.transition}, {"duration", options.duration_ms},
+            {"color", options.color}};
+}
+
+std::string parse_settings(const nlohmann::json& json, Options& options) {
+    if (!json.is_object()) return "settings must be an object";
+    const auto allowed = common_options(Options{});
+    for (const auto& [key, value] : json.items()) {
+        if (!allowed.contains(key)) return "not a global setting: " + key;
+    }
+    return parse_options(json, options);
+}
+
 std::string parse_options(const nlohmann::json& json, Options& options) {
     if (json.is_null()) return {};
     if (!json.is_object()) return "options must be an object";
@@ -139,6 +155,11 @@ State load() {
         return state;
     }
     if (json.contains("all")) state.all = entry_from(json["all"]);
+    if (json.contains("settings")) {
+        Options options;
+        if (parse_settings(json["settings"], options).empty()) state.settings = json["settings"];
+        else log::warn("invalid global wallpaper settings, ignored");
+    }
     if (json.contains("properties") && json["properties"].is_object()) {
         for (const auto& [path, values] : json["properties"].items()) {
             if (values.is_object()) state.properties[path] = values;
@@ -155,6 +176,7 @@ State load() {
 bool save(const State& state) {
     nlohmann::json json = {{"version", state_version}, {"outputs", nlohmann::json::object()}};
     if (state.all) json["all"] = entry_json(*state.all);
+    if (!state.settings.empty()) json["settings"] = state.settings;
     for (const auto& [name, entry] : state.outputs) json["outputs"][name] = entry_json(entry);
     if (!state.properties.empty()) {
         json["properties"] = nlohmann::json::object();

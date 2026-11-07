@@ -3,6 +3,21 @@
 Measurements per milestone, on Luis's machine. Numbers, how they were taken, and what was
 left out.
 
+## Global playback settings (2026-11-07)
+
+The `settings` IPC operation persists common playback defaults, applies changes to
+all assigned outputs and supplies defaults for future wallpaper selections. Facet
+and the standalone Glint TUI use this operation for common controls; authored project
+properties keep their original scope. Bloom's scaling and project-choice controls now
+use themed rounded controls and popup rows.
+
+All ten release CTest suites passed, including terminal interaction with global FPS
+and volume. Facet controller, Bloom/Tui view and startup helper tests passed. The
+opt-in `tests/live-settings.py --live --preview <image>` exercised the running daemon:
+all-output updates, invalid-patch rejection, inheritance by another wallpaper and
+unchanged authored properties. Original wallpapers were restored. Restarting the
+installed daemon retained the requested global 120 FPS setting.
+
 ## Fullscreen pause and resume (2026-11-07)
 
 Incoming wallpapers now follow the output's pause state during loading and crossfades.

@@ -86,6 +86,7 @@ private:
         // The assignments before this set, put back if it fails and nothing changed since.
         std::optional<Assignment> previous_all;
         std::map<std::string, Assignment> previous_outputs;
+        nlohmann::json previous_settings;
         std::uint64_t generation = 0;
     };
 
@@ -154,6 +155,8 @@ private:
     nlohmann::json status_json(Screen& screen);
     void save_state() const;
     void props(const nlohmann::json& request, ipc::Server::Reply reply);
+    nlohmann::json settings_json() const;
+    void settings(const nlohmann::json& request, ipc::Server::Reply reply);
 
     Loop loop_;
     wl::Display display_;
@@ -172,6 +175,7 @@ private:
     std::optional<Assignment> all_;                     // "*"
     std::map<std::string, Assignment> outputs_;         // by connector name; wins over "*"
     std::map<std::string, nlohmann::json> properties_;  // scene settings by project path
+    nlohmann::json settings_ = nlohmann::json::object();
     std::uint64_t generation_ = 0;                      // bumped on every change of the assignments
     std::uint32_t paused_all_ = 0;  // reasons set for "*", on every output including new ones
     std::unique_ptr<ipc::Server> server_;

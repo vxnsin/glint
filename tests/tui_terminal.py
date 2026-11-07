@@ -95,15 +95,13 @@ print('Test SteamCMD download complete')
         wait(lambda: any(r.get('path') == str(item) for r in logged()), 'Enter did not apply selected wallpaper')
         wait(lambda: len([r for r in logged() if r['op'] == 'status']) >= 2, 'state did not refresh after apply')
         send(b'2\n')
-        assert b'Mixed' in screen, 'different display settings were not marked as mixed'
+        assert b'Global playback' in screen, 'global settings scope missing'
         send(b'\n')
         for _ in range(6):
             send(b'\x1b[B')
         send(b'\n')
-        wait(lambda: len([r for r in logged() if r.get('options', {}).get('fps') == 144]) == 2, 'all-display FPS picker failed')
-        fps = {r['output']: r for r in logged() if r.get('options', {}).get('fps') == 144}
-        assert fps['DP-2']['path'] == '/test/scene' and fps['DP-2']['options']['volume'] == 0.5 and fps['DP-2']['options']['scaling'] == 'fit', fps
-        assert fps['HDMI-A-1']['path'] == '/other/scene' and fps['HDMI-A-1']['options']['volume'] == 0.2 and fps['HDMI-A-1']['options']['scaling'] == 'fill', fps
+        wait(lambda: any(r['op'] == 'settings' and r.get('set', {}).get('fps') == 144 for r in logged()), 'global FPS picker failed')
+        assert not any(r.get('options', {}).get('fps') == 144 for r in logged()), 'global setting used per-wallpaper replacement'
         pump(0.3)
         send(b'o')
         send(b'\x1b[B\n')
@@ -112,7 +110,7 @@ print('Test SteamCMD download complete')
             send(b'\x1b[B')
         send(b'\n')
         send(b'\x7f\x7f25\n')
-        wait(lambda: any(r.get('options', {}).get('volume') == 0.25 for r in logged()), 'volume percent conversion failed')
+        wait(lambda: any(r['op'] == 'settings' and r.get('set', {}).get('volume') == 0.25 for r in logged()), 'global volume percent conversion failed')
         pump(0.3)
         for _ in range(3):
             send(b'\x1b[B')

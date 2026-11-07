@@ -21,6 +21,7 @@ struct State {
     std::optional<Entry> all;                          // "*"
     std::map<std::string, Entry> outputs;              // by connector name
     std::map<std::string, nlohmann::json> properties;  // scene settings by project path
+    nlohmann::json settings = nlohmann::json::object();
 };
 
 std::filesystem::path file();
@@ -31,5 +32,7 @@ bool save(const State& state);
 nlohmann::json options_json(const Options& options);
 // Fills options from JSON; returns an error message or empty. Unknown keys are errors.
 std::string parse_options(const nlohmann::json& json, Options& options);
+nlohmann::json common_options(const Options& options);
+std::string parse_settings(const nlohmann::json& json, Options& options);
 
 }  // namespace glint::state
