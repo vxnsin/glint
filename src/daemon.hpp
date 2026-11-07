@@ -112,6 +112,7 @@ private:
         bool timer_armed = false;
         std::int64_t cap_due_ns = 0;  // the next draw on the cap's grid; 0 without a cap
 
+        bool has_presented = false;  // at least one successful present on this surface
         bool dirty = true;         // something changed that is not on screen yet
         bool resized = true;       // the swapchain needs the new size
         std::uint32_t paused = 0;  // this output's own reasons; see reasons()

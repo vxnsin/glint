@@ -427,6 +427,7 @@ void Daemon::render(Screen& entry) {
     if (more) output.request_frame();
     const bool submitted = entry.surface->end();
     if (!submitted) {
+        output.abandon_frame();  // A failed present may never commit its frame callback.
         // Suboptimal or out of date: the swapchain is made anew with the next draw.
         entry.resized = true;
         entry.dirty = true;
@@ -434,6 +435,8 @@ void Daemon::render(Screen& entry) {
     } else {
         if (fading) entry.transition.submitted(fade_now);
         entry.dirty = more;
+        if (!entry.has_presented && hyprland_.available()) output.restore_background_layer();
+        entry.has_presented = true;
     }
 
     entry.present_ns[entry.frames % entry.present_ns.size()] = start;
@@ -659,6 +662,7 @@ void Daemon::output_covered(wl::Output& output, bool covered) {
     log::info("{}: {}", output.name(), covered ? "covered by a fullscreen window" : "uncovered");
     if (Screen* entry = screen(output)) {
         pause_changed(*entry, reasons(*entry) ^ pause_covered);
+        if (!covered && hyprland_.available()) output.restore_background_layer();
     }
 }
 

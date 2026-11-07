@@ -67,6 +67,8 @@ public:
     // Gives up on a frame callback the compositor may never send (one asked for before a
     // pause, which Hyprland can hold back for good): the next draw goes ahead without it.
     void abandon_frame();
+    // Reassert the background layer after Hyprland leaves a newly mapped layer transparent.
+    void restore_background_layer();
     // When the last frame callback came (CLOCK_MONOTONIC ns): the compositor had shown the
     // frame before it by then. 0 before the first.
     std::int64_t frame_done_ns() const { return frame_done_ns_; }

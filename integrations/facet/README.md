@@ -63,3 +63,12 @@ width is preserved; Library, general Settings and authored Wallpaper settings ha
 separate tabs. The volume slider controls sound without a separate mute switch.
 Facet's user directories and helper names now use `facet` / `facet-*`; migration
 preserves saved configuration and compatibility links for existing clients.
+
+On Hyprland, Facet disables compositor animations only for the `glint` layer. Glint
+reasserts its background layer after its first successful present and after a monitor
+is uncovered. The affected compositor version can skip the initial map fade behind
+fullscreen content, leaving layer alpha at zero. A background/bottom/background
+layer change asks Hyprland to recalculate its visibility without covering app windows.
+Failed presents also discard their frame callback so an uncommitted request cannot
+block retries. Build and CPU tests pass; the live dual-monitor recovery still needs
+confirmation in the user's desktop session.

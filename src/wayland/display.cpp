@@ -275,6 +275,18 @@ void Output::abandon_frame() {
     frame_ = nullptr;
 }
 
+void Output::restore_background_layer() {
+    if (layer_ == nullptr || surface_ == nullptr || !configured_ ||
+        zwlr_layer_surface_v1_get_version(layer_) < ZWLR_LAYER_SURFACE_V1_SET_LAYER_SINCE_VERSION) {
+        return;
+    }
+    // Hyprland recalculates layer opacity on a layer change, even after a skipped map fade.
+    zwlr_layer_surface_v1_set_layer(layer_, ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM);
+    wl_surface_commit(surface_);
+    zwlr_layer_surface_v1_set_layer(layer_, ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND);
+    wl_surface_commit(surface_);
+}
+
 void Output::apply_surface_state() {
     if (surface_ == nullptr || !configured_) return;
     if (viewport_ != nullptr) {
