@@ -48,8 +48,9 @@ historical milestones; it is not a list of features already implemented.
   configured as local JSON files.
 - Effect swap commands and the remaining particle modules; particles currently run on the
   CPU rather than the planned compute path.
-- Optional web wallpapers, NVIDIA validation, an embedded online Workshop catalog and wiring the Quickshell client
-  into Facet's wallpaper app, launcher and lockscreen.
+- Optional web wallpapers, NVIDIA validation and an embedded online Workshop catalog.
+- Publish and validate the native Facet integration on the real desktop. Core, CLI and
+  Bloom/Tui changes are committed and locally installed; offscreen transport and UI tests pass.
 
 ## Verification
 

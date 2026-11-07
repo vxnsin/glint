@@ -309,32 +309,31 @@ it, so clients should handle both a missing list and an error for an unsupported
 start. `GLINT_LOG=debug` logs every frame; `GLINT_VALIDATION=1` loads the Vulkan validation
 layer if it is installed.
 
-## How facet moves onto it
+## Facet integration
 
-Today: `Wallpapers.qml` runs `frame-wallpaper` (bash) as a process per command, parses its
-JSON output, and `frame-wallpaper` starts linux-wallpaperengine or mpvpaper per screen and
-polls `hyprctl layers` to know when a new one has drawn.
+Facet's wallpaper service uses Quickshell's `Socket` client when the backend marker
+`$XDG_STATE_HOME/frameshell/wallpaper-backend` contains `glint`. It subscribes to
+state, property, output and error events and reconnects after daemon restarts.
+`integrations/facet/GlintClient.qml` is the reusable transport component.
 
-An optional Quickshell client component is provided at
-`integrations/facet/GlintClient.qml`. It connects, subscribes to events, reconnects and
-matches asynchronous replies by request ID. It is not yet wired into the Facet app; the
-following describes the remaining integration:
+Bloom's `wall` launcher mode and both styles' Super+W wallpaper views send `set`
+and `props` requests directly. Common settings first request current status and
+update each selected output separately, preserving its path and other options.
+Authored property changes target only displays showing the selected project.
+The background surface yields to Glint on assigned outputs; locking sends
+`pause` with `locked` and unlocking sends the matching `resume`. Fullscreen
+pause remains Glint's responsibility.
 
-- `Wallpapers.qml` opens the socket with Quickshell's `Socket` (`Quickshell.Io`), sends
-  `subscribe`, and keeps `outputs`, `status` and `props` as properties bound from events.
-  No process spawning, no queue, no polling. `apply(path, screen)` becomes one `set`.
-- The wallpaper app's settings panel lists `props` for the screen's wallpaper and sends
-  `props set` on every change; sliders feel live because a uniform update is a frame away.
-- Lockscreen: `pause` with `locked` on lock, `resume` on unlock. Game mode: nothing,
-  glint sees the fullscreen toplevel itself.
-- `frame-wallpaper` shrinks to the library: scanning the folders and the Workshop,
-  previews with ffmpeg, the `list` command. Its `set`, `apply`, `pause`, `resume`, `stop`
-  become `glint` calls, and `apply` at login is `exec-once = glint` (glint restores its own
-  state). The `backend` setting goes away; `image`-only users get the same daemon with
-  nothing but pictures loaded.
-- The launcher's `wall` mode and the `facet wallpaper` CLI call `glint` directly.
-- `Backdrop.qml` (the shell drawing pictures itself) is no longer needed, but can stay as the
-  fallback when glint is not installed.
+`frame-wallpaper list-local` supplies local image/video library entries alongside
+Glint's installed Workshop list. Other legacy helper commands remain available
+for configurations that have not selected Glint. A disconnected Glint selection
+does not fall back to a legacy renderer. `frame-glint-start` handles autostart,
+existing-daemon reuse and first-run migration without replacing saved Glint state.
+`facet wallpaper` opens the separate terminal interface; explicit subcommands
+forward to the Glint CLI. Online discovery opens Steam Workshop.
 
-Other shells (Quickshell-, AGS-, Eww-based, plain scripts) use the same socket; nothing in
-the protocol knows about facet.
+The initial native integration is committed in Facet core, CLI and Bloom/Tui
+styles and locally installed. Publication is pending repository write access.
+Offscreen tests cover the native views with a fake asynchronous transport; the
+real desktop socket and compositor still require user validation. Other shells
+use the same protocol without any dependency on Facet.
