@@ -790,6 +790,13 @@ nlohmann::json Daemon::status_json(Screen& entry) {
         {"width", entry.surface->extent().width},
         {"height", entry.surface->extent().height},
         {"swapchain_images", entry.surface->image_count()},
+        {"frame_pending", entry.output->frame_pending()},
+        {"dirty", entry.dirty},
+        {"configured", entry.output->configured()},
+        {"current_wants_frames", entry.current && entry.current->wants_frames()},
+        {"incoming_wants_frames", entry.incoming && entry.incoming->wants_frames()},
+        {"incoming_ready", entry.incoming && entry.incoming->ready()},
+        {"timer_armed", entry.timer_armed},
     };
     std::uint64_t memory = 0;
     if (entry.current) memory += entry.current->memory();

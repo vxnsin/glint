@@ -130,6 +130,12 @@ is the CPU time of the last frame, `gpu_ms` its GPU time from timestamp queries,
 the time of the last `set` on this output. `wakeups` counts the daemon's returns from
 `poll` since it started. Without `output` (or with `*`): an object keyed by output.
 
+Frame scheduling diagnostics include `frame_pending` (waiting for a Wayland frame
+callback), `dirty`, `configured`, `current_wants_frames`, `incoming_wants_frames`,
+`incoming_ready` and `timer_armed`. These distinguish a configured, unpaused wallpaper
+from one that is actually presenting frames; `running` alone does not prove progress.
+
+
 ### props list / get / set / reset
 
 The background's own settings. For a scene these are `project.json` `general.properties`
