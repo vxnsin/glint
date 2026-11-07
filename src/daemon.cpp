@@ -536,6 +536,7 @@ void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<
     }
     entry.incoming_origin_ns = 0;
     entry.incoming = std::move(wallpaper);
+    entry.last_state.clear();  // An assignment can change while the output stays paused.
     entry.request = std::move(request);
     entry.error.clear();
     Wallpaper* incoming = entry.incoming.get();
@@ -549,6 +550,7 @@ void Daemon::apply(Screen& entry, const Assignment& assignment, std::shared_ptr<
 }
 
 void Daemon::loaded(Screen& entry, Wallpaper* wallpaper, const std::string& error) {
+    entry.last_state.clear();
     if (!error.empty()) {
         log::warn("{}: {}: {}", entry.output->name(), wallpaper->path().string(), error);
         if (server_) {
@@ -847,6 +849,7 @@ std::string Daemon::unset(std::string_view output) {
         entry->incoming.reset();
         entry->transition.reset();
         entry->error.clear();
+        entry->last_state.clear();
         entry->dirty = true;
     }
     save_state();

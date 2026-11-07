@@ -39,6 +39,9 @@ or as text.
 
 ## Operations
 
+State subscribers are notified when a wallpaper assignment or load result changes,
+even when the output remains paused throughout the switch.
+
 ### outputs
 
 ```
