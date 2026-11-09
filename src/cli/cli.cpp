@@ -1,0 +1,406 @@
+#include "cli/cli.hpp"
+
+#include <errno.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <iostream>
+#include <nlohmann/json.hpp>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "cli/configure.hpp"
+#include "cli/library.hpp"
+#include "cli/tui.hpp"
+#include "cli/workshop.hpp"
+#include "core/fd.hpp"
+#include "core/paths.hpp"
+
+namespace glint::cli {
+
+namespace {
+
+using nlohmann::json;
+
+int usage_error(const char* message) {
+    std::fprintf(stderr, "glint: %s (glint --help)\n", message);
+    return 2;
+}
+
+UniqueFd connect_daemon(bool quiet = false) {
+    std::string path = paths::socket_path().string();
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    if (path.size() >= sizeof(address.sun_path)) return {};
+    std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
+    UniqueFd fd(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
+    if (!fd) {
+        if (!quiet)
+            std::fprintf(stderr, "glint: cannot create IPC socket: %s\n", std::strerror(errno));
+        return {};
+    }
+    if (::connect(fd.get(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        const int error = errno;
+        if (quiet) return {};
+        if (error == ENOENT || error == ECONNREFUSED)
+            std::fprintf(stderr, "glint: no daemon on %s (start it with: glint)\n", path.c_str());
+        else
+            std::fprintf(stderr, "glint: cannot connect to %s: %s\n", path.c_str(),
+                         std::strerror(error));
+        return {};
+    }
+    return fd;
+}
+
+bool send_line(int fd, const json& message) {
+    std::string line = message.dump(-1, ' ', false, json::error_handler_t::replace) + "\n";
+    std::size_t done = 0;
+    while (done < line.size()) {
+        ssize_t n = ::send(fd, line.data() + done, line.size() - done, MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        done += static_cast<std::size_t>(n);
+    }
+    return true;
+}
+
+// Reads one line; false on EOF.
+bool read_line(int fd, std::string& buffer, std::string& line) {
+    for (;;) {
+        if (auto end = buffer.find('\n'); end != std::string::npos) {
+            line = buffer.substr(0, end);
+            buffer.erase(0, end + 1);
+            return true;
+        }
+        char chunk[4096];
+        ssize_t n = ::read(fd, chunk, sizeof(chunk));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        buffer.append(chunk, static_cast<std::size_t>(n));
+        if (buffer.size() > 16 * 1024 * 1024) return false;
+    }
+}
+
+std::string number(const json& value, int decimals) {
+    if (!value.is_number()) return "-";
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.*f", decimals, value.get<double>());
+    return text;
+}
+
+void print_outputs(const json& list) {
+    for (const auto& o : list) {
+        const auto& w = o["wallpaper"];
+        std::printf("%s  %dx%d  scale %s  %s Hz  at %d,%d  %s", o.value("name", "?").c_str(),
+                    o.value("width", 0), o.value("height", 0), number(o["scale"], 2).c_str(),
+                    number(o["refresh"], 2).c_str(), o.value("x", 0), o.value("y", 0),
+                    w.value("state", "?").c_str());
+        if (w.contains("reason")) std::printf(" (%s)", w["reason"].get<std::string>().c_str());
+        if (w.contains("path")) std::printf("  %s", w["path"].get<std::string>().c_str());
+        std::printf("\n");
+    }
+}
+
+void print_status(const std::string& name, const json& s) {
+    std::printf("%s: %s", name.c_str(), s.value("state", "?").c_str());
+    if (s["paused_reasons"].is_array() && !s["paused_reasons"].empty()) {
+        std::string reasons;
+        for (const auto& r : s["paused_reasons"]) {
+            if (!reasons.empty()) reasons += ", ";
+            reasons += r.get<std::string>();
+        }
+        std::printf(" (%s)", reasons.c_str());
+    }
+    std::printf("\n");
+    if (s["path"].is_string()) {
+        std::printf("  %s %s\n", s.value("kind", "?").c_str(),
+                    s["path"].get<std::string>().c_str());
+    }
+    std::printf("  %ux%u, %s fps now, %llu frames, last frame %s ms CPU, %s ms GPU\n",
+                s.value("width", 0u), s.value("height", 0u), number(s["fps"], 0).c_str(),
+                static_cast<unsigned long long>(s.value("frames", 0ull)),
+                number(s["frame_ms"], 2).c_str(), number(s["gpu_ms"], 3).c_str());
+    std::printf("  load %s ms, %s MB on the GPU\n", number(s["load_ms"], 1).c_str(),
+                number(s["memory_mb"], 1).c_str());
+    if (s.contains("message"))
+        std::printf("  error: %s\n", s["message"].get<std::string>().c_str());
+}
+
+void print_text(const std::string& op, const json& result) {
+    if (op == "outputs") {
+        print_outputs(result);
+    } else if (op == "status") {
+        if (result.contains("state")) {
+            print_status("output", result);
+        } else {
+            for (const auto& [name, s] : result.items()) print_status(name, s);
+        }
+    } else if (op == "set") {
+        std::printf("%s, %s ms\n", result.value("kind", "?").c_str(),
+                    number(result["load_ms"], 1).c_str());
+    } else if (op == "props" && result.is_array()) {
+        for (const auto& p : result) {
+            if (p.value("type", "") == "text" || p.value("type", "") == "group") continue;
+            std::printf("%-16s %-8s %-28s %s%s\n", p.value("name", "?").c_str(),
+                        p.value("type", "?").c_str(), p["value"].dump().c_str(),
+                        p.value("text", "").substr(0, 40).c_str(),
+                        p.value("visible", true) ? "" : "  (hidden)");
+        }
+    } else if (op == "screenshot") {
+        std::printf("%s, %dx%d\n", result.value("path", "?").c_str(), result.value("width", 0),
+                    result.value("height", 0));
+    } else if (op == "version") {
+        std::printf("glint %s (protocol %d), Vulkan %s on %s\n",
+                    result.value("version", "?").c_str(), result.value("protocol", 0),
+                    result.value("vulkan", "?").c_str(), result.value("device", "?").c_str());
+    } else if (!result.is_null()) {
+        std::printf("%s\n", result.dump(2).c_str());
+    }
+}
+
+}  // namespace
+
+json request_daemon(const json& request, std::stop_token stop) {
+    UniqueFd fd = connect_daemon(true);
+    if (!fd) return {{"ok", false}, {"error", "Glint is offline. Start it with glint --daemon."}};
+    timeval timeout{1, 0};
+    ::setsockopt(fd.get(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    ::setsockopt(fd.get(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    json message = request;
+    message["id"] = 1;
+    if (!send_line(fd.get(), message))
+        return {{"ok", false}, {"error", "Cannot send request to glint"}};
+    std::string buffer;
+    auto deadline = std::chrono::steady_clock::now() +
+                    std::chrono::seconds(request.value("op", "") == "set" ? 120 : 5);
+    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) {
+        pollfd ready{fd.get(), POLLIN, 0};
+        int count = ::poll(&ready, 1, 100);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) break;
+        if (count == 0) continue;
+        char bytes[4096];
+        ssize_t n = ::recv(fd.get(), bytes, sizeof(bytes), 0);
+        if (n <= 0) break;
+        buffer.append(bytes, static_cast<std::size_t>(n));
+        if (buffer.size() > 16 * 1024 * 1024) break;
+        for (;;) {
+            auto end = buffer.find('\n');
+            if (end == std::string::npos) break;
+            json reply = json::parse(buffer.substr(0, end), nullptr, false);
+            buffer.erase(0, end + 1);
+            if (reply.is_object() && reply.value("id", json()) == 1 && !reply.contains("event"))
+                return reply;
+        }
+    }
+    return {{"ok", false},
+            {"error", "Glint did not reply before the connection closed or timed out"}};
+}
+
+int run(int argc, char** argv) {
+    std::vector<std::string_view> args;
+    bool as_json = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string_view arg = argv[i];
+        if (arg == "--json") {
+            as_json = true;
+        } else {
+            args.push_back(arg);
+        }
+    }
+    if (args.empty()) return usage_error("no command");
+    std::string op(args[0]);
+    if (op == "download" || op == "import") {
+        if (as_json || (op == "download" && args.size() != 3) ||
+            (op == "import" && args.size() != 2))
+            return usage_error(
+                "download <Workshop id|link> <Steam account> | import <downloaded folder>");
+        std::string error;
+        if (op == "download") {
+            const auto id = workshop_item_id(std::string(args[1]));
+            error = download_workshop(id, std::string(args[2]));
+        } else
+            error = register_workshop_download(resolve_wallpaper(args[1]), download_path());
+        if (!error.empty()) {
+            std::fprintf(stderr, "glint: %s\n", error.c_str());
+            return 1;
+        }
+        std::printf("Wallpaper added to glint's library.\n");
+        return 0;
+    }
+    if (op == "list" || op == "inspect") {
+        if ((op == "inspect" && args.size() != 2) || (op == "list" && args.size() > 2))
+            return usage_error("list [search] | inspect <Workshop id|folder>");
+        std::string error;
+        json result = op == "list" ? list_installed_library(workshop_path(), download_path(),
+                                                            args.size() == 2 ? args[1] : "", error)
+                                   : inspect_wallpaper(resolve_wallpaper(args[1]), error);
+        if (!error.empty()) {
+            std::fprintf(stderr, "glint: %s\n", error.c_str());
+            return 1;
+        }
+        if (as_json || op == "inspect")
+            std::printf("%s\n", result.dump(2).c_str());
+        else
+            for (const auto& item : result) {
+                std::printf("%s  %-6s %s\n", item["id"].get<std::string>().c_str(),
+                            item["type"].get<std::string>().c_str(),
+                            item["title"].get<std::string>().c_str());
+            }
+        return 0;
+    }
+    if (op == "configure" || op == "choose") {
+        if (as_json || (op == "configure" && args.size() != 2) ||
+            (op == "choose" && args.size() > 2))
+            return usage_error("configure <output> | choose [search]");
+        json library;
+        if (op == "choose") {
+            std::string error;
+            library = list_installed_library(workshop_path(), download_path(),
+                                             args.size() == 2 ? args[1] : "", error);
+            if (!error.empty()) {
+                std::fprintf(stderr, "glint: %s\n", error.c_str());
+                return 1;
+            }
+        }
+        UniqueFd fd = connect_daemon();
+        if (!fd) return 1;
+        std::string buffer;
+        auto exchange = [&](const json& request) -> json {
+            json message = request;
+            message["id"] = 1;
+            if (!send_line(fd.get(), message))
+                return {{"ok", false}, {"error", "the daemon closed the connection"}};
+            std::string line;
+            while (read_line(fd.get(), buffer, line)) {
+                json reply = json::parse(line, nullptr, false);
+                if (reply.is_object() && !reply.contains("event") && reply.value("id", json()) == 1)
+                    return reply;
+            }
+            return {{"ok", false}, {"error", "the daemon closed the connection"}};
+        };
+        if (op == "choose") return choose_wallpaper(library, std::cin, std::cout, exchange);
+        return configure(std::string(args[1]), std::cin, std::cout, exchange);
+    }
+    json request = {{"id", 1}, {"op", op}};
+
+    if (op == "outputs" || op == "version") {
+        if (args.size() != 1) return usage_error("too many arguments");
+    } else if (op == "status") {
+        if (args.size() > 2) return usage_error("status takes one output at most");
+        if (args.size() == 2) request["output"] = std::string(args[1]);
+    } else if (op == "set") {
+        if (args.size() < 3) return usage_error("set <output|*> <path> [key=value ...]");
+        request["output"] = std::string(args[1]);
+        request["path"] = resolve_wallpaper(args[2]).string();
+        json options = json::object();
+        for (std::size_t i = 3; i < args.size(); ++i) {
+            auto eq = args[i].find('=');
+            if (eq == std::string_view::npos) return usage_error("options are key=value");
+            std::string key(args[i].substr(0, eq));
+            std::string value(args[i].substr(eq + 1));
+            if (key == "volume" || key == "speed") {
+                try {
+                    options[key] = std::stod(value);
+                } catch (...) {
+                    return usage_error("volume is a number from 0 to 1");
+                }
+            } else if (key == "duration" || key == "fps") {
+                try {
+                    options[key] = std::stoi(value);
+                } catch (...) {
+                    return usage_error("duration and fps are numbers");
+                }
+            } else {
+                options[key] = value;
+            }
+        }
+        if (!options.empty()) request["options"] = options;
+    } else if (op == "unset") {
+        if (args.size() != 2) return usage_error("unset <output|*>");
+        request["output"] = std::string(args[1]);
+    } else if (op == "pause" || op == "resume") {
+        if (args.size() > 3) return usage_error("pause|resume [output] [reason]");
+        request["output"] = args.size() >= 2 ? std::string(args[1]) : "*";
+        if (args.size() == 3) request["reason"] = std::string(args[2]);
+    } else if (op == "screenshot") {
+        if (args.size() != 3) return usage_error("screenshot <output> <file.png>");
+        request["output"] = std::string(args[1]);
+        std::error_code ec;
+        request["path"] = std::filesystem::absolute(std::string(args[2]), ec).string();
+    } else if (op == "subscribe") {
+        json events = json::array();
+        for (std::size_t i = 1; i < args.size(); ++i) events.push_back(std::string(args[i]));
+        if (!events.empty()) request["events"] = events;
+    } else if (op == "props") {
+        // props <output>                 list
+        // props <output> reset
+        // props <output> name value ...  set (value as JSON, else a string)
+        if (args.size() < 2) return usage_error("props <output> [reset | name value ...]");
+        request["output"] = std::string(args[1]);
+        if (args.size() == 3 && args[2] == "reset") {
+            request["reset"] = true;
+        } else if (args.size() > 2) {
+            if ((args.size() - 2) % 2 != 0) return usage_error("props: name value pairs");
+            json set = json::object();
+            for (std::size_t i = 2; i + 1 < args.size(); i += 2) {
+                std::string text(args[i + 1]);
+                if (text == "on") text = "true";
+                if (text == "off") text = "false";
+                json value = json::parse(text, nullptr, false);
+                set[std::string(args[i])] = value.is_discarded() ? json(text) : value;
+            }
+            request["set"] = set;
+        }
+    } else if (op == "audio" || op == "cursor" || op == "settings") {
+        // Sent as is; the daemon says which milestone brings it.
+    } else {
+        std::fprintf(stderr, "glint: unknown command '%s'\n", op.c_str());
+        return 2;
+    }
+
+    UniqueFd fd = connect_daemon();
+    if (!fd) return 1;
+    if (!send_line(fd.get(), request)) {
+        std::fprintf(stderr, "glint: the daemon closed the connection\n");
+        return 1;
+    }
+
+    std::string buffer, line;
+    // The reply first.
+    for (;;) {
+        if (!read_line(fd.get(), buffer, line)) {
+            std::fprintf(stderr, "glint: the daemon closed the connection\n");
+            return 1;
+        }
+        json reply = json::parse(line, nullptr, false);
+        if (reply.is_discarded() || reply.contains("event")) continue;
+        if (!reply.value("ok", false)) {
+            std::fprintf(stderr, "glint: %s\n", reply.value("error", "failed").c_str());
+            return 1;
+        }
+        if (as_json) {
+            std::printf("%s\n", reply["result"].dump(2).c_str());
+        } else if (op != "subscribe") {
+            print_text(op, reply["result"]);
+        }
+        break;
+    }
+    if (op != "subscribe") return 0;
+
+    // Then events, one JSON line each, until the daemon goes away or we are interrupted.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
+    while (read_line(fd.get(), buffer, line)) std::printf("%s\n", line.c_str());
+    return 0;
+}
+
+}  // namespace glint::cli

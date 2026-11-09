@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<title>glint</title>
+<!-- One facet of the facet gem, seen straight on: a rhombus cut into four faces, lit from the
+     top left. The glint is the flash on its upper right edge. Periwinkle like facet's mark. -->
+<defs>
+<radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+<stop offset="0" stop-color="#fff" stop-opacity="0.55"/>
+<stop offset="1" stop-color="#fff" stop-opacity="0"/>
+</radialGradient>
+</defs>
+<path d="M256 70L420 256L256 256Z" fill="#93a4f7"/>
+<path d="M420 256L256 442L256 256Z" fill="#3f4bb8"/>
+<path d="M256 442L92 256L256 256Z" fill="#5d6fe8"/>
+<path d="M92 256L256 70L256 256Z" fill="#e1e4ff"/>
+<path d="M256 70L420 256L256 442L92 256Z" fill="none" stroke="#0b0c1f" stroke-opacity="0.18" stroke-width="10" stroke-linejoin="round"/>
+<circle cx="338" cy="163" r="92" fill="url(#glow)"/>
+<path d="M338 85Q338 163 416 163Q338 163 338 241Q338 163 260 163Q338 163 338 85Z" fill="#fff"/>
+</svg>

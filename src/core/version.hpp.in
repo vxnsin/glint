@@ -1,0 +1,9 @@
+#pragma once
+
+// Filled in by CMake from the project version.
+namespace glint {
+
+inline constexpr const char* version = "@PROJECT_VERSION@";
+inline constexpr int protocol_version = 1;  // docs/IPC.md
+
+}  // namespace glint
