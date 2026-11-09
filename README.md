@@ -6,54 +6,35 @@
 </p>
 
 <p align="center">
-  A Wayland wallpaper engine that draws with Vulkan. One daemon serves every output.<br>
+  A Wayland wallpaper engine that draws with Vulkan.<br>
   Built for <a href="https://github.com/facet-shell">facet</a>, usable from any shell.
 </p>
 
-**Status: milestone M5 in progress.** The daemon puts still pictures and Wallpaper Engine
-scenes (image layers, effects, particles, puppets, text, SceneScript, live settings) on
-every output with Vulkan and is driven over the socket. Videos, embedded video textures,
-sound and MPRIS media are implemented too. The [current checklist](docs/STATUS.md)
-separates working features from remaining work; the
-[issues](https://github.com/vxnsin/glint/issues) track follow-ups.
+<p align="center">
+  <a href="https://github.com/vxnsin/glint/actions/workflows/ci.yml"><img src="https://github.com/vxnsin/glint/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+</p>
 
-## What it does
+glint is one daemon per session. It puts a layer-shell surface on every output, draws
+into it with Vulkan and takes its orders over a Unix socket.
 
-glint runs as one process per session, puts a layer-shell surface on every output and
-draws into it with Vulkan. A shell or a script talks to it over a Unix socket.
+It shows pictures, videos and Wallpaper Engine scenes from the Steam Workshop: effects,
+particles, puppets, text, sound and SceneScript. The options a scene author put into
+`project.json` can be changed while the scene runs.
 
-- **Still pictures and videos.** Pictures decode once and then cost nothing. Videos decode
-  in hardware where the driver allows it.
-- **Wallpaper Engine backgrounds.** Scenes from the Steam Workshop with their effects,
-  particles, sounds and settings. Web wallpapers are planned as an optional module.
-- **The wallpaper's own settings, live.** Every option a scene author put into
-  `project.json` is listed over the socket and can be changed while the scene runs. A
-  shell can build a settings panel from that list without knowing the format.
-- **Interaction and audio.** Cursor position goes into the scene (parallax, mouse effects,
-  particle control points). Sounds play through PipeWire. Audio-reactive scenes get a
-  spectrum of the sound that is playing.
-- **Zero cost when nothing happens.** Frames are drawn only when the compositor asks and
-  something changed. A fullscreen window pauses its output. A lockscreen can pause one with
-  `glint pause <output> locked`.
-- **Fast switching.** Shaders and textures are cached on disk, loading runs in the
-  background, and the old wallpaper stays on screen until the new one is ready.
-- **Per output.** Different wallpapers per screen, fractional scale, outputs that come and
-  go.
+Version 0.1.0 is early. It has been tested on one machine, Hyprland with AMD graphics,
+and some scenes still look wrong. [docs/STATUS.md](docs/STATUS.md) lists what works and
+what is missing, and the [issues](https://github.com/vxnsin/glint/issues) track the rest.
+NVIDIA has not been tried.
 
-## Why not the engines that exist
+## Install
 
-[linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine) made Workshop
-scenes run on Linux and taught us the format. But it starts a new process for every switch
-and compiles everything again, has no way to change a setting in a running instance,
-renders on its own clock, separate from the compositor's, and busy waits while paused. The
-plan has a [close reading](docs/PLAN.md#reading-linux-wallpaperengine) of its render path
-and what glint does differently.
+You need Linux, a Wayland compositor with `wlr-layer-shell` (Hyprland, sway, river, niri)
+and Vulkan 1.3. The packages are listed in [docs/PLAN.md](docs/PLAN.md#dependencies),
+with their Arch names.
 
-## Build
-
-Linux, a Wayland compositor with `wlr-layer-shell` (Hyprland, sway, river, niri), Vulkan
-1.3. Packages are listed in [docs/PLAN.md](docs/PLAN.md#dependencies). Tested on Hyprland
-with AMD graphics. NVIDIA is not validated yet.
+On Arch, unpack the archive from the [latest
+release](https://github.com/vxnsin/glint/releases/latest) and run `bin/glint`. On any
+other system, build the source:
 
 ```
 cmake --preset release
@@ -61,63 +42,58 @@ cmake --build --preset release
 cmake --install build/release --prefix ~/.local
 ```
 
-The local installation adds `glint` to `~/.local/bin` and a **Glint** application entry
-with its icon. In Facet, open the launcher, search for Glint and press Enter to open the
-TUI in Ghostty. The entry uses the installed executable's absolute path.
+The install puts `glint` in `~/.local/bin` and adds a Glint entry to the application
+launcher, which opens the terminal UI.
 
 ## Use
 
 ```
-glint                                   # terminal UI: library, previews, settings, Workshop
-glint tui                               # explicitly open the TUI
+glint                                   # terminal UI
 glint --daemon                          # the daemon; Hyprland: exec-once = glint --daemon
 glint set DP-1 ~/Pictures/lake.jpg
-glint set '*' ~/Pictures/lake.jpg scaling=fit color=#203040
+glint set '*' 3426865175                # a Workshop id or an item folder
+glint set '*' lake.jpg scaling=fit color=#203040
+glint choose roxy                       # pick a wallpaper and an output in a menu
+glint list hikari                       # search installed Workshop titles, ids, tags
+glint props DP-1                        # the scene's own settings
+glint props DP-1 bloom off
+glint configure DP-1                    # the same, in a terminal menu
 glint status                            # per output: state, frames, CPU and GPU time
 glint pause '*' locked                  # from a lockscreen; resume with the same reason
+glint screenshot DP-1 shot.png
 glint subscribe                         # events as JSON lines
 ```
 
-Wallpaper Engine scenes from the Workshop and their settings:
+The daemon remembers what was on which output and restores it on the next start.
 
-```
-glint set '*' 3426865175                # a Workshop id, or the item's folder
-glint list hikari                      # search installed titles, ids and tags
-glint choose roxy                      # select a wallpaper and output in a menu
-glint inspect 3510729512 --json          # project, properties and scene counts, no daemon
-glint props DP-1                        # the scene's own settings
-glint configure DP-1                    # edit visible settings in a terminal menu
-glint props DP-1 bloom off
-glint screenshot DP-1 shot.png          # what glint drew, without the windows on top
-```
+The [terminal UI](docs/TUI.md) has previews, search, display selection and the settings
+of the current wallpaper. Workshop items open in Steam, or download by id with SteamCMD
+if you have it installed.
 
-The daemon remembers what was on which output in `$XDG_STATE_HOME/glint/state.json` and
-puts it back on the next start.
-
-The [terminal UI](docs/TUI.md) has arrow-key navigation, color image previews, search,
-display selection and wallpaper settings. Its settings page also edits FPS, scaling,
-transitions and sound. Workshop items can be opened in Steam, downloaded by ID with the
-optional SteamCMD tool, or imported from an existing download. SteamCMD handles its own
-login and Steam Guard prompts. Online Workshop search opens the signed-in Steam client.
-glint has no embedded online catalog.
-
-Two tools come with the build: `glint-render <item> out.png --frames 120` draws a scene
-headless into a PNG (no compositor needed, scripts and particles run), and
-`we-inspect <item>` dumps what glint reads from a Workshop item (`--shaders`, `--scripts`,
-`--text`).
+The build also makes `glint-render`, which draws a scene into a PNG without a compositor,
+and `we-inspect`, which dumps what glint reads from a Workshop item.
 
 The socket protocol is in [docs/IPC.md](docs/IPC.md). It is plain JSON lines, so a shell
-can use it directly; Quickshell's `Socket` type does, and `socat` works for scripts.
+can talk to it directly. Quickshell's `Socket` does, and `socat` works for scripts.
+
+## Why not linux-wallpaperengine
+
+[linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine) made Workshop
+scenes run on Linux and taught us the format. It starts a new process for every switch,
+cannot change a setting in a running instance, renders on its own clock instead of the
+compositor's, and busy waits while paused. glint is a rewrite built around those points.
+The [plan](docs/PLAN.md#reading-linux-wallpaperengine) has the details.
 
 ## Docs
 
-- [docs/PLAN.md](docs/PLAN.md): the stack and why, modules, milestones, what is measured.
-- [docs/STATUS.md](docs/STATUS.md): implemented features, remaining work and verification.
-- [docs/IPC.md](docs/IPC.md): the socket protocol and how facet moves onto it.
-- [docs/FORMATS.md](docs/FORMATS.md): what of Wallpaper Engine's formats glint reads.
-- [docs/LOG.md](docs/LOG.md): the measurements per milestone.
+- [docs/PLAN.md](docs/PLAN.md): the stack, modules, milestones and dependencies.
+- [docs/STATUS.md](docs/STATUS.md): what works and what does not.
+- [docs/IPC.md](docs/IPC.md): the socket protocol.
+- [docs/FORMATS.md](docs/FORMATS.md): which Wallpaper Engine formats glint reads.
+- [docs/TUI.md](docs/TUI.md): the terminal UI.
+- [docs/LOG.md](docs/LOG.md): measurements per milestone.
 
 ## License
 
 MIT. glint is not affiliated with Wallpaper Engine or Valve and ships none of their
-assets; scenes need Wallpaper Engine installed through Steam.
+assets. Scenes need Wallpaper Engine installed through Steam.

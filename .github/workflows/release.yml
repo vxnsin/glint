@@ -55,4 +55,4 @@ jobs:
           body: |
             The linux-x86_64 archive is built on Arch Linux against its current libraries and
             runs on Arch-based systems. On other distributions, build the source archive; the
-            packages are listed in the README.
+            packages are listed in docs/PLAN.md under Dependencies.
