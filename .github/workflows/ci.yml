@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The real build: everything the daemon needs, on Arch like the machine it is made for.
+  # None of the registered tests needs a GPU, a compositor or a Steam installation.
+  arch:
+    name: Arch, ${{ matrix.preset }}
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [release, debug]
+    steps:
+      - name: Install packages
+        run: |
+          pacman -Syu --noconfirm --needed git cmake ninja python \
+            vulkan-headers vulkan-icd-loader volk wayland wayland-protocols wlr-protocols \
+            glslang nlohmann-json lz4 ffmpeg pipewire freetype2 harfbuzz fontconfig \
+            quickjs-ng sdbus-cpp
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+      - name: Test
+        run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure
+
+  # The parts that need nothing but a C++23 compiler (FFT and spectrum, window rules and
+  # power policy, the worker pool), on a plain Ubuntu without any of the platform libraries.
+  portable:
+    name: Ubuntu, no platform libraries
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends g++-14 cmake ninja-build
+      - name: Build and test
+        run: |
+          export CXX=g++-14
+          cmake --preset hello
+          cmake --build --preset hello
+          ctest --test-dir build/hello --output-on-failure

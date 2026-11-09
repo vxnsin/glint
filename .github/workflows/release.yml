@@ -1,0 +1,58 @@
+name: release
+
+# A tag like v0.2.0 builds and tests the tagged commit and publishes a GitHub release with
+# the source archive, a binary archive for Arch-based systems and checksums.
+on:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install packages
+        run: |
+          pacman -Syu --noconfirm --needed git cmake ninja python \
+            vulkan-headers vulkan-icd-loader volk wayland wayland-protocols wlr-protocols \
+            glslang nlohmann-json lz4 ffmpeg pipewire freetype2 harfbuzz fontconfig \
+            quickjs-ng sdbus-cpp
+      - uses: actions/checkout@v4
+      - name: The tag and CMakeLists.txt agree on the version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          found=$(sed -n '/^project(glint/,/)/s/^ *VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          if [ "$version" != "$found" ]; then
+            echo "tag $GITHUB_REF_NAME, but CMakeLists.txt says version $found"
+            exit 1
+          fi
+      - name: Build and test
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+          ctest --test-dir build/release --output-on-failure
+      - name: Archives and checksums
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          version="${GITHUB_REF_NAME#v}"
+          mkdir dist
+          git archive --format=tar.gz --prefix="glint-$version/" \
+            -o "dist/glint-$version.tar.gz" "$GITHUB_REF_NAME"
+          stage="glint-$version-linux-x86_64"
+          install -Dm755 build/release/glint "$stage/bin/glint"
+          install -Dm644 brand/icon.svg "$stage/share/icons/hicolor/scalable/apps/glint.svg"
+          install -Dm644 LICENSE "$stage/LICENSE"
+          install -Dm644 README.md "$stage/README.md"
+          tar -czf "dist/$stage.tar.gz" "$stage"
+          (cd dist && sha256sum * > SHA256SUMS)
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            The linux-x86_64 archive is built on Arch Linux against its current libraries and
+            runs on Arch-based systems. On other distributions, build the source archive; the
+            packages are listed in the README.
