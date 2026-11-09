@@ -1155,10 +1155,14 @@ JSValue native_store(JSContext* ctx, JSValueConst, int argc, JSValueConst* argv)
     return JS_UNDEFINED;
 }
 
-int interrupt(JSRuntime*, void* opaque) {
+int interrupt_state(void* opaque) {
     auto* impl = static_cast<ScriptHost::Impl*>(opaque);
     return std::chrono::steady_clock::now() > impl->deadline ? 1 : 0;
 }
+
+// quickjs-ng passes a JSRuntime* in older releases and a JSContext* in newer ones.
+[[maybe_unused]] int interrupt(JSRuntime*, void* opaque) { return interrupt_state(opaque); }
+[[maybe_unused]] int interrupt(JSContext*, void* opaque) { return interrupt_state(opaque); }
 
 // User overrides apply to a copy of the scene, before script modules are evaluated.
 // The workshop package stays unchanged and every other wallpaper keeps its own settings.
