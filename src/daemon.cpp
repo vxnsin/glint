@@ -6,6 +6,7 @@
 #include <sys/timerfd.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdlib>
 
 #include "core/clock.hpp"
@@ -62,12 +63,16 @@ std::vector<std::string> pause_reason_names(std::uint32_t reasons) {
 Daemon::Daemon() : display_(*this) {
     const char* force = std::getenv("GLINT_TRACK_TOPLEVELS");
     force_toplevels_ = force != nullptr && force[0] == '1';
+    if (hyprland_.available()) {
+        display_.set_fullscreen_query([this] { return hyprland_.fullscreen_outputs(); });
+    }
 }
 
 Daemon::~Daemon() {
     // Clients first, wallpapers (they hold textures), then the loaders, then the GPU.
     server_.reset();
     screens_.clear();
+    follow_hyprland(false);
     display_.shutdown();  // its outputs call back into screens_, which is still here
     workers_.reset();
     textures_.reset();
@@ -190,6 +195,7 @@ void Daemon::before_poll() {
         }
     }
     display_.track_toplevels(animating);
+    follow_hyprland(animating);
 
     // Audio capture only while a shown, running wallpaper wants the spectrum.
     bool audio = false;
@@ -335,6 +341,56 @@ bool Daemon::due(Screen& entry) {
         entry.timer_armed = true;
     }
     return false;
+}
+
+void Daemon::follow_hyprland(bool on) {
+    // Workspace switches move no toplevel between outputs and need not change focus (a
+    // silent move, a special workspace): Hyprland's events say when to look again.
+    on = on && hyprland_.available();
+    if (on == (hyprland_events_id_ != 0)) return;
+    if (!on) {
+        loop_.remove(hyprland_events_id_);
+        hyprland_events_id_ = 0;
+        hyprland_events_.reset();
+        hyprland_buffer_.clear();
+        return;
+    }
+    hyprland_events_ = hyprland_.events();
+    if (!hyprland_events_) return;  // tried again with the next pass that wants it
+    hyprland_events_id_ = loop_.add(hyprland_events_.get(), POLLIN, [this](short) {
+        bool relevant = false, closed = false;
+        char chunk[4096];
+        for (;;) {
+            ssize_t n = ::read(hyprland_events_.get(), chunk, sizeof(chunk));
+            if (n > 0) {
+                hyprland_buffer_.append(chunk, static_cast<std::size_t>(n));
+                continue;
+            }
+            closed = n == 0 || (errno != EAGAIN && errno != EINTR);
+            if (n < 0 && errno == EINTR) continue;
+            break;
+        }
+        std::size_t start = 0;
+        for (std::size_t end; (end = hyprland_buffer_.find('\n', start)) != std::string::npos;
+             start = end + 1) {
+            std::string_view line(hyprland_buffer_.data() + start, end - start);
+            static constexpr std::string_view events[] = {
+                "workspace>>", "workspacev2>>", "fullscreen>>", "activespecial>>",
+                "activespecialv2>>", "movewindow>>", "movewindowv2>>", "closewindow>>",
+                "openwindow>>", "changefloatingmode>>", "moveworkspace>>",
+                "moveworkspacev2>>", "focusedmon>>", "focusedmonv2>>"};
+            for (std::string_view e : events) relevant = relevant || line.starts_with(e);
+        }
+        hyprland_buffer_.erase(0, start);
+        if (relevant) display_.recompute_covered();
+        if (closed) {
+            log::warn("hyprland: event socket closed");
+            loop_.remove(hyprland_events_id_);
+            hyprland_events_id_ = 0;
+            hyprland_events_.reset();
+            hyprland_buffer_.clear();
+        }
+    });
 }
 
 void Daemon::render(Screen& entry) {

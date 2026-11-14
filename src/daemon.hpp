@@ -136,6 +136,7 @@ private:
     // False, with the timer armed, while the fps cap holds the next frame back.
     bool due(Screen& screen);
     void render(Screen& screen);
+    void follow_hyprland(bool on);  // socket2 events while toplevels are tracked
     void before_poll();
     void after_poll();
     void pause_changed(Screen& screen, std::uint32_t before);
@@ -184,6 +185,9 @@ private:
     bool mpris_failed_ = false;            // the bus was not there; not tried again
     input::HyprlandCursor hyprland_;       // runs only while a shown, running scene wants audio
     bool force_toplevels_ = false;         // GLINT_TRACK_TOPLEVELS=1
+    UniqueFd hyprland_events_;             // socket2, while toplevels are tracked
+    int hyprland_events_id_ = 0;
+    std::string hyprland_buffer_;          // a partial event line
 
     UniqueFd signal_fd_;
     int wayland_id_ = 0;

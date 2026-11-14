@@ -3,8 +3,10 @@
 #include <sys/types.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -173,6 +175,11 @@ public:
     // nothing while it shows still pictures (covered stills get no frame callbacks anyway).
     void track_toplevels(bool on);
     bool tracking_toplevels() const { return toplevel_manager_ != nullptr; }
+    // Asks the compositor which outputs show a fullscreen window on a visible workspace
+    // (connector names), or answers nothing to fall back to guessing from focus. Consulted
+    // on every toplevel change while toplevels are tracked.
+    using FullscreenQuery = std::function<std::optional<std::set<std::string>>()>;
+    void set_fullscreen_query(FullscreenQuery query) { fullscreen_query_ = std::move(query); }
 
     // The DRM device the compositor renders with, from linux-dmabuf feedback.
     std::optional<dev_t> main_device() const { return main_device_; }
@@ -197,6 +204,7 @@ private:
         std::uint64_t activated_serial = 0;  // when it last had focus, by order
     };
     std::uint64_t activation_serial_ = 0;
+    FullscreenQuery fullscreen_query_;
 
     Output* find_surface(wl_surface* surface) const;
     void remove_output(std::uint32_t global);

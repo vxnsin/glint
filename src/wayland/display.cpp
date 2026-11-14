@@ -690,7 +690,19 @@ void Display::track_toplevels(bool on) {
 }
 
 void Display::recompute_covered() {
+    // The compositor's own answer when it gives one: on Hyprland, a fullscreen window on a
+    // workspace that is not shown, while nothing on the shown one has focus (an empty
+    // workspace), would otherwise count as covering and freeze the wallpaper in plain view.
+    std::optional<std::set<std::string>> known;
+    if (fullscreen_query_ && tracking_toplevels()) known = fullscreen_query_();
     for (const auto& output : outputs_) {
+        if (known) {
+            bool covered = known->contains(output->name());
+            if (covered == output->covered()) continue;
+            output->set_covered(covered);
+            if (output->configured()) listener_.output_covered(*output, covered);
+            continue;
+        }
         // The protocol does not say whether a window's workspace is visible: on Hyprland a
         // fullscreen window on a hidden or special workspace is still "fullscreen on DP-2",
         // and pausing for it would freeze a wallpaper that is in plain view. So a fullscreen
